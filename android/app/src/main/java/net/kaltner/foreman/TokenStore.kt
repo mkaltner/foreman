@@ -17,6 +17,7 @@ enum class ThemeMode { System, Light, Dark }
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
     val followNewMessages: Boolean = true,
+    val monitorActiveTurns: Boolean = false,
 )
 
 class PreferenceStore(context: Context) {
@@ -32,6 +33,7 @@ class PreferenceStore(context: Context) {
                     )
                 }.getOrDefault(ThemeMode.System),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
+            monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
         )
 
     fun setThemeMode(mode: ThemeMode) {
@@ -40,6 +42,10 @@ class PreferenceStore(context: Context) {
 
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.edit().putBoolean("followNewMessages", enabled).apply()
+    }
+
+    fun setMonitorActiveTurns(enabled: Boolean) {
+        preferences.edit().putBoolean("monitorActiveTurns", enabled).apply()
     }
 }
 

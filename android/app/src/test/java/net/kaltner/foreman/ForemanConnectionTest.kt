@@ -111,4 +111,17 @@ class ForemanConnectionTest {
         assertEquals("working", session.status)
         assertEquals(emptyList<ConversationItem>(), session.messages)
     }
+
+    @Test
+    fun mapsOnlyAttentionAndTerminalStatusesToNotifications() {
+        assertEquals(
+            "Foreman needs your attention",
+            monitorOutcome("waiting")?.title,
+        )
+        assertEquals("Foreman turn completed", monitorOutcome("completed")?.title)
+        assertEquals("Foreman turn failed", monitorOutcome("failed")?.title)
+        assertEquals("Foreman turn interrupted", monitorOutcome("interrupted")?.title)
+        assertEquals(null, monitorOutcome("working"))
+        assertEquals(null, monitorOutcome("unknown"))
+    }
 }
