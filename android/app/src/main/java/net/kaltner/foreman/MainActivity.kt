@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -70,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -97,26 +100,30 @@ import kotlinx.serialization.json.put
 
 private val LightColors =
     lightColorScheme(
-        primary = Color(0xFF6750A4),
+        primary = Color(0xFF6C2BD9),
         onPrimary = Color.White,
         primaryContainer = Color(0xFFE9DDFF),
         onPrimaryContainer = Color(0xFF22005D),
-        secondary = Color(0xFF625B71),
-        background = Color(0xFFF9F7FC),
-        surface = Color(0xFFFFF9FF),
+        secondary = Color(0xFF4A18A8),
+        background = Color(0xFFF6F7F9),
+        surface = Color.White,
         surfaceVariant = Color(0xFFE7E0EB),
+        onBackground = Color(0xFF111827),
+        onSurface = Color(0xFF111827),
     )
 
 private val DarkColors =
     darkColorScheme(
-        primary = Color(0xFFD0BCFF),
+        primary = Color(0xFFCBB4FF),
         onPrimary = Color(0xFF381E72),
-        primaryContainer = Color(0xFF4F378B),
+        primaryContainer = Color(0xFF4A18A8),
         onPrimaryContainer = Color(0xFFEADDFF),
-        secondary = Color(0xFFCCC2DC),
-        background = Color(0xFF141218),
-        surface = Color(0xFF1D1B20),
-        surfaceVariant = Color(0xFF49454F),
+        secondary = Color(0xFF9D76F2),
+        background = Color(0xFF111827),
+        surface = Color(0xFF182235),
+        surfaceVariant = Color(0xFF374151),
+        onBackground = Color(0xFFF6F7F9),
+        onSurface = Color(0xFFF6F7F9),
     )
 
 class MainActivity : ComponentActivity() {
@@ -503,7 +510,29 @@ private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
                     .padding(start = 28.dp, top = 56.dp, end = 28.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
         ) {
-            Text("Foreman", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.foreman_logo),
+                    contentDescription = "Foreman logo",
+                    modifier = Modifier.size(84.dp).clip(RoundedCornerShape(20.dp)),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Foreman",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "MONITOR. ORCHESTRATE. COMMAND.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
             Text(
                 "Connect to Codex on your Linux host.",
                 style = MaterialTheme.typography.bodyLarge,
@@ -556,6 +585,16 @@ private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Foreman", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    Image(
+                        painter = painterResource(R.drawable.foreman_logo),
+                        contentDescription = null,
+                        modifier =
+                            Modifier.padding(start = 12.dp)
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(9.dp)),
+                    )
+                },
                 actions = {
                     IconButton(onClick = viewModel::refresh, enabled = state.connected) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")

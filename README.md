@@ -1,5 +1,11 @@
 # Foreman
 
+<p align="center">
+  <img src="android/app/src/main/res/drawable-nodpi/foreman_logo.png" alt="Foreman logo" width="128">
+  <br>
+  <strong>Monitor. Orchestrate. Command.</strong>
+</p>
+
 Foreman is a small Linux user service and Android app for viewing and controlling
 local Codex sessions over a direct TCP connection.
 
@@ -16,6 +22,14 @@ The current prototype can:
 It does not expose a shell, HTTP server, Git writes, approvals, or structured
 input. The TCP connection is authenticated but not encrypted; use it only on a
 trusted private LAN or through a secure tunnel.
+
+> [!CAUTION]
+> Do not expose Foreman's TCP port (`8765`) directly to the public internet.
+> Prefer a private overlay such as Tailscale or WireGuard, or a trusted LAN with
+> firewall rules limited to your devices. Pairing uses a six-digit, one-time
+> code that expires after ten minutes and throttles failed guesses per source
+> address. Have the phone ready, run `foreman pair` only when needed, and finish
+> pairing promptly—especially if the service is reachable beyond your LAN.
 
 ## Linux
 
