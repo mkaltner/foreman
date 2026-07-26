@@ -65,7 +65,11 @@ class State:
                 if _digest(key) not in existing:
                     break
             data["pairings"].append(
-                {"digest": _digest(key), "expiresAt": expires_at}
+                {
+                    "digest": _digest(key),
+                    "expiresAt": expires_at,
+                    "attemptsRemaining": 5,
+                }
             )
             return key
 
@@ -88,11 +92,17 @@ class State:
                 ),
                 None,
             )
-            data["pairings"] = [
-                item
-                for item in pairings
-                if item is not match and item.get("expiresAt", 0) > now
-            ]
+            remaining_pairings = []
+            for item in pairings:
+                if item is match or item.get("expiresAt", 0) <= now:
+                    continue
+                if match is None:
+                    attempts = max(0, int(item.get("attemptsRemaining", 5)) - 1)
+                    if attempts == 0:
+                        continue
+                    item["attemptsRemaining"] = attempts
+                remaining_pairings.append(item)
+            data["pairings"] = remaining_pairings
             if match is None:
                 return None
             data.setdefault("devices", []).append(

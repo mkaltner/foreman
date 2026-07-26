@@ -125,6 +125,17 @@ class StateTests(unittest.TestCase):
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
 
+    def test_pairing_expires_after_five_wrong_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            key, _ = state.create_pairing()
+            for attempt in range(5):
+                self.assertIsNone(state.pair(f"wrong-{attempt}", "Attacker"))
+            self.assertIsNone(state.pair(key, "Phone"))
+
+            replacement, _ = state.create_pairing()
+            self.assertIsNotNone(state.pair(replacement, "Phone"))
+
 
 class MappingTests(unittest.TestCase):
     def test_session_and_conversation_mapping(self) -> None:
