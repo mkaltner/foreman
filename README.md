@@ -47,3 +47,6 @@ python3 -m unittest discover -s tests -v
 
 See [installation](docs/install.md), [architecture](docs/architecture.md), and
 the [wire protocol](docs/protocol.md).
+
+Version tags publish signed Android and Linux artifacts as described in the
+[release guide](docs/releasing.md).

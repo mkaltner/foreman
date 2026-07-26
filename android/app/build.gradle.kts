@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val foremanVersionCode =
+    providers.gradleProperty("foremanVersionCode").orNull?.toIntOrNull() ?: 1
+val foremanVersionName =
+    providers.gradleProperty("foremanVersionName").orNull ?: "0.1.0"
+val releaseKeystorePath = System.getenv("FOREMAN_ANDROID_KEYSTORE")
+
 android {
     namespace = "net.kaltner.foreman"
     compileSdk = 37
@@ -12,13 +18,30 @@ android {
         applicationId = "net.kaltner.foreman"
         minSdk = 23
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = foremanVersionCode
+        versionName = foremanVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
         compose = true
+    }
+
+    signingConfigs {
+        if (!releaseKeystorePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("FOREMAN_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("FOREMAN_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("FOREMAN_ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
     }
 
     compileOptions {
