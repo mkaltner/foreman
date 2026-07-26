@@ -192,12 +192,12 @@ class MappingTests(unittest.TestCase):
                 }
             )
         )
-        self.assertEqual(
-            normalize_item(
-                {"id": "search-1", "type": "webSearch", "query": "Foreman"}
-            )["description"],
-            "Web search: Foreman",
+        sensitive_query = "token=secret-123 /home/private/file"
+        normalized_search = normalize_item(
+            {"id": "search-1", "type": "webSearch", "query": sensitive_query}
         )
+        self.assertEqual(normalized_search["description"], "Web search")
+        self.assertNotIn(sensitive_query, str(normalized_search))
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):

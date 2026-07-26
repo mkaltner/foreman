@@ -264,11 +264,12 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
             "status": item.get("status", "inProgress"),
         }
     if kind == "webSearch":
-        query = item.get("query", "")
         return {
             **base,
             "kind": "tool",
-            "description": f"Web search: {query}" if query else "Web search",
+            # Search terms can contain credentials, private paths, or other
+            # sensitive input. Never include them in Android-facing metadata.
+            "description": "Web search",
             "status": item.get("status", "inProgress"),
         }
     if kind == "fileChange":

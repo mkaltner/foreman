@@ -153,7 +153,7 @@ class ForemanConnectionTest {
                             ConversationItem(
                                 id = "search-1",
                                 kind = "tool",
-                                description = "Web search: Foreman",
+                                description = "Web search",
                                 status = "inProgress",
                             ),
                         ),
