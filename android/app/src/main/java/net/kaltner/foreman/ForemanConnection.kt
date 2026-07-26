@@ -129,7 +129,25 @@ data class SessionSummary(
     val attention: Boolean = false,
     val messages: List<ConversationItem> = emptyList(),
     val activeTurnId: String? = null,
+    val activityLabel: String = "",
+    val activityText: String = "",
 )
+
+internal fun liveActivityLabel(session: SessionSummary): String {
+    if (session.activityLabel.isNotBlank()) return session.activityLabel
+    val activeItem =
+        session.messages.lastOrNull {
+            it.status.equals("inProgress", ignoreCase = true) ||
+                it.status.equals("running", ignoreCase = true)
+        }
+    return when {
+        activeItem?.kind == "command" -> "Running command"
+        activeItem?.kind == "tool" &&
+            activeItem.description.startsWith("Web search", ignoreCase = true) -> "Searching"
+        activeItem?.kind == "tool" -> "Using tool"
+        else -> "Thinking"
+    }
+}
 
 class ForemanClient(
     private val scope: CoroutineScope,

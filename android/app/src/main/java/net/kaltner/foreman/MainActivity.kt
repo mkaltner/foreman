@@ -387,6 +387,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             it.selected?.copy(
                                 status = "working",
                                 activeTurnId = turnId ?: it.selected.activeTurnId,
+                                activityLabel = "Thinking",
+                                activityText = "",
                             ),
                     )
                 }
@@ -451,7 +453,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                 turnId = event["turnId"]?.jsonPrimitive?.content,
                             )
                     }
-                    current.copy(selected = selected.copy(messages = messages))
+                    current.copy(
+                        selected =
+                            selected.copy(
+                                messages = messages,
+                                activityLabel = "Responding",
+                                activityText = "",
+                            ),
+                    )
                 }
                 "item" -> {
                     val raw = event["item"]
@@ -462,7 +471,46 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     val messages = selected.messages.toMutableList()
                     val existing = messages.indexOfFirst { it.id == item.id }
                     if (existing >= 0) messages[existing] = item else messages += item
-                    current.copy(selected = selected.copy(messages = messages))
+                    val phase = event["phase"]?.jsonPrimitive?.content
+                    val nextLabel =
+                        if (phase == "started") {
+                            liveActivityLabel(
+                                selected.copy(
+                                    messages = messages,
+                                    activityLabel = "",
+                                ),
+                            )
+                        } else {
+                            "Thinking"
+                        }
+                    current.copy(
+                        selected =
+                            selected.copy(
+                                messages = messages,
+                                activityLabel = nextLabel,
+                                activityText = "",
+                            ),
+                    )
+                }
+                "activity" -> {
+                    val label =
+                        event["label"]?.jsonPrimitive?.content
+                            ?: return@update current
+                    val text = event["text"]?.jsonPrimitive?.content.orEmpty()
+                    val append = event["append"]?.jsonPrimitive?.content == "true"
+                    val activityText =
+                        if (append) {
+                            (selected.activityText + text).takeLast(2_000)
+                        } else {
+                            text
+                        }
+                    current.copy(
+                        selected =
+                            selected.copy(
+                                activityLabel = label,
+                                activityText = activityText,
+                            ),
+                    )
                 }
                 "status" -> {
                     val newStatus = event["status"]?.jsonPrimitive?.content ?: selected.status
@@ -473,7 +521,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             null
                         }
                     current.copy(
-                        selected = selected.copy(status = newStatus, activeTurnId = active),
+                        selected =
+                            selected.copy(
+                                status = newStatus,
+                                activeTurnId = active,
+                                activityLabel =
+                                    if (newStatus == "working") {
+                                        selected.activityLabel.ifBlank { "Thinking" }
+                                    } else {
+                                        ""
+                                    },
+                                activityText =
+                                    if (newStatus == "working") selected.activityText else "",
+                            ),
                     )
                 }
                 else -> current
@@ -748,15 +808,26 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
     BackHandler(onBack = viewModel::backToSessions)
 
     LaunchedEffect(selected?.id) {
-        selected?.let { listState.scrollToItem(it.messages.size) }
+        selected?.let {
+            listState.scrollToItem(
+                it.messages.size + if (it.status == "working") 1 else 0,
+            )
+        }
     }
     LaunchedEffect(
         state.followNewMessages,
         selected?.messages?.size,
         lastMessage?.text,
+        selected?.status,
+        selected?.activityLabel,
+        selected?.activityText,
     ) {
         if (state.followNewMessages) {
-            selected?.let { listState.scrollToItem(it.messages.size) }
+            selected?.let {
+                listState.scrollToItem(
+                    it.messages.size + if (it.status == "working") 1 else 0,
+                )
+            }
         }
     }
     Scaffold(
@@ -833,6 +904,47 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                     ) { _, item ->
                         ConversationRow(item)
                     }
+                    if (selected.status == "working") {
+                        item(key = "live-activity") {
+                            LiveActivityRow(selected)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveActivityRow(session: SessionSummary) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.padding(top = 2.dp).size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "${liveActivityLabel(session)}…",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                session.activityText.trim().takeIf { it.isNotEmpty() }?.let { summary ->
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

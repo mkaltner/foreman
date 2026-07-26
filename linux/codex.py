@@ -248,7 +248,12 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
             "status": item.get("status", "inProgress"),
             "exitCode": item.get("exitCode"),
         }
-    if kind in ("mcpToolCall", "dynamicToolCall", "collabAgentToolCall"):
+    if kind in (
+        "mcpToolCall",
+        "dynamicToolCall",
+        "collabToolCall",
+        "collabAgentToolCall",
+    ):
         description = item.get("tool", "tool")
         if item.get("server"):
             description = f"{item['server']}: {description}"
@@ -256,6 +261,31 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
             **base,
             "kind": "tool",
             "description": description,
+            "status": item.get("status", "inProgress"),
+        }
+    if kind == "webSearch":
+        query = item.get("query", "")
+        return {
+            **base,
+            "kind": "tool",
+            "description": f"Web search: {query}" if query else "Web search",
+            "status": item.get("status", "inProgress"),
+        }
+    if kind == "fileChange":
+        changes = item.get("changes", [])
+        count = len(changes) if isinstance(changes, list) else 0
+        noun = "file" if count == 1 else "files"
+        return {
+            **base,
+            "kind": "tool",
+            "description": f"Editing {count} {noun}" if count else "Editing files",
+            "status": item.get("status", "inProgress"),
+        }
+    if kind == "imageView":
+        return {
+            **base,
+            "kind": "tool",
+            "description": "Viewing an image",
             "status": item.get("status", "inProgress"),
         }
     return None
@@ -275,12 +305,65 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
                 "text": params.get("delta", ""),
             }
         )
+    elif method == "item/reasoning/summaryTextDelta":
+        event.update(
+            {
+                "kind": "activity",
+                "label": "Thinking",
+                "turnId": params.get("turnId"),
+                "itemId": params.get("itemId"),
+                "text": params.get("delta", ""),
+                "append": True,
+            }
+        )
+    elif method == "item/reasoning/summaryPartAdded":
+        event.update(
+            {
+                "kind": "activity",
+                "label": "Thinking",
+                "turnId": params.get("turnId"),
+                "itemId": params.get("itemId"),
+                "text": "\n",
+                "append": True,
+            }
+        )
+    elif method in ("item/plan/delta", "turn/plan/updated"):
+        event.update(
+            {
+                "kind": "activity",
+                "label": "Planning",
+                "turnId": params.get("turnId"),
+                "text": "",
+                "append": False,
+            }
+        )
+    elif method == "item/commandExecution/outputDelta":
+        event.update(
+            {
+                "kind": "activity",
+                "label": "Running command",
+                "turnId": params.get("turnId"),
+                "itemId": params.get("itemId"),
+                "text": "",
+                "append": False,
+            }
+        )
     elif method in ("item/started", "item/completed"):
+        raw_item = params.get("item", {})
+        normalized_item = normalize_item(raw_item)
+        if (
+            normalized_item
+            and method == "item/completed"
+            and not raw_item.get("status")
+            and normalized_item.get("kind") in ("command", "tool")
+        ):
+            normalized_item["status"] = "completed"
         event.update(
             {
                 "kind": "item",
+                "phase": "started" if method == "item/started" else "completed",
                 "turnId": params.get("turnId"),
-                "item": normalize_item(params.get("item", {})),
+                "item": normalized_item,
             }
         )
     elif method == "turn/started":

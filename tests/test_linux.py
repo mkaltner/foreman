@@ -15,7 +15,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
-from codex import Codex, normalize_item, session, status  # noqa: E402
+from codex import Codex, normalize_event, normalize_item, session, status  # noqa: E402
 from foreman_service import Foreman, PairingLimiter  # noqa: E402
 from state import State  # noqa: E402
 
@@ -164,6 +164,39 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
             "waiting",
+        )
+
+    def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
+        thread_id, event = normalize_event(
+            {
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "delta": "Checking the connection",
+                },
+            }
+        )
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(event["kind"], "activity")
+        self.assertEqual(event["label"], "Thinking")
+        self.assertEqual(event["text"], "Checking the connection")
+        self.assertTrue(event["append"])
+        self.assertIsNone(
+            normalize_item(
+                {
+                    "id": "reasoning-1",
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private"}],
+                }
+            )
+        )
+        self.assertEqual(
+            normalize_item(
+                {"id": "search-1", "type": "webSearch", "query": "Foreman"}
+            )["description"],
+            "Web search: Foreman",
         )
 
 
