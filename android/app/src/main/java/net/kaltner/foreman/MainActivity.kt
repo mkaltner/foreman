@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -89,9 +90,11 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
@@ -130,12 +133,19 @@ private val DarkColors =
     )
 
 class MainActivity : ComponentActivity() {
+    private val foremanViewModel: ForemanViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
-            ForemanApp()
+            ForemanApp(foremanViewModel)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        foremanViewModel.onForeground()
     }
 }
 
@@ -170,6 +180,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         )
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
+    private var reconnectJob: Job? = null
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
@@ -184,23 +195,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 it.copy(
                     host = saved.host,
                     deviceName = saved.deviceName,
-                    loading = true,
                 )
             }
-            viewModelScope.launch {
-                runCatching {
-                    client.authenticate(saved.host, saved.token)
-                    state.update {
-                        it.copy(
-                            connected = true,
-                            screen = Screen.Sessions,
-                            loading = false,
-                            error = null,
-                        )
-                    }
-                    refresh()
-                }.onFailure(::fail)
-            }
+            launchReconnect(saved)
         }
     }
 
@@ -249,15 +246,49 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             state.update { it.copy(screen = Screen.Setup) }
             return
         }
-        viewModelScope.launch {
-            state.update { it.copy(loading = true, error = null) }
-            runCatching {
-                client.authenticate(saved.host, saved.token)
-                state.update { it.copy(connected = true, loading = false) }
-                refresh()
-                state.value.selected?.id?.let { openSession(it) }
-            }.onFailure(::fail)
-        }
+        launchReconnect(saved)
+    }
+
+    fun onForeground() {
+        val saved = tokens.load() ?: return
+        if (state.value.loading || reconnectJob?.isActive == true) return
+        reconnectJob =
+            viewModelScope.launch {
+                if (state.value.connected) {
+                    val healthy =
+                        runCatching {
+                            withTimeout(5_000) { client.request("ping") }
+                        }.isSuccess
+                    if (healthy) {
+                        state.update { it.copy(error = null) }
+                        return@launch
+                    }
+                }
+                reconnectSaved(saved)
+            }
+    }
+
+    private fun launchReconnect(saved: SavedConnection) {
+        if (state.value.loading || reconnectJob?.isActive == true) return
+        reconnectJob = viewModelScope.launch { reconnectSaved(saved) }
+    }
+
+    private suspend fun reconnectSaved(saved: SavedConnection) {
+        val selectedId = state.value.selected?.id
+        state.update { it.copy(loading = true, error = null) }
+        runCatching {
+            client.authenticate(saved.host, saved.token)
+            state.update {
+                it.copy(
+                    connected = true,
+                    screen = if (selectedId == null) Screen.Sessions else Screen.Detail,
+                    loading = false,
+                    error = null,
+                )
+            }
+            refresh()
+            selectedId?.let { openSession(it) }
+        }.onFailure(::fail)
     }
 
     fun refresh() {
