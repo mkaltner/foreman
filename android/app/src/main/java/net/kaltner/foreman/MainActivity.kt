@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
@@ -128,6 +131,7 @@ private val DarkColors =
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
             ForemanApp()
@@ -480,9 +484,7 @@ private fun ForemanApp(viewModel: ForemanViewModel = viewModel()) {
     }
     MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors) {
         Surface(
-            modifier =
-                Modifier.fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+            modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
             when (state.screen) {
@@ -496,7 +498,10 @@ private fun ForemanApp(viewModel: ForemanViewModel = viewModel()) {
 
 @Composable
 private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier.fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
         UiSettingsMenu(
             state = state,
             viewModel = viewModel,
@@ -604,6 +609,11 @@ private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
                     }
                     UiSettingsMenu(state, viewModel)
                 },
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surface,
+                    ),
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -747,6 +757,11 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                     }
                     UiSettingsMenu(state, viewModel)
                 },
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surface,
+                    ),
             )
         },
         bottomBar = {
@@ -846,7 +861,10 @@ private fun PromptBox(
     send: (String, () -> Unit) -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
-    Surface(modifier = Modifier.imePadding(), shadowElevation = 6.dp) {
+    Surface(
+        modifier = Modifier.navigationBarsPadding().imePadding(),
+        shadowElevation = 6.dp,
+    ) {
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.Bottom,

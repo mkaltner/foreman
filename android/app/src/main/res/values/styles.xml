@@ -3,8 +3,5 @@
     <style name="Theme.Foreman" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#6C2BD9</item>
-        <item name="android:navigationBarColor">#F6F7F9</item>
-        <item name="android:statusBarColor">#F6F7F9</item>
-        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>
