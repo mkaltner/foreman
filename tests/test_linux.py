@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,7 @@ class StateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
             key, _ = state.create_pairing()
+            self.assertRegex(key, re.compile(r"^\d{6}$"))
             token = state.pair(key, "Phone")
             self.assertIsNotNone(token)
             self.assertIsNone(state.pair(key, "Second phone"))

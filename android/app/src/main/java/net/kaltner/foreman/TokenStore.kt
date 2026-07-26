@@ -12,6 +12,37 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class SavedConnection(val host: String, val deviceName: String, val token: String)
 
+enum class ThemeMode { System, Light, Dark }
+
+data class UiPreferences(
+    val themeMode: ThemeMode = ThemeMode.System,
+    val followNewMessages: Boolean = true,
+)
+
+class PreferenceStore(context: Context) {
+    private val preferences =
+        context.getSharedPreferences("foreman_preferences", Context.MODE_PRIVATE)
+
+    fun load(): UiPreferences =
+        UiPreferences(
+            themeMode =
+                runCatching {
+                    ThemeMode.valueOf(
+                        preferences.getString("themeMode", ThemeMode.System.name)!!,
+                    )
+                }.getOrDefault(ThemeMode.System),
+            followNewMessages = preferences.getBoolean("followNewMessages", true),
+        )
+
+    fun setThemeMode(mode: ThemeMode) {
+        preferences.edit().putString("themeMode", mode.name).apply()
+    }
+
+    fun setFollowNewMessages(enabled: Boolean) {
+        preferences.edit().putBoolean("followNewMessages", enabled).apply()
+    }
+}
+
 class TokenStore(context: Context) {
     private val preferences =
         context.getSharedPreferences("foreman_connection", Context.MODE_PRIVATE)
