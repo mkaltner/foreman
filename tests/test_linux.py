@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
 from codex import Codex, normalize_item, session, status  # noqa: E402
-from foreman_service import Foreman  # noqa: E402
+from foreman_service import Foreman, PairingLimiter  # noqa: E402
 from state import State  # noqa: E402
 
 
@@ -125,16 +125,22 @@ class StateTests(unittest.TestCase):
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
 
-    def test_pairing_expires_after_five_wrong_attempts(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            state = State(directory)
-            key, _ = state.create_pairing()
-            for attempt in range(5):
-                self.assertIsNone(state.pair(f"wrong-{attempt}", "Attacker"))
-            self.assertIsNone(state.pair(key, "Phone"))
 
-            replacement, _ = state.create_pairing()
-            self.assertIsNotNone(state.pair(replacement, "Phone"))
+class PairingLimiterTests(unittest.TestCase):
+    def test_limits_each_peer_without_revoking_codes(self) -> None:
+        now = [100.0]
+        limiter = PairingLimiter(clock=lambda: now[0])
+        for _ in range(5):
+            self.assertTrue(limiter.allowed("attacker"))
+            limiter.failed("attacker")
+        self.assertFalse(limiter.allowed("attacker"))
+        self.assertTrue(limiter.allowed("phone"))
+
+        now[0] += 60
+        self.assertTrue(limiter.allowed("attacker"))
+        limiter.failed("attacker")
+        limiter.succeeded("attacker")
+        self.assertTrue(limiter.allowed("attacker"))
 
 
 class MappingTests(unittest.TestCase):
