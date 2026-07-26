@@ -10,10 +10,20 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ForemanConnectionTest {
+    @Test
+    fun wireMessagesAlwaysIncludeProtocolVersion() {
+        val encoded =
+            Json.encodeToString(
+                WireMessage(version = 1, id = "one", type = "hello"),
+            )
+        assertTrue(encoded.contains("\"version\":1"))
+    }
+
     @Test
     fun parsesSupportedHostForms() {
         assertEquals(HostPort("192.168.1.59", 8765), parseHost("192.168.1.59"))
@@ -58,6 +68,7 @@ class ForemanConnectionTest {
                         socket.getOutputStream(),
                         json.encodeToString(
                             WireMessage(
+                                version = 1,
                                 id = request.id,
                                 type = "${request.type}.result",
                                 payload = payload,

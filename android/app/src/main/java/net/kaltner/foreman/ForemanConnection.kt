@@ -93,7 +93,7 @@ object FrameCodec {
 
 @Serializable
 data class WireMessage(
-    val version: Int = 1,
+    val version: Int,
     val id: String? = null,
     val type: String,
     val payload: JsonObject = JsonObject(emptyMap()),
@@ -167,7 +167,7 @@ class ForemanClient(
         val id = "android-${sequence.incrementAndGet()}"
         val deferred = CompletableDeferred<WireMessage>()
         pending[id] = deferred
-        val message = WireMessage(id = id, type = type, payload = payload)
+        val message = WireMessage(version = 1, id = id, type = type, payload = payload)
         try {
             val output = socket?.getOutputStream() ?: error("Not connected")
             writeMutex.withLock {
@@ -218,6 +218,12 @@ class ForemanClient(
                     val id = message.id
                     if (id != null && pending.remove(id)?.let { it.complete(message) } == true) {
                         continue
+                    }
+                    if (message.type == "error") {
+                        throw IOException(
+                            message.payload["message"]?.jsonPrimitive?.content
+                                ?: "Foreman rejected the connection",
+                        )
                     }
                     onEvent(message)
                 }
