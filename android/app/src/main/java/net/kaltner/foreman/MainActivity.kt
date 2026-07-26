@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.Activity
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -661,6 +662,8 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
     val selected = state.selected
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
+
+    BackHandler(onBack = viewModel::backToSessions)
 
     LaunchedEffect(selected?.id) {
         selected?.let { listState.scrollToItem(it.messages.size) }
