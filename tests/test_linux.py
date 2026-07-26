@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
-from codex import normalize_item, session, status  # noqa: E402
+from codex import Codex, normalize_item, session, status  # noqa: E402
 from foreman_service import Foreman  # noqa: E402
 from state import State  # noqa: E402
 
@@ -145,6 +146,35 @@ class MappingTests(unittest.TestCase):
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
             "waiting",
         )
+
+
+class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_app_server_messages_larger_than_asyncio_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory, "fake-codex")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        response = {"id": message["id"], "result": {"userAgent": "fake"}}
+    elif message.get("method") == "thread/read":
+        response = {"id": message["id"], "result": {"value": "x" * 100000}}
+    else:
+        continue
+    print(json.dumps(response, separators=(",", ":")), flush=True)
+""",
+                encoding="utf-8",
+            )
+            os.chmod(executable, 0o700)
+            adapter = Codex(str(executable), lambda _: asyncio.sleep(0))
+            await adapter.start()
+            try:
+                result = await adapter.request("thread/read", {"threadId": "large"})
+                self.assertEqual(len(result["value"]), 100000)
+            finally:
+                await adapter.stop()
 
 
 class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):

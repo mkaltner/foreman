@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 class CodexError(RuntimeError):
@@ -35,6 +36,7 @@ class Codex:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=APP_SERVER_MAX_MESSAGE_BYTES,
         )
         self._reader_task = asyncio.create_task(self._read())
         self._stderr_task = asyncio.create_task(self._read_stderr())
@@ -56,7 +58,10 @@ class Codex:
             return
         if self.process.stdin:
             self.process.stdin.close()
-            await self.process.stdin.wait_closed()
+            try:
+                await asyncio.wait_for(self.process.stdin.wait_closed(), timeout=2)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                pass
         try:
             await asyncio.wait_for(self.process.wait(), timeout=10)
         except TimeoutError:
@@ -95,20 +100,25 @@ class Codex:
 
     async def _read(self) -> None:
         assert self.process and self.process.stdout
-        while line := await self.process.stdout.readline():
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            request_id = message.get("id")
-            if request_id is not None and ("result" in message or "error" in message):
-                future = self._pending.get(request_id)
-                if future and not future.done():
-                    future.set_result(message)
-                continue
-            await self.on_event(message)
-        reason = "\n".join(self._stderr[-10:]) or "app-server closed"
-        for future in self._pending.values():
+        failure: Exception | None = None
+        try:
+            while line := await self.process.stdout.readline():
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                request_id = message.get("id")
+                if request_id is not None and ("result" in message or "error" in message):
+                    future = self._pending.get(request_id)
+                    if future and not future.done():
+                        future.set_result(message)
+                    continue
+                await self.on_event(message)
+        except Exception as error:
+            failure = error
+        detail = "\n".join(self._stderr[-10:])
+        reason = f"Codex app-server response reader stopped: {failure or detail or 'closed'}"
+        for future in list(self._pending.values()):
             if not future.done():
                 future.set_exception(CodexError(reason))
 
