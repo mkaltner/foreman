@@ -110,5 +110,55 @@ class ForemanConnectionTest {
         assertEquals("thread-1", session.id)
         assertEquals("working", session.status)
         assertEquals(emptyList<ConversationItem>(), session.messages)
+        assertEquals("", session.activityLabel)
+        assertEquals("", session.activityText)
+    }
+
+    @Test
+    fun choosesCompactLiveActivityLabels() {
+        val base =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+            )
+        assertEquals("Thinking", liveActivityLabel(base))
+        assertEquals(
+            "Planning",
+            liveActivityLabel(base.copy(activityLabel = "Planning")),
+        )
+        assertEquals(
+            "Running command",
+            liveActivityLabel(
+                base.copy(
+                    messages =
+                        listOf(
+                            ConversationItem(
+                                id = "command-1",
+                                kind = "command",
+                                description = "git status",
+                                status = "inProgress",
+                            ),
+                        ),
+                ),
+            ),
+        )
+        assertEquals(
+            "Searching",
+            liveActivityLabel(
+                base.copy(
+                    messages =
+                        listOf(
+                            ConversationItem(
+                                id = "search-1",
+                                kind = "tool",
+                                description = "Web search",
+                                status = "inProgress",
+                            ),
+                        ),
+                ),
+            ),
+        )
     }
 }
