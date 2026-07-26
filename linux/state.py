@@ -1,0 +1,113 @@
+"""Minimal file-backed pairing and device-token state."""
+
+from __future__ import annotations
+
+import base64
+import fcntl
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
+from pathlib import Path
+from typing import Any
+
+
+def _token(prefix: str, byte_count: int = 24) -> str:
+    value = base64.urlsafe_b64encode(secrets.token_bytes(byte_count)).decode().rstrip("=")
+    return prefix + value
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+class State:
+    def __init__(self, directory: str | Path) -> None:
+        self.directory = Path(directory).expanduser()
+        self.path = self.directory / "state.json"
+        self.lock_path = self.directory / "state.lock"
+
+    def _locked(self, update) -> Any:
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            os.chmod(self.lock_path, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = {"pairings": [], "devices": []}
+            if self.path.exists():
+                try:
+                    loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data.update(loaded)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            result = update(data)
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8"
+            )
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.path)
+            return result
+
+    def create_pairing(self, lifetime_seconds: int = 600) -> tuple[str, int]:
+        key = _token("fmp_", 18)
+        expires_at = int(time.time()) + lifetime_seconds
+
+        def update(data: dict[str, Any]) -> None:
+            now = int(time.time())
+            data["pairings"] = [
+                item for item in data.get("pairings", []) if item.get("expiresAt", 0) > now
+            ]
+            data["pairings"].append(
+                {"digest": _digest(key), "expiresAt": expires_at}
+            )
+
+        self._locked(update)
+        return key, expires_at
+
+    def pair(self, key: str, device_name: str) -> str | None:
+        key_digest = _digest(key)
+        device_token = _token("fmt_", 32)
+
+        def update(data: dict[str, Any]) -> str | None:
+            now = int(time.time())
+            pairings = data.get("pairings", [])
+            match = next(
+                (
+                    item
+                    for item in pairings
+                    if item.get("expiresAt", 0) > now
+                    and hmac.compare_digest(item.get("digest", ""), key_digest)
+                ),
+                None,
+            )
+            data["pairings"] = [
+                item
+                for item in pairings
+                if item is not match and item.get("expiresAt", 0) > now
+            ]
+            if match is None:
+                return None
+            data.setdefault("devices", []).append(
+                {
+                    "digest": _digest(device_token),
+                    "name": device_name[:80],
+                    "createdAt": now,
+                }
+            )
+            return device_token
+
+        return self._locked(update)
+
+    def authenticate(self, token: str) -> bool:
+        candidate = _digest(token)
+
+        def update(data: dict[str, Any]) -> bool:
+            return any(
+                hmac.compare_digest(item.get("digest", ""), candidate)
+                for item in data.get("devices", [])
+            )
+
+        return bool(self._locked(update))

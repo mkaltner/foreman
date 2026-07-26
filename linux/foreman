@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+service_name=foreman.service
+install_dir="${FOREMAN_INSTALL_DIR:-$HOME/.local/share/foreman}"
+
+case "${1:-}" in
+  start)
+    systemctl --user start "$service_name"
+    ;;
+  stop)
+    systemctl --user stop "$service_name"
+    ;;
+  restart)
+    systemctl --user restart "$service_name"
+    ;;
+  status)
+    systemctl --user status "$service_name" --no-pager
+    ;;
+  logs)
+    journalctl --user -u "$service_name" -f
+    ;;
+  pair)
+    exec python3 "$install_dir/foreman_service.py" --create-pairing
+    ;;
+  *)
+    echo "Usage: foreman {start|stop|restart|status|logs|pair}" >&2
+    exit 2
+    ;;
+esac

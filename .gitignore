@@ -81,6 +81,3 @@ artifacts/
 *.apk
 *.aab
 *.aar
-
-# Planned migration source, normalized fixtures, and protocol schemas are
-# normative repository content and are intentionally not ignored.
