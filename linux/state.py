@@ -52,19 +52,24 @@ class State:
             return result
 
     def create_pairing(self, lifetime_seconds: int = 600) -> tuple[str, int]:
-        key = _token("fmp_", 18)
         expires_at = int(time.time()) + lifetime_seconds
 
-        def update(data: dict[str, Any]) -> None:
+        def update(data: dict[str, Any]) -> str:
             now = int(time.time())
             data["pairings"] = [
                 item for item in data.get("pairings", []) if item.get("expiresAt", 0) > now
             ]
+            existing = {item.get("digest") for item in data["pairings"]}
+            while True:
+                key = f"{secrets.randbelow(1_000_000):06d}"
+                if _digest(key) not in existing:
+                    break
             data["pairings"].append(
                 {"digest": _digest(key), "expiresAt": expires_at}
             )
+            return key
 
-        self._locked(update)
+        key = self._locked(update)
         return key, expires_at
 
     def pair(self, key: str, device_name: str) -> str | None:

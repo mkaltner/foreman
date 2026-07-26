@@ -1,10 +1,13 @@
 package net.kaltner.foreman
 
 import android.app.Application
+import android.app.Activity
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,22 +17,34 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -37,11 +52,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,12 +71,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.view.WindowCompat
+import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.async
@@ -72,22 +98,39 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-private val ForemanPurple = Color(0xFF4F46E5)
-private val ForemanBackground = Color(0xFFF7F7FA)
-private val UserBubble = Color(0xFFE7E5FF)
+private val LightColors =
+    lightColorScheme(
+        primary = Color(0xFF6C2BD9),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFE9DDFF),
+        onPrimaryContainer = Color(0xFF22005D),
+        secondary = Color(0xFF4A18A8),
+        background = Color(0xFFF6F7F9),
+        surface = Color.White,
+        surfaceVariant = Color(0xFFE7E0EB),
+        onBackground = Color(0xFF111827),
+        onSurface = Color(0xFF111827),
+    )
+
+private val DarkColors =
+    darkColorScheme(
+        primary = Color(0xFFCBB4FF),
+        onPrimary = Color(0xFF381E72),
+        primaryContainer = Color(0xFF4A18A8),
+        onPrimaryContainer = Color(0xFFEADDFF),
+        secondary = Color(0xFF9D76F2),
+        background = Color(0xFF111827),
+        surface = Color(0xFF182235),
+        surfaceVariant = Color(0xFF374151),
+        onBackground = Color(0xFFF6F7F9),
+        onSurface = Color(0xFFF6F7F9),
+    )
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = ForemanBackground,
-                ) {
-                    ForemanApp()
-                }
-            }
+            ForemanApp()
         }
     }
 }
@@ -107,10 +150,20 @@ internal data class UiState(
     val repositories: List<RepositoryInfo> = emptyList(),
     val selected: SessionSummary? = null,
     val showNewSession: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.System,
+    val followNewMessages: Boolean = true,
 )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
-    val state = MutableStateFlow(UiState())
+    private val preferences = PreferenceStore(application)
+    private val savedPreferences = preferences.load()
+    val state =
+        MutableStateFlow(
+            UiState(
+                themeMode = savedPreferences.themeMode,
+                followNewMessages = savedPreferences.followNewMessages,
+            ),
+        )
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
     private val client = ForemanClient(
@@ -151,6 +204,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+
+    fun setThemeMode(mode: ThemeMode) {
+        preferences.setThemeMode(mode)
+        state.update { it.copy(themeMode = mode) }
+    }
+
+    fun setFollowNewMessages(enabled: Boolean) {
+        preferences.setFollowNewMessages(enabled)
+        state.update { it.copy(followNewMessages = enabled) }
+    }
 
     fun connect() {
         val current = state.value
@@ -399,25 +462,81 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 @Composable
 private fun ForemanApp(viewModel: ForemanViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
-    when (state.screen) {
-        Screen.Setup -> SetupScreen(state, viewModel)
-        Screen.Sessions -> SessionsScreen(state, viewModel)
-        Screen.Detail -> SessionDetailScreen(state, viewModel)
+    val systemDark = isSystemInDarkTheme()
+    val darkTheme =
+        when (state.themeMode) {
+            ThemeMode.System -> systemDark
+            ThemeMode.Light -> false
+            ThemeMode.Dark -> true
+        }
+    val view = LocalView.current
+    SideEffect {
+        (view.context as? Activity)?.window?.let { window ->
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !darkTheme
+                isAppearanceLightNavigationBars = !darkTheme
+            }
+        }
+    }
+    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors) {
+        Surface(
+            modifier =
+                Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            when (state.screen) {
+                Screen.Setup -> SetupScreen(state, viewModel)
+                Screen.Sessions -> SessionsScreen(state, viewModel)
+                Screen.Detail -> SessionDetailScreen(state, viewModel)
+            }
+        }
     }
 }
 
 @Composable
 private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
-    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize()) {
+        UiSettingsMenu(
+            state = state,
+            viewModel = viewModel,
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier =
+                Modifier.fillMaxSize()
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 28.dp, top = 56.dp, end = 28.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
         ) {
-            Text("Foreman", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.foreman_logo),
+                    contentDescription = "Foreman logo",
+                    modifier = Modifier.size(84.dp).clip(RoundedCornerShape(20.dp)),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Foreman",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "MONITOR. ORCHESTRATE. COMMAND.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
             Text(
                 "Connect to Codex on your Linux host.",
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.DarkGray,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
                 value = state.host,
@@ -431,6 +550,8 @@ private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
                 value = state.pairingKey,
                 onValueChange = viewModel::setPairingKey,
                 label = { Text("Pairing key") },
+                placeholder = { Text("6-digit code") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -464,6 +585,16 @@ private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Foreman", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    Image(
+                        painter = painterResource(R.drawable.foreman_logo),
+                        contentDescription = null,
+                        modifier =
+                            Modifier.padding(start = 12.dp)
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(9.dp)),
+                    )
+                },
                 actions = {
                     IconButton(onClick = viewModel::refresh, enabled = state.connected) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
@@ -471,10 +602,11 @@ private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
                     IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected) {
                         Icon(Icons.Default.Add, contentDescription = "New session")
                     }
+                    UiSettingsMenu(state, viewModel)
                 },
             )
         },
-        containerColor = ForemanBackground,
+        containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (!state.connected) {
@@ -522,7 +654,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             title,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
-            color = Color.DarkGray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
@@ -549,14 +681,14 @@ private fun SessionCard(session: SessionSummary, onClick: () -> Unit) {
             Text(
                 session.repository.substringAfterLast('/'),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.DarkGray,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             session.lastActivity?.let {
                 Text(
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(it * 1000)),
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.Gray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -567,6 +699,23 @@ private fun SessionCard(session: SessionSummary, onClick: () -> Unit) {
 @Composable
 private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
     val selected = state.selected
+    val listState = rememberLazyListState()
+    val lastMessage = selected?.messages?.lastOrNull()
+
+    BackHandler(onBack = viewModel::backToSessions)
+
+    LaunchedEffect(selected?.id) {
+        selected?.let { listState.scrollToItem(it.messages.size) }
+    }
+    LaunchedEffect(
+        state.followNewMessages,
+        selected?.messages?.size,
+        lastMessage?.text,
+    ) {
+        if (state.followNewMessages) {
+            selected?.let { listState.scrollToItem(it.messages.size) }
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -580,7 +729,7 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                             Text(
                                 selected.status,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = Color.DarkGray,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -596,6 +745,7 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                         }
                     }
+                    UiSettingsMenu(state, viewModel)
                 },
             )
         },
@@ -606,7 +756,7 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                 send = viewModel::send,
             )
         },
-        containerColor = ForemanBackground,
+        containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (!state.connected) ConnectionBanner(state.error, viewModel::reconnect)
@@ -617,6 +767,7 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                 }
             } else if (selected != null) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -648,8 +799,12 @@ private fun ConversationRow(item: ConversationItem) {
                 item.text,
                 modifier =
                     Modifier.fillMaxWidth(0.86f)
-                        .background(UserBubble, RoundedCornerShape(16.dp))
+                        .background(
+                            MaterialTheme.colorScheme.primaryContainer,
+                            RoundedCornerShape(16.dp),
+                        )
                         .padding(14.dp),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
         "assistant" -> Text(
@@ -663,7 +818,7 @@ private fun ConversationRow(item: ConversationItem) {
                     if (item.kind == "command") "Command" else "Tool",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = ForemanPurple,
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
                     item.description,
@@ -677,7 +832,7 @@ private fun ConversationRow(item: ConversationItem) {
                         item.exitCode?.let { append(" · exit $it") }
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.DarkGray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -691,7 +846,7 @@ private fun PromptBox(
     send: (String, () -> Unit) -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
-    Surface(shadowElevation = 6.dp) {
+    Surface(modifier = Modifier.imePadding(), shadowElevation = 6.dp) {
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.Bottom,
@@ -715,6 +870,59 @@ private fun PromptBox(
 }
 
 @Composable
+private fun UiSettingsMenu(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier) {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Default.Palette, contentDescription = "Appearance and scrolling")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            Text(
+                "Theme",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            ThemeMode.values().forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.name) },
+                    leadingIcon = {
+                        RadioButton(
+                            selected = state.themeMode == mode,
+                            onClick = null,
+                        )
+                    },
+                    onClick = {
+                        viewModel.setThemeMode(mode)
+                        expanded = false
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Follow new messages") },
+                leadingIcon = {
+                    Checkbox(
+                        checked = state.followNewMessages,
+                        onCheckedChange = null,
+                    )
+                },
+                onClick = {
+                    viewModel.setFollowNewMessages(!state.followNewMessages)
+                },
+            )
+        }
+    }
+}
+
+@Composable
 private fun StatusPill(status: String) {
     val color = when (status) {
         "working" -> Color(0xFF2563EB)
@@ -733,12 +941,16 @@ private fun StatusPill(status: String) {
 
 @Composable
 private fun ConnectionBanner(message: String?, reconnect: () -> Unit) {
-    Surface(color = Color(0xFFFFE4E4)) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(message ?: "Disconnected", modifier = Modifier.weight(1f), color = Color(0xFF991B1B))
+            Text(
+                message ?: "Disconnected",
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
             FilledTonalButton(onClick = reconnect) { Text("Reconnect") }
         }
     }
@@ -747,7 +959,12 @@ private fun ConnectionBanner(message: String?, reconnect: () -> Unit) {
 @Composable
 private fun ErrorText(message: String?, modifier: Modifier = Modifier) {
     if (message != null) {
-        Text(message, color = Color(0xFFB91C1C), style = MaterialTheme.typography.bodySmall, modifier = modifier)
+        Text(
+            message,
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = modifier,
+        )
     }
 }
 
@@ -776,7 +993,7 @@ private fun NewSessionDialog(
                                 "${repository.path} · ${repository.branch}" +
                                     if (repository.dirty) " · dirty" else "",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.DarkGray,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         HorizontalDivider()

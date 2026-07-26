@@ -38,7 +38,7 @@ Open `android/` in current Android Studio (compile SDK 37), build/install the
 debug app, and run `foreman pair` immediately before setup. Enter:
 
 - Host: for example `192.168.1.59` or `codex.local:8765`;
-- Pairing key: the complete `fmp_…` value;
+- Pairing key: the six-digit code;
 - Device name: any short phone label.
 
 The device token is encrypted by an Android Keystore key. Closing the app or

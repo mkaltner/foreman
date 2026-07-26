@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 import os
 import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from codex import Codex, CodexError, normalize_event, session
 from protocol import MAX_FRAME_BYTES, VERSION, ProtocolError, encode, error, read, response
@@ -32,6 +33,7 @@ def load_env(path: Path) -> None:
 @dataclass(eq=False)
 class Client:
     writer: asyncio.StreamWriter
+    peer: str
     authenticated: bool = False
     subscriptions: set[str] = field(default_factory=set)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -40,6 +42,36 @@ class Client:
         async with self.write_lock:
             self.writer.write(encode(message))
             await self.writer.drain()
+
+
+class PairingLimiter:
+    def __init__(
+        self,
+        limit: int = 5,
+        window_seconds: float = 60,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self.clock = clock
+        self.failures: dict[str, deque[float]] = {}
+
+    def allowed(self, peer: str) -> bool:
+        failures = self._recent(peer)
+        return len(failures) < self.limit
+
+    def failed(self, peer: str) -> None:
+        self._recent(peer).append(self.clock())
+
+    def succeeded(self, peer: str) -> None:
+        self.failures.pop(peer, None)
+
+    def _recent(self, peer: str) -> deque[float]:
+        now = self.clock()
+        failures = self.failures.setdefault(peer, deque())
+        while failures and now - failures[0] >= self.window_seconds:
+            failures.popleft()
+        return failures
 
 
 class Foreman:
@@ -57,6 +89,7 @@ class Foreman:
         self.repository_root = repository_root.resolve()
         self.state = state
         self.clients: set[Client] = set()
+        self.pairing_limiter = PairingLimiter()
         self.codex = codex_factory(codex_executable, self.codex_event)
         self.server: asyncio.Server | None = None
 
@@ -98,7 +131,9 @@ class Foreman:
     async def client_connected(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        client = Client(writer)
+        peer_info = writer.get_extra_info("peername")
+        peer = str(peer_info[0]) if isinstance(peer_info, tuple) else "unknown"
+        client = Client(writer, peer)
         self.clients.add(client)
         request: dict[str, Any] | None = None
         try:
@@ -143,11 +178,15 @@ class Foreman:
                 },
             }
         if message_type == "pair":
+            if not self.pairing_limiter.allowed(client.peer):
+                raise PermissionError("too many pairing attempts; try again later")
             key = required_text(payload, "pairingKey", 100)
             name = required_text(payload, "deviceName", 80)
             token = self.state.pair(key, name)
             if not token:
+                self.pairing_limiter.failed(client.peer)
                 raise PermissionError("pairing key is invalid or expired")
+            self.pairing_limiter.succeeded(client.peer)
             client.authenticated = True
             return {"deviceToken": token}
         if message_type == "authenticate":

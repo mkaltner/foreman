@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
 from codex import Codex, normalize_item, session, status  # noqa: E402
-from foreman_service import Foreman  # noqa: E402
+from foreman_service import Foreman, PairingLimiter  # noqa: E402
 from state import State  # noqa: E402
 
 
@@ -114,6 +115,7 @@ class StateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
             key, _ = state.create_pairing()
+            self.assertRegex(key, re.compile(r"^\d{6}$"))
             token = state.pair(key, "Phone")
             self.assertIsNotNone(token)
             self.assertIsNone(state.pair(key, "Second phone"))
@@ -122,6 +124,23 @@ class StateTests(unittest.TestCase):
             raw = Path(directory, "state.json").read_text(encoding="utf-8")
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
+
+
+class PairingLimiterTests(unittest.TestCase):
+    def test_limits_each_peer_without_revoking_codes(self) -> None:
+        now = [100.0]
+        limiter = PairingLimiter(clock=lambda: now[0])
+        for _ in range(5):
+            self.assertTrue(limiter.allowed("attacker"))
+            limiter.failed("attacker")
+        self.assertFalse(limiter.allowed("attacker"))
+        self.assertTrue(limiter.allowed("phone"))
+
+        now[0] += 60
+        self.assertTrue(limiter.allowed("attacker"))
+        limiter.failed("attacker")
+        limiter.succeeded("attacker")
+        self.assertTrue(limiter.allowed("attacker"))
 
 
 class MappingTests(unittest.TestCase):
