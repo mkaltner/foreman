@@ -11,7 +11,6 @@ import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,11 +38,67 @@ internal fun monitorOutcome(status: String): MonitorOutcome? =
         else -> null
     }
 
+internal class MonitorLifecycle(
+    private val initialReconnectDelay: Long = 2_000L,
+    private val maximumReconnectDelay: Long = 30_000L,
+) {
+    private val monitored = linkedMapOf<String, Boolean>()
+    private var reconnectDelay = initialReconnectDelay
+
+    @Synchronized
+    fun monitor(sessionId: String, active: Boolean) {
+        monitored[sessionId] = monitored[sessionId] == true || active
+    }
+
+    @Synchronized
+    fun cancel(sessionId: String): Boolean = monitored.remove(sessionId) != null
+
+    @Synchronized
+    fun status(sessionId: String, status: String): MonitorOutcome? {
+        if (!monitored.containsKey(sessionId)) return null
+        if (status == "working") {
+            monitored[sessionId] = true
+            return null
+        }
+        if (monitored[sessionId] != true) return null
+        val outcome = monitorOutcome(status) ?: return null
+        monitored.remove(sessionId)
+        return outcome
+    }
+
+    @Synchronized
+    fun contains(sessionId: String): Boolean = monitored.containsKey(sessionId)
+
+    @Synchronized
+    fun sessionIds(): Set<String> = monitored.keys.toSet()
+
+    @Synchronized
+    fun size(): Int = monitored.size
+
+    @Synchronized
+    fun isEmpty(): Boolean = monitored.isEmpty()
+
+    @Synchronized
+    fun clear() = monitored.clear()
+
+    @Synchronized
+    fun nextReconnectDelay(): Long {
+        val current = reconnectDelay
+        reconnectDelay = (reconnectDelay * 2).coerceAtMost(maximumReconnectDelay)
+        return current
+    }
+
+    @Synchronized
+    fun resetReconnectDelay() {
+        reconnectDelay = initialReconnectDelay
+    }
+}
+
 class TurnMonitorService : Service() {
     private val serviceJob = SupervisorJob()
     private val scope = CoroutineScope(serviceJob + Dispatchers.IO)
     private val connectionMutex = Mutex()
-    private val monitored = ConcurrentHashMap<String, Boolean>()
+    private val lifecycle = MonitorLifecycle()
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
     @Volatile private var connected = false
@@ -64,14 +119,14 @@ class TurnMonitorService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_ALL) {
-            monitored.clear()
+            lifecycle.clear()
             stopMonitoring()
             return START_NOT_STICKY
         }
 
         if (intent?.action == ACTION_CANCEL) {
-            intent.getStringExtra(EXTRA_SESSION_ID)?.let(monitored::remove)
-            if (monitored.isEmpty()) stopMonitoring() else showForeground(reconnecting = false)
+            intent.getStringExtra(EXTRA_SESSION_ID)?.let(lifecycle::cancel)
+            if (lifecycle.isEmpty()) stopMonitoring() else showForeground(reconnecting = false)
             return START_NOT_STICKY
         }
 
@@ -82,7 +137,7 @@ class TurnMonitorService : Service() {
         }
 
         val active = intent.getBooleanExtra(EXTRA_ACTIVE, false)
-        monitored[sessionId] = monitored[sessionId] == true || active
+        lifecycle.monitor(sessionId, active)
         showForeground(reconnecting = false)
         scope.launch {
             runCatching { connectAndSync(setOf(sessionId)) }
@@ -105,14 +160,16 @@ class TurnMonitorService : Service() {
             if (!connected) {
                 val saved = TokenStore(this).load()
                 if (saved == null) {
-                    sessionIds.forEach { finishMonitoring(it, "failed", "Pair Foreman again to monitor turns.") }
+                    sessionIds.forEach {
+                        failMonitoring(it, "Pair Foreman again to monitor turns.")
+                    }
                     return
                 }
                 client.authenticate(saved.host, saved.token)
                 connected = true
             }
 
-            sessionIds.filter { monitored.containsKey(it) }.forEach { sessionId ->
+            sessionIds.filter(lifecycle::contains).forEach { sessionId ->
                 client.request(
                     "session.subscribe",
                     buildJsonObject { put("sessionId", sessionId) },
@@ -124,61 +181,57 @@ class TurnMonitorService : Service() {
                     )
                 val session = response.payload["session"]?.jsonObject ?: return@forEach
                 val status = session["status"]?.jsonPrimitive?.content ?: return@forEach
-                if (status == "working") monitored[sessionId] = true
-                if (monitored[sessionId] == true && monitorOutcome(status) != null) {
-                    finishMonitoring(sessionId, status)
-                }
+                lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
             }
-            if (monitored.isNotEmpty()) showForeground(reconnecting = false)
+            lifecycle.resetReconnectDelay()
+            if (!lifecycle.isEmpty()) showForeground(reconnecting = false)
         }
     }
 
     private fun handleEvent(message: WireMessage) {
         if (message.type != "session.event") return
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
-        if (!monitored.containsKey(sessionId)) return
+        if (!lifecycle.contains(sessionId)) return
         val event = message.eventObject()
         if (event["kind"]?.jsonPrimitive?.content != "status") return
         val status = event["status"]?.jsonPrimitive?.content ?: return
-        if (status == "working") monitored[sessionId] = true
-        if (monitored[sessionId] == true && monitorOutcome(status) != null) {
-            finishMonitoring(sessionId, status)
-        }
+        lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
     }
 
     @Synchronized
     private fun scheduleReconnect() {
-        if (monitored.isEmpty() || reconnectJob?.isActive == true) return
+        if (lifecycle.isEmpty() || reconnectJob?.isActive == true) return
         reconnectJob =
             scope.launch {
-                var retryDelay = 2_000L
-                while (isActive && monitored.isNotEmpty()) {
+                while (isActive && !lifecycle.isEmpty()) {
                     showForeground(reconnecting = true)
-                    delay(retryDelay)
+                    delay(lifecycle.nextReconnectDelay())
                     val restored = runCatching {
                         connected = false
-                        connectAndSync(monitored.keys.toSet())
+                        connectAndSync(lifecycle.sessionIds())
                     }.isSuccess
                     if (restored) return@launch
-                    retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
                 }
             }
     }
 
-    private fun finishMonitoring(sessionId: String, status: String, detail: String? = null) {
-        monitored.remove(sessionId) ?: return
-        val outcome = monitorOutcome(status) ?: return
+    private fun finishMonitoring(sessionId: String, outcome: MonitorOutcome, detail: String? = null) {
         val notification = resultNotification(sessionId, outcome.copy(detail = detail ?: outcome.detail))
         notificationManager.notify(resultNotificationId(sessionId), notification)
-        if (monitored.isEmpty()) {
+        if (lifecycle.isEmpty()) {
             stopMonitoring()
         } else {
             showForeground(reconnecting = false)
         }
     }
 
+    private fun failMonitoring(sessionId: String, detail: String) {
+        if (!lifecycle.cancel(sessionId)) return
+        finishMonitoring(sessionId, requireNotNull(monitorOutcome("failed")), detail)
+    }
+
     private fun showForeground(reconnecting: Boolean) {
-        val count = monitored.size
+        val count = lifecycle.size()
         if (count == 0) return
         val text =
             if (reconnecting) {
