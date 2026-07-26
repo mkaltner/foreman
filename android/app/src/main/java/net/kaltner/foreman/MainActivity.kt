@@ -86,6 +86,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.WindowCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
@@ -136,6 +137,7 @@ class MainActivity : ComponentActivity() {
     private val foremanViewModel: ForemanViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {

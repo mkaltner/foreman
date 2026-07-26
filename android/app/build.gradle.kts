@@ -60,6 +60,7 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.core:core-splashscreen:1.2.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0")
     implementation("androidx.compose.material3:material3")

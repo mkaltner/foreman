@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Foreman" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Foreman" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#6C2BD9</item>
+        <item name="android:colorAccent">#CBB4FF</item>
         <item name="android:windowBackground">@color/app_background</item>
     </style>
 
@@ -10,6 +10,6 @@
         <item name="windowSplashScreenBackground">@color/app_background</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/foreman_logo</item>
         <item name="postSplashScreenTheme">@style/Theme.Foreman</item>
-        <item name="isLightTheme">true</item>
+        <item name="isLightTheme">false</item>
     </style>
 </resources>
