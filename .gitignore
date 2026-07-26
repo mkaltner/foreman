@@ -1,0 +1,86 @@
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+*~
+.idea/
+*.iml
+.vscode/
+
+# Python validation tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node and TypeScript
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+coverage/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Gradle and Android
+.gradle/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Runtime databases and state
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.wal
+*.shm
+/runtime/
+/state/
+
+# Environment, credentials, signing, and local endpoints
+.env
+.env.*
+!.env.example
+!.env.schema
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+google-services.json
+service-account*.json
+credentials*.json
+secrets*.json
+local-endpoint.*
+endpoint.local.*
+
+# Diagnostics, temporary analysis, and generated release artifacts
+diagnostics-exports/
+*.diagnostics.zip
+tmp/
+temp/
+out/
+artifacts/
+*.apk
+*.aab
+*.aar
+
+# Planned migration source, normalized fixtures, and protocol schemas are
+# normative repository content and are intentionally not ignored.

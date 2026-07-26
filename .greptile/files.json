@@ -1,0 +1,32 @@
+{
+  "files": [
+    {
+      "path": "spec.md",
+      "description": "Authoritative product and functional specification."
+    },
+    {
+      "path": "requirements.md",
+      "description": "Requirements and acceptance criteria."
+    },
+    {
+      "path": "planning/architecture.md",
+      "description": "Settled system boundaries and component ownership."
+    },
+    {
+      "path": "planning/task-index.md",
+      "description": "Authoritative numbered implementation task definitions."
+    },
+    {
+      "path": "planning/persistence-plan.md",
+      "description": "SQLite durability, transaction, recovery, and ownership rules."
+    },
+    {
+      "path": "planning/security-plan.md",
+      "description": "Credential, secret, redaction, and trust-boundary requirements."
+    },
+    {
+      "path": "docs/adr/0002-phase-one-persistence-boundaries.md",
+      "description": "Settled Phase 1 persistence and authority decisions."
+    }
+  ]
+}
