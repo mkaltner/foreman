@@ -2274,6 +2274,10 @@ private fun ComposerRouteRow(
             TextButton(
                 onClick = showAccessLevels,
                 enabled = enabled && accessLevels.isNotEmpty(),
+                colors =
+                    ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
                 contentPadding =
                     androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
@@ -2287,12 +2291,6 @@ private fun ComposerRouteRow(
                     selectedAccessLevel?.displayName ?: accessLevelId ?: "Access",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color =
-                        if (accessLevelId == "full") {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            Color.Unspecified
-                        },
                 )
             }
         }
@@ -2300,6 +2298,10 @@ private fun ComposerRouteRow(
             TextButton(
                 onClick = showModels,
                 enabled = enabled && models.isNotEmpty(),
+                colors =
+                    ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
                 contentPadding =
                     androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
@@ -2315,6 +2317,10 @@ private fun ComposerRouteRow(
                 TextButton(
                     onClick = showEfforts,
                     enabled = enabled && !selectedModel?.reasoningEfforts.isNullOrEmpty(),
+                    colors =
+                        ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
                     contentPadding =
                         androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                 ) {
