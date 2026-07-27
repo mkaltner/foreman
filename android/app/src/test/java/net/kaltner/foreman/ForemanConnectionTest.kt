@@ -57,9 +57,19 @@ class ForemanConnectionTest {
             val dark = foremanColorScheme(accent, darkTheme = true)
 
             assertEquals(palette.light.primary, light.primary)
-            assertEquals(palette.light.container, light.secondaryContainer)
+            assertEquals(
+                mutedAccentContainer(palette.light, darkTheme = false),
+                light.secondaryContainer,
+            )
+            assertEquals(light.onSurface, light.onSecondaryContainer)
             assertEquals(palette.dark.primary, dark.primary)
-            assertEquals(palette.dark.container, dark.secondaryContainer)
+            assertEquals(
+                mutedAccentContainer(palette.dark, darkTheme = true),
+                dark.secondaryContainer,
+            )
+            assertEquals(dark.onSurface, dark.onSecondaryContainer)
+            assertFalse(light.primaryContainer == light.secondaryContainer)
+            assertFalse(dark.primaryContainer == dark.secondaryContainer)
         }
     }
 

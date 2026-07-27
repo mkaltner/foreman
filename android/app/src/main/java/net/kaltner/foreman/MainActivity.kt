@@ -98,6 +98,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -280,6 +281,11 @@ internal fun accentPalette(color: AccentColor): AccentPalette =
             )
     }
 
+internal fun mutedAccentContainer(tones: AccentTones, darkTheme: Boolean): Color =
+    tones.primary
+        .copy(alpha = if (darkTheme) 0.14f else 0.10f)
+        .compositeOver(if (darkTheme) Color(0xFF3D3A43) else Color(0xFFE7E0EB))
+
 internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
     accentPalette(accentColor).let { palette ->
         val tones = if (darkTheme) palette.dark else palette.light
@@ -290,8 +296,8 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 primaryContainer = tones.container,
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
-                secondaryContainer = tones.container,
-                onSecondaryContainer = tones.onContainer,
+                secondaryContainer = mutedAccentContainer(tones, darkTheme = true),
+                onSecondaryContainer = Color(0xFFF6F7F9),
                 background = Color(0xFF111827),
                 surface = Color(0xFF182235),
                 surfaceVariant = Color(0xFF374151),
@@ -305,8 +311,8 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 primaryContainer = tones.container,
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
-                secondaryContainer = tones.container,
-                onSecondaryContainer = tones.onContainer,
+                secondaryContainer = mutedAccentContainer(tones, darkTheme = false),
+                onSecondaryContainer = Color(0xFF111827),
                 background = Color(0xFFF6F7F9),
                 surface = Color.White,
                 surfaceVariant = Color(0xFFE7E0EB),
