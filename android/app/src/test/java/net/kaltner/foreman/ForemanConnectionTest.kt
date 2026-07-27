@@ -41,6 +41,29 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun accentPresetsAreDistinctAndProvideLightAndDarkRoles() {
+        assertEquals(AccentColor.Purple, parseAccentColor(null))
+        assertEquals(AccentColor.Purple, parseAccentColor("unsupported"))
+        assertEquals(AccentColor.Teal, parseAccentColor("Teal"))
+
+        val accents = AccentColor.values().toList()
+        assertEquals(
+            accents.size,
+            accents.map { foremanColorScheme(it, darkTheme = false).primary }.distinct().size,
+        )
+        accents.forEach { accent ->
+            val palette = accentPalette(accent)
+            val light = foremanColorScheme(accent, darkTheme = false)
+            val dark = foremanColorScheme(accent, darkTheme = true)
+
+            assertEquals(palette.light.primary, light.primary)
+            assertEquals(palette.light.container, light.secondaryContainer)
+            assertEquals(palette.dark.primary, dark.primary)
+            assertEquals(palette.dark.container, dark.secondaryContainer)
+        }
+    }
+
+    @Test
     fun framingRoundTripsAndRejectsOversizeInput() {
         assertEquals(16 * 1024 * 1024, MAX_FRAME_BYTES)
         val output = ByteArrayOutputStream()

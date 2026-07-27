@@ -17,6 +17,7 @@ import androidx.activity.viewModels
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +43,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -130,33 +132,188 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-private val LightColors =
-    lightColorScheme(
-        primary = Color(0xFF6C2BD9),
-        onPrimary = Color.White,
-        primaryContainer = Color(0xFFE9DDFF),
-        onPrimaryContainer = Color(0xFF22005D),
-        secondary = Color(0xFF4A18A8),
-        background = Color(0xFFF6F7F9),
-        surface = Color.White,
-        surfaceVariant = Color(0xFFE7E0EB),
-        onBackground = Color(0xFF111827),
-        onSurface = Color(0xFF111827),
-    )
+internal data class AccentTones(
+    val primary: Color,
+    val onPrimary: Color,
+    val container: Color,
+    val onContainer: Color,
+    val secondary: Color,
+)
 
-private val DarkColors =
-    darkColorScheme(
-        primary = Color(0xFFCBB4FF),
-        onPrimary = Color(0xFF381E72),
-        primaryContainer = Color(0xFF4A18A8),
-        onPrimaryContainer = Color(0xFFEADDFF),
-        secondary = Color(0xFF9D76F2),
-        background = Color(0xFF111827),
-        surface = Color(0xFF182235),
-        surfaceVariant = Color(0xFF374151),
-        onBackground = Color(0xFFF6F7F9),
-        onSurface = Color(0xFFF6F7F9),
-    )
+internal data class AccentPalette(val light: AccentTones, val dark: AccentTones)
+
+internal fun accentPalette(color: AccentColor): AccentPalette =
+    when (color) {
+        AccentColor.Purple ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFF6C2BD9),
+                        Color.White,
+                        Color(0xFFE9DDFF),
+                        Color(0xFF22005D),
+                        Color(0xFF4A18A8),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFFCBB4FF),
+                        Color(0xFF381E72),
+                        Color(0xFF4A18A8),
+                        Color(0xFFEADDFF),
+                        Color(0xFF9D76F2),
+                    ),
+            )
+        AccentColor.Blue ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFF2563EB),
+                        Color.White,
+                        Color(0xFFDBEAFE),
+                        Color(0xFF172554),
+                        Color(0xFF1D4ED8),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFF93C5FD),
+                        Color(0xFF1E3A8A),
+                        Color(0xFF1E40AF),
+                        Color(0xFFDBEAFE),
+                        Color(0xFF60A5FA),
+                    ),
+            )
+        AccentColor.Teal ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFF0F766E),
+                        Color.White,
+                        Color(0xFFCCFBF1),
+                        Color(0xFF042F2E),
+                        Color(0xFF0D9488),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFF5EEAD4),
+                        Color(0xFF134E4A),
+                        Color(0xFF115E59),
+                        Color(0xFFCCFBF1),
+                        Color(0xFF2DD4BF),
+                    ),
+            )
+        AccentColor.Green ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFF15803D),
+                        Color.White,
+                        Color(0xFFDCFCE7),
+                        Color(0xFF052E16),
+                        Color(0xFF166534),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFF86EFAC),
+                        Color(0xFF14532D),
+                        Color(0xFF166534),
+                        Color(0xFFDCFCE7),
+                        Color(0xFF4ADE80),
+                    ),
+            )
+        AccentColor.Orange ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFFC2410C),
+                        Color.White,
+                        Color(0xFFFFEDD5),
+                        Color(0xFF431407),
+                        Color(0xFFEA580C),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFFFDBA74),
+                        Color(0xFF7C2D12),
+                        Color(0xFF9A3412),
+                        Color(0xFFFFEDD5),
+                        Color(0xFFFB923C),
+                    ),
+            )
+        AccentColor.Red ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFFB91C1C),
+                        Color.White,
+                        Color(0xFFFEE2E2),
+                        Color(0xFF450A0A),
+                        Color(0xFFDC2626),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFFFCA5A5),
+                        Color(0xFF7F1D1D),
+                        Color(0xFF991B1B),
+                        Color(0xFFFEE2E2),
+                        Color(0xFFF87171),
+                    ),
+            )
+        AccentColor.Pink ->
+            AccentPalette(
+                light =
+                    AccentTones(
+                        Color(0xFFBE185D),
+                        Color.White,
+                        Color(0xFFFCE7F3),
+                        Color(0xFF500724),
+                        Color(0xFFDB2777),
+                    ),
+                dark =
+                    AccentTones(
+                        Color(0xFFF9A8D4),
+                        Color(0xFF831843),
+                        Color(0xFF9D174D),
+                        Color(0xFFFCE7F3),
+                        Color(0xFFF472B6),
+                    ),
+            )
+    }
+
+internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
+    accentPalette(accentColor).let { palette ->
+        val tones = if (darkTheme) palette.dark else palette.light
+        if (darkTheme) {
+            darkColorScheme(
+                primary = tones.primary,
+                onPrimary = tones.onPrimary,
+                primaryContainer = tones.container,
+                onPrimaryContainer = tones.onContainer,
+                secondary = tones.secondary,
+                secondaryContainer = tones.container,
+                onSecondaryContainer = tones.onContainer,
+                background = Color(0xFF111827),
+                surface = Color(0xFF182235),
+                surfaceVariant = Color(0xFF374151),
+                onBackground = Color(0xFFF6F7F9),
+                onSurface = Color(0xFFF6F7F9),
+            )
+        } else {
+            lightColorScheme(
+                primary = tones.primary,
+                onPrimary = tones.onPrimary,
+                primaryContainer = tones.container,
+                onPrimaryContainer = tones.onContainer,
+                secondary = tones.secondary,
+                secondaryContainer = tones.container,
+                onSecondaryContainer = tones.onContainer,
+                background = Color(0xFFF6F7F9),
+                surface = Color.White,
+                surfaceVariant = Color(0xFFE7E0EB),
+                onBackground = Color(0xFF111827),
+                onSurface = Color(0xFF111827),
+            )
+        }
+    }
 
 class MainActivity : ComponentActivity() {
     private val foremanViewModel: ForemanViewModel by viewModels()
@@ -395,6 +552,7 @@ internal data class UiState(
     val selected: SessionSummary? = null,
     val showNewSession: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.System,
+    val accentColor: AccentColor = AccentColor.Purple,
     val followNewMessages: Boolean = true,
     val monitorActiveTurns: Boolean = false,
     val pendingSessionAction: PendingSessionAction? = null,
@@ -413,6 +571,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         MutableStateFlow(
             UiState(
                 themeMode = savedPreferences.themeMode,
+                accentColor = savedPreferences.accentColor,
                 followNewMessages = savedPreferences.followNewMessages,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
                 composerAccessLevel = savedPreferences.accessLevel,
@@ -498,6 +657,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setThemeMode(mode: ThemeMode) {
         preferences.setThemeMode(mode)
         state.update { it.copy(themeMode = mode) }
+    }
+
+    fun setAccentColor(color: AccentColor) {
+        preferences.setAccentColor(color)
+        state.update { it.copy(accentColor = color) }
     }
 
     fun setFollowNewMessages(enabled: Boolean) {
@@ -1171,7 +1335,7 @@ private fun ForemanApp(
             }
         }
     }
-    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors) {
+    MaterialTheme(colorScheme = foremanColorScheme(state.accentColor, darkTheme)) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
@@ -2128,6 +2292,43 @@ private fun UiSettingsMenu(
                     },
                     onClick = {
                         viewModel.setThemeMode(mode)
+                        expanded = false
+                    },
+                )
+            }
+            Text(
+                "Accent color",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            AccentColor.values().forEach { color ->
+                val selected = state.accentColor == color
+                DropdownMenuItem(
+                    text = { Text(color.name) },
+                    leadingIcon = {
+                        Surface(
+                            modifier = Modifier.size(20.dp),
+                            shape = CircleShape,
+                            color = accentPalette(color).light.primary,
+                            border =
+                                BorderStroke(
+                                    if (selected) 2.dp else 1.dp,
+                                    if (selected) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                ),
+                        ) {}
+                    },
+                    trailingIcon = {
+                        if (selected) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected")
+                        }
+                    },
+                    onClick = {
+                        viewModel.setAccentColor(color)
                         expanded = false
                     },
                 )
