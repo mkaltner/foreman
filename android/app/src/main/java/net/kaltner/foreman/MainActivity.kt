@@ -1998,8 +1998,8 @@ private fun PromptBox(
         shadowElevation = 6.dp,
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp).padding(bottom = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             ComposerRouteRow(
                 accessLevels = accessLevels,
@@ -2063,8 +2063,8 @@ private fun PromptBox(
                         enabled &&
                             !processing &&
                             (text.isNotBlank() || images.isNotEmpty()),
-                    modifier = Modifier.height(56.dp),
-                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(16.dp),
                     contentPadding =
                         androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
                 ) {
@@ -2231,9 +2231,9 @@ private fun CompactMessageField(
                 contentPadding =
                     OutlinedTextFieldDefaults.contentPadding(
                         start = 4.dp,
-                        top = 4.dp,
+                        top = 0.dp,
                         end = 12.dp,
-                        bottom = 4.dp,
+                        bottom = 0.dp,
                     ),
                 container = {
                     OutlinedTextFieldDefaults.Container(
@@ -2276,7 +2276,12 @@ private fun ComposerRouteRow(
                 enabled = enabled && accessLevels.isNotEmpty(),
                 colors =
                     ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        contentColor =
+                            if (accessLevelId == "full") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                     ),
                 contentPadding =
                     androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
