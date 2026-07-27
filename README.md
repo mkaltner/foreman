@@ -26,6 +26,21 @@ The current prototype can:
   when they finish or need attention;
 - reconnect by reloading Codex-authoritative state.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/pairing.png" alt="Pair Foreman with a Linux host" width="260"></td>
+    <td align="center"><img src="docs/screenshots/session-list.png" alt="Browse active and recent Codex sessions" width="260"></td>
+    <td align="center"><img src="docs/screenshots/live-session.png" alt="Monitor a working Codex session" width="260"></td>
+  </tr>
+  <tr>
+    <td align="center">Pair with a Linux host</td>
+    <td align="center">Browse live sessions</td>
+    <td align="center">Monitor work in progress</td>
+  </tr>
+</table>
+
 It does not expose a shell, HTTP server, Git writes, approvals, or structured
 input. The TCP connection is authenticated but not encrypted; use it only on a
 trusted private LAN or through a secure tunnel.
