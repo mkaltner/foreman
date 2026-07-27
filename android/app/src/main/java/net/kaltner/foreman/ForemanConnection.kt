@@ -29,7 +29,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 const val DEFAULT_PORT = 8765
-const val MAX_FRAME_BYTES = 1024 * 1024
+const val MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 data class HostPort(val host: String, val port: Int)
 
@@ -109,6 +109,12 @@ data class RepositoryInfo(
 )
 
 @Serializable
+data class ImagePayload(
+    val mimeType: String,
+    val data: String,
+)
+
+@Serializable
 data class ConversationItem(
     val id: String,
     val kind: String,
@@ -117,6 +123,8 @@ data class ConversationItem(
     val status: String = "",
     val exitCode: Int? = null,
     val turnId: String? = null,
+    val images: List<ImagePayload> = emptyList(),
+    val imageCount: Int = 0,
 )
 
 @Serializable
@@ -131,6 +139,28 @@ data class SessionSummary(
     val activeTurnId: String? = null,
     val activityLabel: String = "",
     val activityText: String = "",
+    val model: String? = null,
+    val reasoningEffort: String? = null,
+    val accessLevel: String? = null,
+)
+
+@Serializable
+data class AccessLevelInfo(
+    val id: String,
+    val displayName: String,
+    val description: String = "",
+)
+
+@Serializable
+data class ModelInfo(
+    val id: String,
+    val displayName: String,
+    val description: String = "",
+    val reasoningEfforts: List<String> = emptyList(),
+    val defaultReasoningEffort: String? = null,
+    val visible: Boolean = true,
+    val isDefault: Boolean = false,
+    val inputModalities: List<String> = emptyList(),
 )
 
 internal fun liveActivityLabel(session: SessionSummary): String {

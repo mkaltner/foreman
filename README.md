@@ -17,6 +17,8 @@ The current prototype can:
 - show user/assistant messages and compact command/tool activity;
 - render common Markdown, including headings, lists, emphasis, links, and code;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
+- choose Codex access, installed model, and supported reasoning effort per turn;
+- attach up to four processed images to a prompt or steer;
 - refresh the session list with a pull gesture, and archive or permanently delete
   inactive sessions with confirmation;
 - stream assistant deltas and terminal status;
@@ -39,7 +41,8 @@ trusted private LAN or through a secure tunnel.
 ## Linux
 
 Requirements: Linux with user systemd, Python 3.10+, Git, and an authenticated
-`codex` CLI.
+`codex` CLI. The payload includes its pinned `websockets` dependency, so the
+installer doesn't need pip or Python venv support.
 
 ```sh
 ./install.sh
@@ -67,12 +70,22 @@ service, so it cannot discover turns started elsewhere after Foreman is fully
 closed. Notification text intentionally omits session titles and transcript
 content so private prompts do not appear on the lock screen.
 
-Live status is scoped to the Codex app-server process Foreman runs. If a turn is
-started in Codex Desktop, another CLI, or another app-server process, Foreman
-cannot receive that process's live event stream. Pull to refresh to reconcile
-status and transcript data after Codex persists it. If another client replaces
-an active turn between refresh and steering, the Linux service reconciles the
-current turn before sending rather than exposing a stale-turn error.
+Foreman attaches to Codex's shared Unix-socket app-server at
+`$CODEX_HOME/app-server-control/app-server-control.sock`. That Desktop socket is
+strictly attach-only: Foreman never removes, replaces, or launches a process on
+it. If attachment is unavailable, Foreman launches an independent owned runtime
+at `~/.local/state/foreman/codex-app-server.sock` and reports
+`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`. Set `FOREMAN_CODEX_SOCKET` to override
+the attach target. Android still connects only to Foreman's authenticated TCP
+service.
+
+The compact row above the composer selects access level, model, and reasoning
+effort. Access choices use Codex's installed permission profiles: ask the user,
+use automatic approval review, or grant full access. Photo Picker images are
+resized to a maximum 2048-pixel edge; each message accepts four images and at
+most 8 MiB of encoded image data. Foreman detects approval/input waits but
+cannot answer them yet; manual approvals remain available through another
+client on the shared thread.
 
 For local development, the installed-Codex proof is:
 

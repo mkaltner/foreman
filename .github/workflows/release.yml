@@ -84,7 +84,7 @@ jobs:
           test -x "$apksigner_path"
           "$apksigner_path" verify --verbose "$apk"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
-          tar -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" install.sh linux docs README.md
+          tar -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" install.sh requirements.txt linux scripts/vendor_python_dependencies.sh docs README.md
           (cd dist && sha256sum foreman-* > SHA256SUMS)
       - name: Create GitHub release
         env:

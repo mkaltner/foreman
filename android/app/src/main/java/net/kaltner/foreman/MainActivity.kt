@@ -5,13 +5,16 @@ import android.app.Application
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -33,6 +36,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -44,10 +48,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -81,10 +89,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -109,6 +121,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
@@ -206,6 +219,9 @@ internal data class PendingSessionAction(
     val action: SessionAction,
 )
 
+internal fun sessionDisplayTitle(session: SessionSummary?): String =
+    session?.title?.ifBlank { "Untitled session" } ?: "Session"
+
 internal fun sessionCanBeManaged(status: String): Boolean =
     status != "working" && status != "waiting"
 
@@ -220,6 +236,80 @@ internal fun sessionActionCanBeConfirmed(
 
 internal fun eventShowsWorkingActivity(kind: String): Boolean =
     kind == "assistant.delta" || kind == "item" || kind == "activity"
+
+internal fun compatibleEffort(model: ModelInfo, current: String?): String? =
+    current?.takeIf(model.reasoningEfforts::contains)
+        ?: model.defaultReasoningEffort?.takeIf(model.reasoningEfforts::contains)
+        ?: model.reasoningEfforts.firstOrNull()
+
+internal fun turnPayload(
+    session: SessionSummary,
+    text: String,
+    images: List<ImagePayload>,
+    steering: Boolean,
+    accessLevel: String?,
+    model: String?,
+    effort: String?,
+) = buildJsonObject {
+    put("sessionId", session.id)
+    put("text", text.trim())
+    if (images.isNotEmpty()) {
+        put(
+            "images",
+            buildJsonArray {
+                images.forEach { image ->
+                    add(
+                        buildJsonObject {
+                            put("mimeType", image.mimeType)
+                            put("data", image.data)
+                        },
+                    )
+                }
+            },
+        )
+    }
+    if (steering) {
+        put("turnId", requireNotNull(session.activeTurnId))
+    } else {
+        accessLevel?.let { put("accessLevel", it) }
+        model?.let { put("model", it) }
+        effort?.let { put("reasoningEffort", it) }
+    }
+}
+
+internal fun UiState.withAccessLevelsAndSessionAccess(
+    available: List<AccessLevelInfo>,
+    session: SessionSummary?,
+): UiState {
+    val requested = session?.accessLevel ?: composerAccessLevel
+    val selected =
+        available.firstOrNull { it.id == requested }
+            ?: available.firstOrNull { it.id == "ask" }
+            ?: available.firstOrNull()
+    return copy(
+        accessLevels = available,
+        composerAccessLevel = selected?.id ?: requested,
+    )
+}
+
+internal fun UiState.withModelsAndSessionRoute(
+    available: List<ModelInfo>,
+    session: SessionSummary?,
+): UiState {
+    val requestedModel = session?.model ?: composerModel
+    val selectedModel =
+        available.firstOrNull { it.id == requestedModel }
+            ?: available.firstOrNull { it.isDefault }
+            ?: available.firstOrNull()
+    return copy(
+        models = available,
+        composerModel = selectedModel?.id ?: requestedModel,
+        composerEffort =
+            selectedModel?.let {
+                compatibleEffort(it, session?.reasoningEffort ?: composerEffort)
+            } ?: session?.reasoningEffort ?: composerEffort,
+    )
+}
 
 internal fun UiState.withSynchronizedSessions(
     sessions: List<SessionSummary>,
@@ -261,6 +351,11 @@ internal data class UiState(
     val monitorActiveTurns: Boolean = false,
     val pendingSessionAction: PendingSessionAction? = null,
     val capabilities: Set<String> = emptySet(),
+    val accessLevels: List<AccessLevelInfo> = emptyList(),
+    val composerAccessLevel: String? = null,
+    val models: List<ModelInfo> = emptyList(),
+    val composerModel: String? = null,
+    val composerEffort: String? = null,
 )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -272,6 +367,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 themeMode = savedPreferences.themeMode,
                 followNewMessages = savedPreferences.followNewMessages,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
+                composerAccessLevel = savedPreferences.accessLevel,
+                composerModel = savedPreferences.model,
+                composerEffort = savedPreferences.reasoningEffort,
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
@@ -310,6 +408,36 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+
+    fun setComposerModel(id: String) {
+        state.update { current ->
+            val model = current.models.firstOrNull { it.id == id } ?: return@update current
+            val effort = compatibleEffort(model, current.composerEffort)
+            preferences.setModelRoute(model.id, effort)
+            current.copy(composerModel = model.id, composerEffort = effort)
+        }
+    }
+
+    fun setComposerAccessLevel(id: String) {
+        state.update { current ->
+            if (current.accessLevels.none { it.id == id }) return@update current
+            preferences.setAccessLevel(id)
+            current.copy(composerAccessLevel = id)
+        }
+    }
+
+    fun setComposerEffort(effort: String) {
+        state.update { current ->
+            val model =
+                current.models.firstOrNull { it.id == current.composerModel }
+                    ?: return@update current
+            if (effort !in model.reasoningEfforts) return@update current
+            preferences.setModelRoute(model.id, effort)
+            current.copy(composerEffort = effort)
+        }
+    }
+
+    fun composerError(message: String) = state.update { it.copy(error = message) }
 
     fun setThemeMode(mode: ThemeMode) {
         preferences.setThemeMode(mode)
@@ -437,7 +565,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             state.update { it.copy(screen = Screen.Detail, loading = true, error = null) }
             runCatching {
                 val selected = readSession(id)
-                state.update { it.copy(selected = selected, loading = false) }
+                state.update {
+                    it.copy(selected = selected, loading = false)
+                        .withModelsAndSessionRoute(it.models, selected)
+                        .withAccessLevelsAndSessionAccess(it.accessLevels, selected)
+                }
                 monitorIfActive(selected)
             }.onFailure(::fail)
         }
@@ -445,26 +577,54 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private suspend fun synchronizeSessions(selectedSessionId: String? = null) {
         state.update { it.copy(loading = true, error = null) }
-        val (sessions, repositories) =
+        val (sessions, repositories, catalogs) =
             coroutineScope {
                 val sessionsRequest = async { client.request("session.list") }
                 val repositoriesRequest = async { client.request("repository.list") }
+                val modelsRequest =
+                    async {
+                        if ("models" in client.capabilities) {
+                            client.request("model.list")
+                        } else {
+                            null
+                        }
+                    }
+                val accessRequest =
+                    async {
+                        if ("access" in client.capabilities) {
+                            client.request("access.list")
+                        } else {
+                            null
+                        }
+                    }
                 val sessions =
                     sessionsRequest.await().payload.getValue("sessions").jsonArray
                         .map { json.decodeFromJsonElement<SessionSummary>(it) }
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
-                sessions to repositories
+                val models =
+                    modelsRequest.await()?.payload?.get("models")?.jsonArray
+                        ?.map { json.decodeFromJsonElement<ModelInfo>(it) }
+                        ?.filter { it.visible }
+                        ?: emptyList()
+                val accessLevels =
+                    accessRequest.await()?.payload?.get("levels")?.jsonArray
+                        ?.map { json.decodeFromJsonElement<AccessLevelInfo>(it) }
+                        ?: emptyList()
+                Triple(sessions, repositories, models to accessLevels)
             }
+        val (models, accessLevels) = catalogs
         val selected = selectedSessionId?.let { readSession(it) }
         state.update {
             it.withSynchronizedSessions(
-                sessions = sessions,
-                repositories = repositories,
-                selectedSessionId = selectedSessionId,
-                selectedSession = selected,
-            )
+                    sessions = sessions,
+                    repositories = repositories,
+                    selectedSessionId = selectedSessionId,
+                    selectedSession = selected,
+                )
+                .withModelsAndSessionRoute(models, selected)
+                .withAccessLevelsAndSessionAccess(accessLevels, selected)
         }
         selected?.let(::monitorIfActive)
     }
@@ -577,16 +737,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     json.decodeFromJsonElement<SessionSummary>(
                         response.payload.getValue("session"),
                     )
-                state.update { it.copy(submitting = false) }
-                openSession(created.id)
+                state.update {
+                    it.copy(
+                        submitting = false,
+                        loading = false,
+                        selected = created,
+                        sessions =
+                            listOf(created) +
+                                it.sessions.filterNot { session -> session.id == created.id },
+                        screen = Screen.Detail,
+                    )
+                }
             }.onFailure(::fail)
         }
     }
 
-    fun send(text: String, accepted: () -> Unit) {
+    fun send(text: String, images: List<ImagePayload>, accepted: () -> Unit) {
         val current = state.value
         val selected = current.selected ?: return
-        if (current.submitting || text.isBlank()) return
+        if (current.submitting || (text.isBlank() && images.isEmpty())) return
         val steering = selected.status == "working" && selected.activeTurnId != null
         val preparedMonitor = prepareMonitor(selected, active = steering)
         viewModelScope.launch {
@@ -595,11 +764,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val type = if (steering) "turn.steer" else "turn.prompt"
                 val response = client.request(
                     type,
-                    buildJsonObject {
-                        put("sessionId", selected.id)
-                        put("text", text.trim())
-                        if (steering) put("turnId", requireNotNull(selected.activeTurnId))
-                    },
+                    turnPayload(
+                        selected,
+                        text,
+                        images,
+                        steering,
+                        current.composerAccessLevel,
+                        current.composerModel,
+                        current.composerEffort,
+                    ),
                 )
                 val turnId = response.payload["turnId"]?.jsonPrimitive?.content
                 var monitored: SessionSummary? = null
@@ -610,6 +783,20 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             activeTurnId = turnId ?: it.selected.activeTurnId,
                             activityLabel = "Thinking",
                             activityText = "",
+                            accessLevel =
+                                if (steering) {
+                                    it.selected.accessLevel
+                                } else {
+                                    current.composerAccessLevel
+                                },
+                            model =
+                                if (steering) it.selected.model else current.composerModel,
+                            reasoningEffort =
+                                if (steering) {
+                                    it.selected.reasoningEffort
+                                } else {
+                                    current.composerEffort
+                                },
                         )
                     monitored = updated
                     it.copy(
@@ -666,7 +853,17 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 return@update current.copy(
                     sessions =
                         current.sessions.map {
-                            if (it.id == sessionId && inferredStatus != null) {
+                            if (it.id == sessionId && kind == "route") {
+                                it.copy(
+                                    accessLevel =
+                                        event["accessLevel"]?.jsonPrimitive?.content
+                                            ?: it.accessLevel,
+                                    model = event["model"]?.jsonPrimitive?.content ?: it.model,
+                                    reasoningEffort =
+                                        event["reasoningEffort"]?.jsonPrimitive?.content
+                                            ?: it.reasoningEffort,
+                                )
+                            } else if (it.id == sessionId && inferredStatus != null) {
                                 it.copy(
                                     status = inferredStatus,
                                     attention = inferredStatus == "waiting",
@@ -798,6 +995,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                 activityText =
                                     if (newStatus == "working") selected.activityText else "",
                             ),
+                    )
+                }
+                "route" -> {
+                    val accessLevel =
+                        event["accessLevel"]?.jsonPrimitive?.content ?: selected.accessLevel
+                    val model = event["model"]?.jsonPrimitive?.content ?: selected.model
+                    val reasoningEffort =
+                        event["reasoningEffort"]?.jsonPrimitive?.content
+                            ?: selected.reasoningEffort
+                    current.copy(
+                        selected =
+                            selected.copy(
+                                accessLevel = accessLevel,
+                                model = model,
+                                reasoningEffort = reasoningEffort,
+                            ),
+                        composerAccessLevel = accessLevel,
+                        composerModel = model,
+                        composerEffort = reasoningEffort,
                     )
                 }
                 else -> current
@@ -1110,7 +1326,7 @@ private fun SessionCard(
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    session.title.ifBlank { "Untitled session" },
+                    sessionDisplayTitle(session),
                     modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
@@ -1184,7 +1400,7 @@ private fun SessionDetailScreen(
                 title = {
                     Column {
                         Text(
-                            selected?.repository?.substringAfterLast('/') ?: "Session",
+                            sessionDisplayTitle(selected),
                             fontWeight = FontWeight.Bold,
                         )
                         if (selected != null) {
@@ -1231,6 +1447,15 @@ private fun SessionDetailScreen(
             if (selected != null) PromptBox(
                 working = selected.status == "working",
                 enabled = state.connected && !state.submitting,
+                accessLevels = state.accessLevels,
+                accessLevelId = state.composerAccessLevel,
+                models = state.models,
+                modelId = state.composerModel,
+                effort = state.composerEffort,
+                selectAccessLevel = viewModel::setComposerAccessLevel,
+                selectModel = viewModel::setComposerModel,
+                selectEffort = viewModel::setComposerEffort,
+                showError = viewModel::composerError,
                 send = viewModel::send,
             )
         },
@@ -1315,8 +1540,7 @@ private fun LiveActivityRow(session: SessionSummary) {
 private fun ConversationRow(item: ConversationItem) {
     when (item.kind) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            MarkdownText(
-                text = item.text,
+            Column(
                 modifier =
                     Modifier.fillMaxWidth(0.86f)
                         .background(
@@ -1324,8 +1548,26 @@ private fun ConversationRow(item: ConversationItem) {
                             RoundedCornerShape(16.dp),
                         )
                         .padding(14.dp),
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (item.images.isNotEmpty()) {
+                    ImageThumbnailRow(item.images)
+                }
+                val unavailable = item.imageCount - item.images.size
+                if (unavailable > 0) {
+                    Text(
+                        "$unavailable image${if (unavailable == 1) "" else "s"} unavailable",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                if (item.text.isNotBlank()) {
+                    MarkdownText(
+                        text = item.text,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
         }
         "assistant" -> MarkdownText(
             text = item.text,
@@ -1360,33 +1602,390 @@ private fun ConversationRow(item: ConversationItem) {
 }
 
 @Composable
+private fun ImageThumbnailRow(
+    images: List<ImagePayload>,
+    remove: ((Int) -> Unit)? = null,
+) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        itemsIndexed(images) { index, image ->
+            Box {
+                val bitmap =
+                    remember(image.data) {
+                        runCatching {
+                            Base64.decode(image.data, Base64.DEFAULT).let {
+                                BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap()
+                            }
+                        }.getOrNull()
+                    }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "Attached image",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(84.dp).clip(RoundedCornerShape(10.dp)),
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier.size(84.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("Image", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                remove?.let {
+                    IconButton(
+                        onClick = { it(index) },
+                        modifier =
+                            Modifier.align(Alignment.TopEnd)
+                                .size(28.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                    RoundedCornerShape(14.dp),
+                                ),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Remove image",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun PromptBox(
     working: Boolean,
     enabled: Boolean,
-    send: (String, () -> Unit) -> Unit,
+    accessLevels: List<AccessLevelInfo>,
+    accessLevelId: String?,
+    models: List<ModelInfo>,
+    modelId: String?,
+    effort: String?,
+    selectAccessLevel: (String) -> Unit,
+    selectModel: (String) -> Unit,
+    selectEffort: (String) -> Unit,
+    showError: (String) -> Unit,
+    send: (String, List<ImagePayload>, () -> Unit) -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
+    var images by remember { mutableStateOf(emptyList<ImagePayload>()) }
+    var processing by remember { mutableStateOf(false) }
+    var showAccessLevels by remember { mutableStateOf(false) }
+    var confirmFullAccess by remember { mutableStateOf(false) }
+    var showModels by remember { mutableStateOf(false) }
+    var showEfforts by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val selectedAccessLevel = accessLevels.firstOrNull { it.id == accessLevelId }
+    val selectedModel = models.firstOrNull { it.id == modelId }
+    val imageSupported =
+        selectedModel == null ||
+            selectedModel.inputModalities.isEmpty() ||
+            "image" in selectedModel.inputModalities
+    val picker =
+        androidx.activity.compose.rememberLauncherForActivityResult(
+            ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES_PER_MESSAGE),
+        ) { uris ->
+            if (uris.isEmpty()) return@rememberLauncherForActivityResult
+            scope.launch {
+                processing = true
+                runCatching {
+                    val added = preparePickedImages(context, uris)
+                    val combined = images + added
+                    require(combined.size <= MAX_IMAGES_PER_MESSAGE) {
+                        "Choose at most $MAX_IMAGES_PER_MESSAGE images"
+                    }
+                    require(encodedImageBytes(combined) <= MAX_ENCODED_IMAGE_BYTES) {
+                        "Combined images must be at most 8 MiB"
+                    }
+                    combined
+                }.onSuccess {
+                    images = it
+                }.onFailure {
+                    showError(it.message ?: "The selected image could not be attached")
+                }
+                processing = false
+            }
+        }
     Surface(
         modifier = Modifier.navigationBarsPadding().imePadding(),
         shadowElevation = 6.dp,
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text(if (working) "Steer this turn…" else "Message Foreman…") },
-                modifier = Modifier.weight(1f),
-                maxLines = 5,
-            )
-            Button(
-                onClick = { send(text) { text = "" } },
-                enabled = enabled && text.isNotBlank(),
+            ComposerRouteRow(
+                accessLevels = accessLevels,
+                selectedAccessLevel = selectedAccessLevel,
+                accessLevelId = accessLevelId,
+                models = models,
+                selectedModel = selectedModel,
+                modelId = modelId,
+                effort = effort,
+                enabled = enabled && !working,
+                showAccessLevels = { showAccessLevels = true },
+                showModels = { showModels = true },
+                showEfforts = { showEfforts = true },
+                effortsExpanded = showEfforts,
+                dismissEfforts = { showEfforts = false },
             ) {
-                Text(if (working) "Steer" else "Send")
+                selectEffort(it)
+                showEfforts = false
+            }
+            if (images.isNotEmpty()) {
+                ImageThumbnailRow(images) { index ->
+                    images = images.filterIndexed { itemIndex, _ -> itemIndex != index }
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                IconButton(
+                    onClick = {
+                        picker.launch(
+                            PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                    enabled =
+                        enabled &&
+                            !processing &&
+                            imageSupported &&
+                            images.size < MAX_IMAGES_PER_MESSAGE,
+                ) {
+                    Icon(Icons.Default.AttachFile, contentDescription = "Attach images")
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text(if (working) "Steer this turn…" else "Message Foreman…") },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 5,
+                )
+                Button(
+                    onClick = {
+                        send(text, images) {
+                            text = ""
+                            images = emptyList()
+                        }
+                    },
+                    enabled =
+                        enabled &&
+                            !processing &&
+                            (text.isNotBlank() || images.isNotEmpty()),
+                ) {
+                    Text(if (working) "Steer" else "Send")
+                }
+            }
+        }
+    }
+    if (showAccessLevels) {
+        AlertDialog(
+            onDismissRequest = { showAccessLevels = false },
+            title = { Text("Choose access level") },
+            text = {
+                Column {
+                    accessLevels.forEach { level ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    showAccessLevels = false
+                                    if (level.id == "full") {
+                                        confirmFullAccess = true
+                                    } else {
+                                        selectAccessLevel(level.id)
+                                    }
+                                }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.Default.Security, contentDescription = null)
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    level.displayName,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color =
+                                        if (level.id == "full") {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            Color.Unspecified
+                                        },
+                                )
+                                if (level.description.isNotBlank()) {
+                                    Text(
+                                        level.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (level.id == accessLevelId) {
+                                Icon(Icons.Default.Check, contentDescription = "Selected")
+                            }
+                        }
+                        HorizontalDivider()
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAccessLevels = false }) { Text("Close") }
+            },
+        )
+    }
+    if (confirmFullAccess) {
+        AlertDialog(
+            onDismissRequest = { confirmFullAccess = false },
+            icon = {
+                Icon(
+                    Icons.Default.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            title = { Text("Enable full access?") },
+            text = {
+                Text(
+                    "Codex will be able to use the Internet and read or change any file " +
+                        "available to your account without asking first.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmFullAccess = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectAccessLevel("full")
+                        confirmFullAccess = false
+                    },
+                ) {
+                    Text("Enable", color = MaterialTheme.colorScheme.error)
+                }
+            },
+        )
+    }
+    if (showModels) {
+        AlertDialog(
+            onDismissRequest = { showModels = false },
+            title = { Text("Choose model") },
+            text = {
+                LazyColumn(Modifier.height(360.dp)) {
+                    items(models, key = { it.id }) { model ->
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    selectModel(model.id)
+                                    showModels = false
+                                }
+                                .padding(vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(model.displayName, fontWeight = FontWeight.SemiBold)
+                            if (model.description.isNotBlank()) {
+                                Text(
+                                    model.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        HorizontalDivider()
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showModels = false }) { Text("Close") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ComposerRouteRow(
+    accessLevels: List<AccessLevelInfo>,
+    selectedAccessLevel: AccessLevelInfo?,
+    accessLevelId: String?,
+    models: List<ModelInfo>,
+    selectedModel: ModelInfo?,
+    modelId: String?,
+    effort: String?,
+    enabled: Boolean,
+    showAccessLevels: () -> Unit,
+    showModels: () -> Unit,
+    showEfforts: () -> Unit,
+    effortsExpanded: Boolean,
+    dismissEfforts: () -> Unit,
+    selectEffort: (String) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            TextButton(
+                onClick = showAccessLevels,
+                enabled = enabled && accessLevels.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Default.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    selectedAccessLevel?.displayName ?: accessLevelId ?: "Access",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color =
+                        if (accessLevelId == "full") {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            Color.Unspecified
+                        },
+                )
+            }
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            TextButton(
+                onClick = showModels,
+                enabled = enabled && models.isNotEmpty(),
+            ) {
+                Text(
+                    selectedModel?.displayName ?: modelId ?: "Default model",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            Box {
+                TextButton(
+                    onClick = showEfforts,
+                    enabled = enabled && !selectedModel?.reasoningEfforts.isNullOrEmpty(),
+                ) {
+                    Text(effort?.replaceFirstChar { it.uppercase() } ?: "Default")
+                }
+                DropdownMenu(
+                    expanded = effortsExpanded,
+                    onDismissRequest = dismissEfforts,
+                ) {
+                    selectedModel?.reasoningEfforts?.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.replaceFirstChar { it.uppercase() }) },
+                            onClick = { selectEffort(option) },
+                        )
+                    }
+                }
             }
         }
     }

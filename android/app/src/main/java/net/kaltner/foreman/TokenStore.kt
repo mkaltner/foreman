@@ -18,6 +18,9 @@ data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
     val followNewMessages: Boolean = true,
     val monitorActiveTurns: Boolean = false,
+    val accessLevel: String? = null,
+    val model: String? = null,
+    val reasoningEffort: String? = null,
 )
 
 class PreferenceStore(context: Context) {
@@ -34,6 +37,9 @@ class PreferenceStore(context: Context) {
                 }.getOrDefault(ThemeMode.System),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
             monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
+            accessLevel = preferences.getString("accessLevel", null),
+            model = preferences.getString("model", null),
+            reasoningEffort = preferences.getString("reasoningEffort", null),
         )
 
     fun setThemeMode(mode: ThemeMode) {
@@ -46,6 +52,17 @@ class PreferenceStore(context: Context) {
 
     fun setMonitorActiveTurns(enabled: Boolean) {
         preferences.edit().putBoolean("monitorActiveTurns", enabled).apply()
+    }
+
+    fun setModelRoute(model: String?, reasoningEffort: String?) {
+        preferences.edit()
+            .putString("model", model)
+            .putString("reasoningEffort", reasoningEffort)
+            .apply()
+    }
+
+    fun setAccessLevel(accessLevel: String?) {
+        preferences.edit().putString("accessLevel", accessLevel).apply()
     }
 }
 
