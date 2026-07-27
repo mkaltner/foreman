@@ -8,10 +8,23 @@ dependency is included in the install payload, so installation doesn't require
 pip, venv support, root, or network access.
 
 ```sh
+git clone https://github.com/mkaltner/foreman.git
+cd foreman
 ./install.sh
 foreman status
 foreman pair
 ```
+
+Update by pulling the checkout and rerunning the same transactional installer:
+
+```sh
+cd foreman
+git pull
+./install.sh
+```
+
+The tagged Linux archive from a GitHub release contains the same install
+payload and is an alternative to cloning the repository.
 
 The rootless installer copies Foreman to `~/.local/share/foreman`, installs the
 CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
@@ -60,8 +73,10 @@ invokes it and remains offline.
 
 ## Android phone
 
-Open `android/` in current Android Studio (compile SDK 37), build/install the
-debug app, and run `foreman pair` immediately before setup. Enter:
+Download the signed release APK from the matching tagged GitHub release,
+sideload it, and run `foreman pair` immediately before setup. For development,
+open `android/` in current Android Studio (compile SDK 37) and build the debug
+app. Enter:
 
 - Host: for example `192.168.1.59` or `codex.local:8765`;
 - Pairing key: the six-digit code;
@@ -76,3 +91,20 @@ permission. A foreground-service notification remains visible only while turns
 are being monitored. Tapping a result notification reopens its session.
 
 Linux installation never runs Gradle or requires Java.
+
+## Uninstall
+
+Stop and remove the installed service and launcher without touching the cloned
+repository:
+
+```sh
+systemctl --user disable --now foreman.service
+rm ~/.config/systemd/user/foreman.service
+systemctl --user daemon-reload
+rm ~/.local/bin/foreman
+rm -r ~/.local/share/foreman
+```
+
+The commands above preserve device tokens and configuration. After confirming
+they are no longer needed, remove `~/.local/state/foreman` and
+`~/.config/foreman` separately.
