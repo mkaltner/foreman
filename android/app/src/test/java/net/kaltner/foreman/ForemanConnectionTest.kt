@@ -8,6 +8,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +40,7 @@ class ForemanConnectionTest {
 
     @Test
     fun framingRoundTripsAndRejectsOversizeInput() {
+        assertEquals(16 * 1024 * 1024, MAX_FRAME_BYTES)
         val output = ByteArrayOutputStream()
         FrameCodec.write(output, """{"version":1}""")
         assertEquals(
@@ -46,6 +50,72 @@ class ForemanConnectionTest {
         assertThrows(java.io.IOException::class.java) {
             FrameCodec.read(ByteArrayInputStream("12345\n".toByteArray()), maximum = 4)
         }
+    }
+
+    @Test
+    fun imageSizingAndEncodedLimitsAreDeterministic() {
+        assertEquals(1600 to 900, scaledImageSize(1600, 900))
+        assertEquals(2048 to 1024, scaledImageSize(4096, 2048))
+        assertEquals(4, imageSampleSize(10_000, 5_000))
+        assertEquals(
+            8,
+            encodedImageBytes(
+                listOf(
+                    ImagePayload("image/jpeg", "YWJj"),
+                    ImagePayload("image/png", "ZGVm"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun routeSelectionKeepsOnlySupportedEffortAndForwardsPromptOverrides() {
+        val model =
+            ModelInfo(
+                id = "gpt-test",
+                displayName = "GPT Test",
+                reasoningEfforts = listOf("low", "high"),
+                defaultReasoningEffort = "high",
+                inputModalities = listOf("text", "image"),
+            )
+        assertEquals("low", compatibleEffort(model, "low"))
+        assertEquals("high", compatibleEffort(model, "ultra"))
+        val session =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "idle",
+            )
+        val payload =
+            turnPayload(
+                session,
+                "Inspect",
+                listOf(ImagePayload("image/jpeg", "YWJj")),
+                steering = false,
+                model = model.id,
+                effort = "high",
+            )
+        assertEquals("gpt-test", payload.getValue("model").jsonPrimitive.content)
+        assertEquals("high", payload.getValue("reasoningEffort").jsonPrimitive.content)
+        assertEquals(
+            "YWJj",
+            payload.getValue("images").jsonArray.single().jsonObject
+                .getValue("data").jsonPrimitive.content,
+        )
+
+        val steering =
+            turnPayload(
+                session.copy(status = "working", activeTurnId = "turn-1"),
+                "",
+                listOf(ImagePayload("image/png", "YWJj")),
+                steering = true,
+                model = model.id,
+                effort = "high",
+            )
+        assertEquals("turn-1", steering.getValue("turnId").jsonPrimitive.content)
+        assertFalse(steering.containsKey("model"))
+        assertFalse(steering.containsKey("reasoningEffort"))
     }
 
     @Test
