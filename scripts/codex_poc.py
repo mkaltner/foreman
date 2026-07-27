@@ -16,7 +16,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "linux"))
 
-from codex import Codex, resolve_socket_path, user_input  # noqa: E402
+from codex import (  # noqa: E402
+    Codex,
+    CodexError,
+    resolve_fallback_socket_path,
+    resolve_socket_path,
+    user_input,
+)
 
 ONE_PIXEL_PNG = base64.b64encode(
     base64.b64decode(
@@ -56,13 +62,20 @@ async def proof(args: argparse.Namespace) -> None:
     async def on_event(message: dict[str, Any]) -> None:
         await events.put(message)
 
-    adapter = Codex(args.codex, on_event, args.socket)
+    adapter = Codex(
+        args.codex,
+        on_event,
+        args.socket,
+        args.fallback_socket,
+        allow_fallback=not args.attach_only,
+    )
     await adapter.start()
     try:
         print(
             "connected: "
             f"{adapter.socket_path} ({'launched' if adapter.process else 'attached'})"
         )
+        print(f"runtime: {adapter.runtime_status}")
         models = await adapter.list_models(refresh=True)
         print(f"models: {len(models)}")
         threads = await adapter.list_threads()
@@ -148,14 +161,29 @@ def main() -> int:
         "--socket",
         type=Path,
         default=resolve_socket_path(),
-        help="Unix control socket to attach to or launch",
+        help="Desktop Unix control socket to attach to",
+    )
+    parser.add_argument(
+        "--fallback-socket",
+        type=Path,
+        default=resolve_fallback_socket_path(),
+        help="Foreman-only socket used when the Desktop socket is unavailable",
+    )
+    parser.add_argument(
+        "--attach-only",
+        action="store_true",
+        help="fail instead of launching the Foreman-only fallback",
     )
     parser.add_argument("--with-image", action="store_true")
     parser.add_argument("--verbose-events", action="store_true")
     args = parser.parse_args()
     if not args.codex:
         parser.error("codex executable not found")
-    asyncio.run(proof(args))
+    try:
+        asyncio.run(proof(args))
+    except CodexError as error:
+        print(f"FOREMAN_CODEX_POC_FAIL: {error}", file=sys.stderr)
+        return 1
     print("FOREMAN_CODEX_POC_PASS")
     return 0
 

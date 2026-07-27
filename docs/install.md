@@ -28,7 +28,13 @@ FOREMAN_REPOSITORY_ROOT=/home/you/projects
 FOREMAN_CODEX_EXECUTABLE=/absolute/path/to/codex
 # Optional:
 FOREMAN_CODEX_SOCKET=/absolute/path/to/app-server-control.sock
+FOREMAN_CODEX_FALLBACK_SOCKET=/absolute/path/to/foreman-codex-app-server.sock
 ```
+
+`FOREMAN_CODEX_SOCKET` is attach-only. Foreman never starts or replaces a
+listener there. The fallback defaults to
+`~/.local/state/foreman/codex-app-server.sock` and cannot provide Desktop live
+co-presence.
 
 After edits, use `foreman restart`. `foreman logs` follows the user journal.
 Allow TCP port 8765 only on the trusted LAN; the prototype authenticates but

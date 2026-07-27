@@ -18,7 +18,12 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
-from codex import Codex  # noqa: E402
+from codex import (  # noqa: E402
+    Codex,
+    CodexError,
+    SHARED_DESKTOP_LIVE_STATUS_AVAILABLE,
+    SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE,
+)
 from foreman_service import Foreman  # noqa: E402
 from state import State  # noqa: E402
 
@@ -210,6 +215,7 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)
         self.socket_path = self.base / "control.sock"
+        self.fallback_socket_path = self.base / "foreman-fallback.sock"
         self.log_path = self.base / "requests.log"
         self.executable = self.base / "fake-codex"
         self.executable.write_text(FAKE_CODEX, encoding="utf-8")
@@ -229,10 +235,20 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_attaches_to_healthy_socket_without_launch_or_ownership(self) -> None:
         server = FakeSocketServer(self.socket_path)
         await server.start()
-        adapter = Codex("missing-codex", lambda _: asyncio.sleep(0), self.socket_path)
+        adapter = Codex(
+            "missing-codex",
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+            self.fallback_socket_path,
+        )
         await adapter.start()
         try:
             self.assertIsNone(adapter.process)
+            self.assertEqual(
+                adapter.runtime_status, SHARED_DESKTOP_LIVE_STATUS_AVAILABLE
+            )
+            self.assertEqual(adapter.socket_path, self.socket_path)
+            self.assertFalse(self.fallback_socket_path.exists())
             self.assertEqual(server.methods.count("initialize"), 1)
             self.assertEqual(server.methods.count("thread/resume"), 1)
         finally:
@@ -241,60 +257,99 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         await server.stop()
 
     async def test_launches_when_absent_and_stops_only_owned_process(self) -> None:
-        adapter = Codex(str(self.executable), lambda _: asyncio.sleep(0), self.socket_path)
+        adapter = Codex(
+            str(self.executable),
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+            self.fallback_socket_path,
+        )
         await adapter.start()
         process = adapter.process
         self.assertIsNotNone(process)
         self.assertIsNone(process.returncode)
+        self.assertFalse(self.socket_path.exists())
+        self.assertEqual(adapter.socket_path, self.fallback_socket_path)
+        self.assertEqual(
+            adapter.runtime_status, SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE
+        )
         await adapter.stop()
         self.assertIsNotNone(process.returncode)
 
-    async def test_recovers_a_stale_socket_file(self) -> None:
+    async def test_preserves_a_stale_desktop_socket_and_reports_attach_failure(
+        self,
+    ) -> None:
         stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         stale.bind(str(self.socket_path))
         stale.close()
-        adapter = Codex(str(self.executable), lambda _: asyncio.sleep(0), self.socket_path)
-        await adapter.start()
+        inode = self.socket_path.stat().st_ino
+        adapter = Codex(
+            str(self.executable),
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+            self.fallback_socket_path,
+        )
+        with self.assertRaisesRegex(CodexError, "exists but Foreman could not attach"):
+            await adapter.start()
         try:
-            self.assertIsNotNone(adapter.process)
-            self.assertIsNotNone(adapter._websocket)
+            self.assertIsNone(adapter.process)
+            self.assertEqual(self.socket_path.stat().st_ino, inode)
+            self.assertFalse(self.fallback_socket_path.exists())
         finally:
             await adapter.stop()
 
-    async def test_does_not_unlink_a_socket_rebound_during_stale_check(self) -> None:
+    async def test_does_not_replace_a_desktop_socket_rebound_during_attach(self) -> None:
         stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         stale.bind(str(self.socket_path))
         stale.close()
-        server = FakeSocketServer(self.socket_path)
+        replacement: asyncio.Server | None = None
+
+        async def close_client(
+            _: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.close()
+            await writer.wait_closed()
 
         class RacingCodex(Codex):
-            checks = 0
+            raced = False
 
-            async def _socket_accepts_connections(self) -> bool:
-                self.checks += 1
-                if self.checks == 2:
+            async def _open_websocket(self) -> Any:
+                nonlocal replacement
+                if self.socket_path == self.primary_socket_path and not self.raced:
+                    self.raced = True
                     self.socket_path.unlink()
-                    await server.start()
-                    return False
-                return False
+                    replacement = await asyncio.start_unix_server(
+                        close_client, path=self.socket_path
+                    )
+                    raise ConnectionRefusedError("socket changed during attach")
+                return await super()._open_websocket()
 
         adapter = RacingCodex(
             str(self.executable),
             lambda _: asyncio.sleep(0),
             self.socket_path,
+            self.fallback_socket_path,
         )
-        await adapter.start()
+        with self.assertRaisesRegex(CodexError, "WebSocket handshake failed"):
+            await adapter.start()
         try:
-            self.assertEqual(server.methods.count("initialize"), 1)
+            self.assertIsNone(adapter.process)
+            self.assertFalse(self.fallback_socket_path.exists())
+            self.assertIsNotNone(replacement)
         finally:
             await adapter.stop()
-            self.assertIsNotNone(server.server)
-            await server.stop()
+            if replacement:
+                replacement.close()
+                await replacement.wait_closed()
 
-    async def test_recovers_stale_socket_reconnects_and_does_not_resend_prompt(self) -> None:
+    async def test_falls_back_after_disconnect_and_does_not_resend_prompt(self) -> None:
         server = FakeSocketServer(self.socket_path)
         await server.start()
-        adapter = Codex(str(self.executable), lambda _: asyncio.sleep(0), self.socket_path)
+        adapter = Codex(
+            str(self.executable),
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+            self.fallback_socket_path,
+        )
         await adapter.start()
         await adapter.subscribe_thread("thread-shared")
         await adapter.prompt("thread-shared", "once")
@@ -309,6 +364,10 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         self.assertIsNotNone(adapter.process)
         self.assertIsNotNone(adapter._websocket)
+        self.assertEqual(adapter.socket_path, self.fallback_socket_path)
+        self.assertEqual(
+            adapter.runtime_status, SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE
+        )
         child_methods = self.log_path.read_text(encoding="utf-8").splitlines()
         self.assertIn("thread/resume", child_methods)
         self.assertNotIn("turn/start", child_methods)
@@ -318,7 +377,12 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_reconnects_after_empty_thread_creation_before_first_prompt(self) -> None:
         server = FakeSocketServer(self.socket_path)
         await server.start()
-        adapter = Codex(str(self.executable), lambda _: asyncio.sleep(0), self.socket_path)
+        adapter = Codex(
+            str(self.executable),
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+            self.fallback_socket_path,
+        )
         await adapter.start()
         created = await adapter.start_thread("/projects/example")
         self.assertEqual(created["turns"], [])
@@ -344,7 +408,12 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         pairing_key, _ = state.create_pairing()
 
         def factory(executable: str, event: Any) -> Codex:
-            return Codex(executable, event, self.socket_path)
+            return Codex(
+                executable,
+                event,
+                self.socket_path,
+                self.fallback_socket_path,
+            )
 
         app = Foreman(
             "127.0.0.1",

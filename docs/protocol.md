@@ -16,6 +16,9 @@ Responses echo `id` and append `.result` to the request type. Errors use type
 
 Before authentication a client may send `hello`, `pair`, `authenticate`, and
 `ping`. All other requests require a successful pair or authentication.
+`hello.codexRuntime` is either `SHARED_DESKTOP_LIVE_STATUS_AVAILABLE` for an
+attach to the configured Desktop socket or
+`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE` for Foreman's independent fallback.
 
 Implemented types:
 

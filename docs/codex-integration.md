@@ -2,8 +2,8 @@
 
 ## Choice
 
-Foreman uses the installed `codex app-server` over its shared Unix control
-socket and standard WebSocket frames. The official Codex manual describes
+Foreman first attempts the installed Desktop `codex app-server` over its Unix
+control socket and standard WebSocket frames. The official Codex manual describes
 app-server as the interface for
 rich clients needing conversation history, approvals, and streamed agent
 events. The general OpenAI SDK is not an interface to local Codex CLI threads.
@@ -47,10 +47,15 @@ these as waiting states but does not answer them in this milestone.
 The default socket is
 `$CODEX_HOME/app-server-control/app-server-control.sock` (or Codex's normal
 home when `CODEX_HOME` is unset). `FOREMAN_CODEX_SOCKET` overrides it. Foreman
-attaches when the socket is healthy; otherwise it launches
-`codex app-server --listen unix://`, records ownership, and stops only that
-owned process. A closed connection triggers bounded reconnect, state refresh,
-and thread resubscription without prompt/control replay.
+only attaches to this path. It never unlinks, replaces, or launches an
+app-server on the Desktop socket; a listener with a failed WebSocket handshake
+is an explicit attach failure. A present but stale Desktop socket is likewise an
+explicit attach failure and is left untouched. Only when the Desktop path is
+absent does Foreman use `~/.local/state/foreman/codex-app-server.sock` for an
+independent owned runtime and report
+`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`. A closed connection triggers bounded
+reconnect, state refresh, and thread resubscription without prompt/control
+replay.
 
 ## Installed-version observations
 
@@ -73,6 +78,7 @@ and thread resubscription without prompt/control replay.
 
 ## Proof result
 
-`scripts/codex_poc.py` is the opt-in installed-Codex proof. It attaches to or
-launches the requested Unix socket, opens an empty ephemeral thread, and sends a
-harmless text prompt. `--with-image` also verifies inline image input.
+`scripts/codex_poc.py` is the opt-in installed-Codex proof. It attaches to the
+requested Desktop socket or uses the separate Foreman fallback, opens an empty
+ephemeral thread, and sends a harmless text prompt. `--attach-only` forbids the
+fallback; `--with-image` also verifies inline image input.

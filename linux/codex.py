@@ -19,6 +19,8 @@ APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MODEL_CACHE_SECONDS = 30
 ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
+SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
+SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
 
 ACCESS_LEVELS = (
     {
@@ -58,13 +60,20 @@ class Codex:
         executable: str,
         on_event: EventHandler,
         socket_path: str | Path | None = None,
+        fallback_socket_path: str | Path | None = None,
+        allow_fallback: bool = True,
     ) -> None:
         self.executable = executable
         self.on_event = on_event
-        self._uses_default_socket = (
-            socket_path is None and not os.environ.get("FOREMAN_CODEX_SOCKET")
-        )
-        self.socket_path = Path(socket_path or resolve_socket_path()).expanduser()
+        self.primary_socket_path = Path(socket_path or resolve_socket_path()).expanduser()
+        self.fallback_socket_path = Path(
+            fallback_socket_path or resolve_fallback_socket_path()
+        ).expanduser()
+        if self.primary_socket_path == self.fallback_socket_path:
+            raise ValueError("Foreman fallback socket must differ from the Codex socket")
+        self.allow_fallback = allow_fallback
+        self.socket_path = self.primary_socket_path
+        self.runtime_status = SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE
         self.process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -93,28 +102,29 @@ class Codex:
         async with self._connect_lock:
             if self._websocket is not None:
                 return
-            websocket: Any | None = None
-            if self.socket_path.exists():
-                try:
-                    websocket = await self._open_websocket()
-                except Exception:
-                    await self._retire_owned_process()
-                    if await self._socket_accepts_connections():
-                        raise CodexError(
-                            "Codex socket accepted a connection but its WebSocket "
-                            "handshake failed"
-                        )
-                else:
-                    try:
-                        await self._activate(websocket)
-                    except Exception:
-                        await self._discard_connection(websocket)
-                        raise
-                    return
+            self.socket_path = self.primary_socket_path
+            if await self._attach_existing(
+                SHARED_DESKTOP_LIVE_STATUS_AVAILABLE,
+                "Desktop Codex socket",
+                fail_if_present=True,
+            ):
+                return
+            if not self.allow_fallback:
+                raise CodexError(
+                    f"Desktop Codex socket is unavailable: {self.primary_socket_path}"
+                )
 
-            await self._launch_app_server()
+            self.socket_path = self.fallback_socket_path
+            self.runtime_status = SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE
+            if await self._attach_existing(
+                SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE,
+                "Foreman fallback socket",
+            ):
+                return
+            await self._launch_fallback_app_server()
             deadline = asyncio.get_running_loop().time() + 10
             last_error: Exception | None = None
+            websocket: Any | None = None
             while asyncio.get_running_loop().time() < deadline:
                 try:
                     websocket = await self._open_websocket()
@@ -133,6 +143,34 @@ class Codex:
                 "Codex app-server socket did not become ready: "
                 f"{last_error or detail or self.socket_path}"
             )
+
+    async def _attach_existing(
+        self, status: str, label: str, fail_if_present: bool = False
+    ) -> bool:
+        path_was_present = os.path.lexists(self.socket_path)
+        if not path_was_present and not await self._socket_accepts_connections():
+            return False
+        websocket: Any | None = None
+        try:
+            websocket = await self._open_websocket()
+        except Exception as error:
+            if await self._socket_accepts_connections():
+                raise CodexError(
+                    f"{label} accepted a connection but its WebSocket handshake failed: "
+                    f"{self.socket_path}"
+                ) from error
+            if fail_if_present and path_was_present:
+                raise CodexError(
+                    f"{label} exists but Foreman could not attach: {self.socket_path}"
+                ) from error
+            return False
+        try:
+            self.runtime_status = status
+            await self._activate(websocket)
+        except Exception:
+            await self._discard_connection(websocket)
+            raise
+        return True
 
     async def _open_websocket(self) -> Any:
         return await unix_connect(
@@ -164,17 +202,18 @@ class Codex:
         await self.notify("initialized")
         await self._refresh_and_subscribe()
 
-    async def _launch_app_server(self) -> None:
+    async def _launch_fallback_app_server(self) -> None:
+        if self.socket_path != self.fallback_socket_path:
+            raise CodexError("refusing to launch an app-server on the Desktop socket")
         await self._retire_owned_process()
         self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.socket_path.exists() and await self._socket_accepts_connections():
             return
-        listen = "unix://" if self._uses_default_socket else f"unix://{self.socket_path}"
         self.process = await asyncio.create_subprocess_exec(
             self.executable,
             "app-server",
             "--listen",
-            listen,
+            f"unix://{self.socket_path}",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -605,6 +644,16 @@ def resolve_socket_path() -> Path:
         return Path(override).expanduser()
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
     return codex_home / "app-server-control" / "app-server-control.sock"
+
+
+def resolve_fallback_socket_path() -> Path:
+    override = os.environ.get("FOREMAN_CODEX_FALLBACK_SOCKET")
+    if override:
+        return Path(override).expanduser()
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    ).expanduser()
+    return state_home / "foreman" / "codex-app-server.sock"
 
 
 def model(item: Any) -> dict[str, Any] | None:

@@ -102,6 +102,7 @@ class Foreman:
 
     async def start(self) -> None:
         await self.codex.start()
+        print(f"Codex runtime: {self.codex.runtime_status}", flush=True)
         self.server = await asyncio.start_server(
             self.client_connected,
             self.host,
@@ -196,6 +197,7 @@ class Foreman:
             return {
                 "server": "Foreman",
                 "protocolVersion": VERSION,
+                "codexRuntime": self.codex.runtime_status,
                 "capabilities": {
                     "steer": True,
                     "interrupt": True,

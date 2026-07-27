@@ -7,14 +7,16 @@ Android Foreman ── authenticated JSONL/TCP :8765 ── Linux Foreman
                                                     │
                                                     └─ WebSocket/Unix socket
                                                                │
-                                                    shared codex app-server
+                                                    Desktop codex app-server
 ```
 
-The Linux process attaches to Codex's shared control socket and owns an
-app-server child only when it had to launch one. It switches directly on message
-type, normalizes only user-visible thread items, and pushes live events to
-subscribed connections. On reconnect it asks Codex for current threads and
-history again, resubscribes, and never retries a prompt or control.
+The Linux process treats Codex's Desktop control socket as attach-only. It never
+unlinks, replaces, or launches a process on that path. When attachment is
+unavailable it may own a child only on Foreman's separate fallback socket and
+classifies that mode as `SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`. It switches
+directly on message type, normalizes only user-visible thread items, and pushes
+live events to subscribed connections. On reconnect it asks Codex for current
+threads and history again, resubscribes, and never retries a prompt or control.
 
 Linux files:
 

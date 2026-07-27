@@ -70,11 +70,13 @@ closed. Notification text intentionally omits session titles and transcript
 content so private prompts do not appear on the lock screen.
 
 Foreman attaches to Codex's shared Unix-socket app-server at
-`$CODEX_HOME/app-server-control/app-server-control.sock`. It launches
-`codex app-server --listen unix://` only when that socket isn't healthy, and
-reconnects and resubscribes without replaying prompts or controls. Set
-`FOREMAN_CODEX_SOCKET` to use another local socket. The socket remains local to
-Linux; Android still connects only to Foreman's authenticated TCP service.
+`$CODEX_HOME/app-server-control/app-server-control.sock`. That Desktop socket is
+strictly attach-only: Foreman never removes, replaces, or launches a process on
+it. If attachment is unavailable, Foreman launches an independent owned runtime
+at `~/.local/state/foreman/codex-app-server.sock` and reports
+`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`. Set `FOREMAN_CODEX_SOCKET` to override
+the attach target. Android still connects only to Foreman's authenticated TCP
+service.
 
 The compact row above the composer selects access level, model, and reasoning
 effort. Access choices use Codex's installed permission profiles: ask the user,

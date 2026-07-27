@@ -68,6 +68,7 @@ THREAD = {
 class FakeCodex:
     def __init__(self, executable: str, on_event) -> None:
         self.on_event = on_event
+        self.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
         self.active: set[str] = set()
         self.archived: list[str] = []
         self.deleted: list[str] = []
