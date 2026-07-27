@@ -3,7 +3,7 @@
 ## Linux host
 
 Install Codex, authenticate it, and confirm `codex --version` works. Foreman
-needs Python 3.10+, Git, and a user systemd session.
+needs Python 3.10+, Python venv support, Git, and a user systemd session.
 
 ```sh
 ./install.sh
@@ -26,6 +26,8 @@ FOREMAN_HOST=0.0.0.0
 FOREMAN_PORT=8765
 FOREMAN_REPOSITORY_ROOT=/home/you/projects
 FOREMAN_CODEX_EXECUTABLE=/absolute/path/to/codex
+# Optional:
+FOREMAN_CODEX_SOCKET=/absolute/path/to/app-server-control.sock
 ```
 
 After edits, use `foreman restart`. `foreman logs` follows the user journal.

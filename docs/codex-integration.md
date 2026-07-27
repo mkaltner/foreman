@@ -2,8 +2,9 @@
 
 ## Choice
 
-Foreman uses the installed `codex app-server` over its default JSONL stdio
-transport. The official Codex manual describes app-server as the interface for
+Foreman uses the installed `codex app-server` over its shared Unix control
+socket and standard WebSocket frames. The official Codex manual describes
+app-server as the interface for
 rich clients needing conversation history, approvals, and streamed agent
 events. The general OpenAI SDK is not an interface to local Codex CLI threads.
 The Codex SDK is aimed at programmatic coding workflows; app-server exposes the
@@ -29,6 +30,7 @@ uses:
 - `thread/list`, `thread/read`, `thread/start`, `thread/resume`,
   `thread/archive`, and `thread/delete`;
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
+- `model/list`;
 - `thread/status/changed`, `turn/started`, and `turn/completed`;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
@@ -41,22 +43,31 @@ The server also exposes command/file approval requests,
 `item/tool/requestUserInput`, and permission approval requests. Foreman detects
 these as waiting states but does not answer them in this milestone.
 
+The default socket is
+`$CODEX_HOME/app-server-control/app-server-control.sock` (or Codex's normal
+home when `CODEX_HOME` is unset). `FOREMAN_CODEX_SOCKET` overrides it. Foreman
+attaches when the socket is healthy; otherwise it launches
+`codex app-server --listen unix://`, records ownership, and stops only that
+owned process. A closed connection triggers bounded reconnect, state refresh,
+and thread resubscription without prompt/control replay.
+
 ## Installed-version observations
 
 - App-server is officially described as primarily for development/debugging and
   may change; Foreman keeps all version-sensitive parsing in one adapter.
 - `turn/start` can return before a turn is steerable. Wait for `turn/started`
   before enabling steer or interrupt.
-- Ephemeral threads reject `thread/read` with `includeTurns: true`.
+- A new zero-turn thread may reject `thread/read` with `includeTurns: true`;
+  Foreman immediately projects the `thread/start` result as an empty
+  conversation and falls back to metadata-only reads until history exists.
 - `thread/read(includeTurns: true)` provides persisted messages and lossy
   command/tool history. Codex remains authoritative; Foreman stores no
   transcript.
+- `turn/start` supports per-turn `model` and `effort`; `turn/steer` supports
+  image input but not route overrides in the verified schema.
 
 ## Proof result
 
-`scripts/codex_poc.py` passed against the real installed CLI. It initialized and
-cleanly stopped app-server, listed existing threads, read persisted turns,
-created an ephemeral thread in a temporary Git repository, sent a harmless
-prompt, streamed `FOREMAN_POC_OK`, observed completed terminal status, accepted
-a steer after `turn/started`, and completed an interrupted turn with status
-`interrupted`.
+`scripts/codex_poc.py` is the opt-in installed-Codex proof. It attaches to or
+launches the requested Unix socket, opens an empty ephemeral thread, and sends a
+harmless text prompt. `--with-image` also verifies inline image input.

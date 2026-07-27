@@ -17,6 +17,8 @@ The current prototype can:
 - show user/assistant messages and compact command/tool activity;
 - render common Markdown, including headings, lists, emphasis, links, and code;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
+- choose installed Codex models and supported reasoning efforts per turn;
+- attach up to four processed images to a prompt or steer;
 - refresh the session list with a pull gesture, and archive or permanently delete
   inactive sessions with confirmation;
 - stream assistant deltas and terminal status;
@@ -67,12 +69,18 @@ service, so it cannot discover turns started elsewhere after Foreman is fully
 closed. Notification text intentionally omits session titles and transcript
 content so private prompts do not appear on the lock screen.
 
-Live status is scoped to the Codex app-server process Foreman runs. If a turn is
-started in Codex Desktop, another CLI, or another app-server process, Foreman
-cannot receive that process's live event stream. Pull to refresh to reconcile
-status and transcript data after Codex persists it. If another client replaces
-an active turn between refresh and steering, the Linux service reconciles the
-current turn before sending rather than exposing a stale-turn error.
+Foreman attaches to Codex's shared Unix-socket app-server at
+`$CODEX_HOME/app-server-control/app-server-control.sock`. It launches
+`codex app-server --listen unix://` only when that socket isn't healthy, and
+reconnects and resubscribes without replaying prompts or controls. Set
+`FOREMAN_CODEX_SOCKET` to use another local socket. The socket remains local to
+Linux; Android still connects only to Foreman's authenticated TCP service.
+
+The compact row above the composer lists models and reasoning efforts reported
+by the installed Codex version. Photo Picker images are resized to a maximum
+2048-pixel edge; each message accepts four images and at most 8 MiB of encoded
+image data. Foreman currently detects approval/input waits but cannot answer
+them; access selection and approval handling remain deferred.
 
 For local development, the installed-Codex proof is:
 

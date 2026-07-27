@@ -1,7 +1,7 @@
 # TCP protocol v1
 
 Foreman uses UTF-8 newline-delimited JSON over raw TCP. Every frame is at most
-1 MiB and has:
+16 MiB and has:
 
 ```json
 {"version":1,"id":"req-1","type":"session.list","payload":{}}
@@ -21,6 +21,7 @@ Implemented types:
 
 - `hello`, `pair`, `authenticate`, `ping`;
 - `repository.list`;
+- `model.list`;
 - `session.list`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
@@ -36,3 +37,15 @@ reversible through Codex's `thread/unarchive` API. `session.delete` requires
 descendants. Foreman rejects both operations while a session is working or
 waiting for input. Per-session locks serialize this check and mutation with
 prompt, steer, and interrupt requests from other connected Foreman clients.
+
+`model.list` returns only picker fields from Codex's installed catalog. A
+`turn.prompt` may include `model` and `reasoningEffort`; `turn.steer` keeps the
+active turn's route. Both accept up to four images:
+
+```json
+{"text":"Inspect this","images":[{"mimeType":"image/jpeg","data":"<base64>"}]}
+```
+
+JPEG, PNG, and WebP payloads are accepted, with an 8 MiB combined encoded
+limit. Foreman converts them to Codex inline data-URL image items and does not
+persist or log image bytes.
