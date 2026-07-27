@@ -212,6 +212,22 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(event["label"], "Thinking")
         self.assertEqual(event["text"], "Checking the connection")
         self.assertTrue(event["append"])
+        _, plan_event = normalize_event(
+            {
+                "method": "turn/plan/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "explanation": "Preparing the update",
+                    "plan": [
+                        {"step": "Inspecting current status", "status": "inProgress"}
+                    ],
+                },
+            }
+        )
+        self.assertEqual(plan_event["label"], "Planning")
+        self.assertEqual(plan_event["text"], "Inspecting current status")
+        self.assertFalse(plan_event["append"])
         self.assertIsNone(
             normalize_item(
                 {

@@ -265,6 +265,16 @@ class ForemanConnectionTest {
                 ),
             ),
         )
+        assertEquals(
+            "Planning direct main update strategy",
+            liveActivityMessage(
+                base.copy(
+                    activityText =
+                        "Checking repository state\nPlanning direct main update strategy",
+                ),
+            ),
+        )
+        assertNull(liveActivityMessage(base))
     }
 
     @Test

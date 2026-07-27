@@ -397,13 +397,31 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
                 "append": True,
             }
         )
-    elif method in ("item/plan/delta", "turn/plan/updated"):
+    elif method == "item/plan/delta":
         event.update(
             {
                 "kind": "activity",
                 "label": "Planning",
                 "turnId": params.get("turnId"),
-                "text": "",
+                "text": params.get("delta", ""),
+                "append": True,
+            }
+        )
+    elif method == "turn/plan/updated":
+        active_step = next(
+            (
+                step.get("step", "")
+                for step in params.get("plan", [])
+                if step.get("status") == "inProgress"
+            ),
+            "",
+        )
+        event.update(
+            {
+                "kind": "activity",
+                "label": "Planning",
+                "turnId": params.get("turnId"),
+                "text": active_step or params.get("explanation") or "",
                 "append": False,
             }
         )

@@ -149,6 +149,9 @@ internal fun liveActivityLabel(session: SessionSummary): String {
     }
 }
 
+internal fun liveActivityMessage(session: SessionSummary): String? =
+    session.activityText.trim().lineSequence().lastOrNull { it.isNotBlank() }
+
 class ForemanClient(
     private val scope: CoroutineScope,
     private val onEvent: (WireMessage) -> Unit,

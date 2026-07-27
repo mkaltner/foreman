@@ -730,6 +730,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         } else {
                             "Thinking"
                         }
+                    val nextActivityText =
+                        if (phase == "started" && item.description.isNotBlank()) {
+                            item.description
+                        } else {
+                            ""
+                        }
                     current.copy(
                         selected =
                             selected.copy(
@@ -740,7 +746,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                     event["turnId"]?.jsonPrimitive?.content
                                         ?: selected.activeTurnId,
                                 activityLabel = nextLabel,
-                                activityText = "",
+                                activityText = nextActivityText,
                             ),
                     )
                 }
@@ -1270,6 +1276,7 @@ private fun SessionDetailScreen(
 
 @Composable
 private fun LiveActivityRow(session: SessionSummary) {
+    val activityMessage = liveActivityMessage(session)
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -1287,16 +1294,16 @@ private fun LiveActivityRow(session: SessionSummary) {
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "${liveActivityLabel(session)}…",
+                    activityMessage ?: "${liveActivityLabel(session)}…",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                session.activityText.trim().takeIf { it.isNotEmpty() }?.let { summary ->
+                activityMessage?.let {
                     Text(
-                        summary,
+                        "${liveActivityLabel(session)}…",
                         style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
