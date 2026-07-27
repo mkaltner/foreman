@@ -61,13 +61,13 @@ class ForemanConnectionTest {
                 mutedAccentContainer(palette.light, darkTheme = false),
                 light.secondaryContainer,
             )
-            assertEquals(light.onSurface, light.onSecondaryContainer)
+            assertEquals(palette.light.onContainer, light.onSecondaryContainer)
             assertEquals(palette.dark.primary, dark.primary)
             assertEquals(
                 mutedAccentContainer(palette.dark, darkTheme = true),
                 dark.secondaryContainer,
             )
-            assertEquals(dark.onSurface, dark.onSecondaryContainer)
+            assertEquals(palette.dark.onContainer, dark.onSecondaryContainer)
             assertFalse(light.primaryContainer == light.secondaryContainer)
             assertFalse(dark.primaryContainer == dark.secondaryContainer)
         }

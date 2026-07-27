@@ -283,7 +283,7 @@ internal fun accentPalette(color: AccentColor): AccentPalette =
 
 internal fun mutedAccentContainer(tones: AccentTones, darkTheme: Boolean): Color =
     tones.primary
-        .copy(alpha = if (darkTheme) 0.18f else 0.10f)
+        .copy(alpha = if (darkTheme) 0.14f else 0.10f)
         .compositeOver(if (darkTheme) Color(0xFF3D3A43) else Color(0xFFE7E0EB))
 
 internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
@@ -297,7 +297,7 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
                 secondaryContainer = mutedAccentContainer(tones, darkTheme = true),
-                onSecondaryContainer = Color(0xFFF6F7F9),
+                onSecondaryContainer = tones.onContainer,
                 background = Color(0xFF111827),
                 surface = Color(0xFF182235),
                 surfaceVariant = Color(0xFF374151),
@@ -312,7 +312,7 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
                 secondaryContainer = mutedAccentContainer(tones, darkTheme = false),
-                onSecondaryContainer = Color(0xFF111827),
+                onSecondaryContainer = tones.onContainer,
                 background = Color(0xFFF6F7F9),
                 surface = Color.White,
                 surfaceVariant = Color(0xFFE7E0EB),
