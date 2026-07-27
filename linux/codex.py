@@ -201,7 +201,7 @@ class Codex:
                 "clientInfo": {
                     "name": "foreman",
                     "title": "Foreman",
-                    "version": "0.1.0-alpha.1",
+                    "version": "0.1.0-alpha.2",
                 },
                 "capabilities": {"experimentalApi": True},
             },

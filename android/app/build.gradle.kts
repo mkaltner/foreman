@@ -7,7 +7,7 @@ plugins {
 val foremanVersionCode =
     providers.gradleProperty("foremanVersionCode").orNull?.toIntOrNull() ?: 1
 val foremanVersionName =
-    providers.gradleProperty("foremanVersionName").orNull ?: "0.1.0-alpha.1"
+    providers.gradleProperty("foremanVersionName").orNull ?: "0.1.0-alpha.2"
 val releaseKeystorePath = System.getenv("FOREMAN_ANDROID_KEYSTORE")
 
 android {
