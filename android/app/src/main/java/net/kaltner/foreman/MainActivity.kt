@@ -1402,6 +1402,8 @@ private fun SessionDetailScreen(
                         Text(
                             sessionDisplayTitle(selected),
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         if (selected != null) {
                             Text(
