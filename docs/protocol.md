@@ -22,6 +22,7 @@ Implemented types:
 - `hello`, `pair`, `authenticate`, `ping`;
 - `repository.list`;
 - `model.list`;
+- `access.list`;
 - `session.list`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
@@ -38,9 +39,11 @@ descendants. Foreman rejects both operations while a session is working or
 waiting for input. Per-session locks serialize this check and mutation with
 prompt, steer, and interrupt requests from other connected Foreman clients.
 
-`model.list` returns only picker fields from Codex's installed catalog. A
-`turn.prompt` may include `model` and `reasoningEffort`; `turn.steer` keeps the
-active turn's route. Both accept up to four images:
+`model.list` returns only picker fields from Codex's installed catalog.
+`access.list` returns the access levels allowed by Codex's installed permission
+profiles. A `turn.prompt` may include `accessLevel`, `model`, and
+`reasoningEffort`; `turn.steer` keeps the active turn's route. Both accept up to
+four images:
 
 ```json
 {"text":"Inspect this","images":[{"mimeType":"image/jpeg","data":"<base64>"}]}

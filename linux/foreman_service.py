@@ -204,6 +204,7 @@ class Foreman:
                     "approvals": False,
                     "structuredInput": False,
                     "models": self.codex.supports("model/list"),
+                    "access": self.codex.supports("permissionProfile/list"),
                     "images": True,
                 },
             }
@@ -235,6 +236,12 @@ class Foreman:
         if message_type == "model.list":
             return {
                 "models": await self.codex.list_models(
+                    refresh=payload.get("refresh") is True
+                )
+            }
+        if message_type == "access.list":
+            return {
+                "levels": await self.codex.list_access_levels(
                     refresh=payload.get("refresh") is True
                 )
             }
@@ -281,6 +288,7 @@ class Foreman:
             images = image_payloads(payload)
             text = message_text(payload, images)
             model_id, effort = await self.route(payload)
+            selected_access_level = await self.access_level(payload)
             async with self.thread_lock(thread_id):
                 result = await self.codex.prompt(
                     thread_id,
@@ -288,14 +296,21 @@ class Foreman:
                     images,
                     model_id,
                     effort,
+                    selected_access_level,
                 )
             client.subscriptions.add(thread_id)
             return {"accepted": True, "turnId": result["turn"]["id"]}
         if message_type == "turn.steer":
             thread_id = required_text(payload, "sessionId", 100)
             turn_id = required_text(payload, "turnId", 100)
-            if payload.get("model") is not None or payload.get("reasoningEffort") is not None:
-                raise ValueError("model and reasoning effort cannot change while steering")
+            if (
+                payload.get("model") is not None
+                or payload.get("reasoningEffort") is not None
+                or payload.get("accessLevel") is not None
+            ):
+                raise ValueError(
+                    "model, reasoning effort, and access level cannot change while steering"
+                )
             images = image_payloads(payload)
             text = message_text(payload, images)
             async with self.thread_lock(thread_id):
@@ -325,6 +340,15 @@ class Foreman:
         if effort is not None and effort not in selected["reasoningEfforts"]:
             raise ValueError("reasoning effort is not supported by the selected model")
         return model_id, effort
+
+    async def access_level(self, payload: dict[str, Any]) -> str | None:
+        selected = optional_text(payload, "accessLevel", 100)
+        if selected is None:
+            return None
+        levels = await self.codex.list_access_levels()
+        if not any(item["id"] == selected for item in levels):
+            raise ValueError("selected access level is unavailable")
+        return selected
 
     async def require_inactive_session(self, thread_id: str) -> None:
         projected = session(await self.codex.read_thread(thread_id))

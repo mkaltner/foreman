@@ -17,7 +17,7 @@ The current prototype can:
 - show user/assistant messages and compact command/tool activity;
 - render common Markdown, including headings, lists, emphasis, links, and code;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
-- choose installed Codex models and supported reasoning efforts per turn;
+- choose Codex access, installed model, and supported reasoning effort per turn;
 - attach up to four processed images to a prompt or steer;
 - refresh the session list with a pull gesture, and archive or permanently delete
   inactive sessions with confirmation;
@@ -76,11 +76,13 @@ reconnects and resubscribes without replaying prompts or controls. Set
 `FOREMAN_CODEX_SOCKET` to use another local socket. The socket remains local to
 Linux; Android still connects only to Foreman's authenticated TCP service.
 
-The compact row above the composer lists models and reasoning efforts reported
-by the installed Codex version. Photo Picker images are resized to a maximum
-2048-pixel edge; each message accepts four images and at most 8 MiB of encoded
-image data. Foreman currently detects approval/input waits but cannot answer
-them; access selection and approval handling remain deferred.
+The compact row above the composer selects access level, model, and reasoning
+effort. Access choices use Codex's installed permission profiles: ask the user,
+use automatic approval review, or grant full access. Photo Picker images are
+resized to a maximum 2048-pixel edge; each message accepts four images and at
+most 8 MiB of encoded image data. Foreman detects approval/input waits but
+cannot answer them yet; manual approvals remain available through another
+client on the shared thread.
 
 For local development, the installed-Codex proof is:
 

@@ -46,6 +46,9 @@ def result(method: str, params: dict[str, Any]) -> dict[str, Any]:
             "thread": thread(),
             "model": "model-test",
             "reasoningEffort": "high",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "auto_review",
+            "activePermissionProfile": {"id": ":workspace"},
         }
     if method == "thread/read":
         return {"thread": thread()}
@@ -54,6 +57,18 @@ def result(method: str, params: dict[str, Any]) -> dict[str, Any]:
             "thread": thread(),
             "model": "model-test",
             "reasoningEffort": "high",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "user",
+            "activePermissionProfile": {"id": ":workspace"},
+        }
+    if method == "permissionProfile/list":
+        return {
+            "data": [
+                {"id": ":workspace", "allowed": True},
+                {"id": ":danger-full-access", "allowed": True},
+                {"id": ":read-only", "allowed": True},
+            ],
+            "nextCursor": None,
         }
     if method == "model/list":
         return {

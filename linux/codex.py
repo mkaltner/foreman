@@ -17,7 +17,35 @@ from websockets.asyncio.client import unix_connect
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MODEL_CACHE_SECONDS = 30
+ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
+
+ACCESS_LEVELS = (
+    {
+        "id": "ask",
+        "displayName": "Ask for approval",
+        "description": "Always ask to edit external files and use the Internet",
+        "permissionProfile": ":workspace",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+    },
+    {
+        "id": "auto",
+        "displayName": "Approve for me",
+        "description": "Only ask for actions detected as potentially unsafe",
+        "permissionProfile": ":workspace",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "auto_review",
+    },
+    {
+        "id": "full",
+        "displayName": "Full access",
+        "description": "Unrestricted access to the Internet and any file on your computer",
+        "permissionProfile": ":danger-full-access",
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+    },
+)
 
 
 class CodexError(RuntimeError):
@@ -50,8 +78,10 @@ class Codex:
         self._loaded: set[str] = set()
         self._subscribed: set[str] = set()
         self._routes: dict[str, tuple[str | None, str | None]] = {}
+        self._access_levels: dict[str, str | None] = {}
         self._supported_methods: set[str] = set()
         self._model_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self._access_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._stopping = False
 
     async def start(self) -> None:
@@ -343,6 +373,7 @@ class Codex:
                     if future and not future.done():
                         future.set_result(message)
                     continue
+                self._remember_settings_event(message)
                 await self.on_event(message)
         except Exception as error:
             failure = error
@@ -355,6 +386,17 @@ class Codex:
                 self._reconnect_task is None or self._reconnect_task.done()
             ):
                 self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    def _remember_settings_event(self, message: dict[str, Any]) -> None:
+        if message.get("method") != "thread/settings/updated":
+            return
+        params = message.get("params", {})
+        settings = params.get("threadSettings", {})
+        thread_id = params.get("threadId")
+        if not isinstance(thread_id, str) or not isinstance(settings, dict):
+            return
+        self._routes[thread_id] = (settings.get("model"), settings.get("effort"))
+        self._access_levels[thread_id] = access_level(settings)
 
     async def _reconnect(self) -> None:
         delay = 0.25
@@ -417,6 +459,7 @@ class Codex:
             result.get("model"),
             result.get("reasoningEffort"),
         )
+        self._access_levels[thread["id"]] = access_level(result)
         return self._with_route(thread)
 
     def _with_route(self, thread: dict[str, Any]) -> dict[str, Any]:
@@ -425,6 +468,7 @@ class Codex:
             **thread,
             "_foremanModel": model,
             "_foremanReasoningEffort": effort,
+            "_foremanAccessLevel": self._access_levels.get(thread["id"]),
         }
 
     async def ensure_resumed(self, thread_id: str) -> None:
@@ -449,6 +493,36 @@ class Codex:
         self._model_cache = (now, models)
         return models
 
+    async def list_access_levels(
+        self, refresh: bool = False
+    ) -> list[dict[str, str]]:
+        now = time.monotonic()
+        if (
+            not refresh
+            and self._access_cache
+            and now - self._access_cache[0] < ACCESS_CACHE_SECONDS
+        ):
+            return self._access_cache[1]
+        result = await self.request("permissionProfile/list", {"limit": 100})
+        allowed_profiles = {
+            item["id"]
+            for item in result.get("data", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item.get("allowed") is True
+        }
+        levels = [
+            {
+                "id": level["id"],
+                "displayName": level["displayName"],
+                "description": level["description"],
+            }
+            for level in ACCESS_LEVELS
+            if level["permissionProfile"] in allowed_profiles
+        ]
+        self._access_cache = (now, levels)
+        return levels
+
     async def prompt(
         self,
         thread_id: str,
@@ -456,6 +530,7 @@ class Codex:
         images: list[dict[str, str]] | None = None,
         model_id: str | None = None,
         effort: str | None = None,
+        selected_access_level: str | None = None,
     ) -> dict[str, Any]:
         await self.ensure_resumed(thread_id)
         params: dict[str, Any] = {
@@ -466,6 +541,8 @@ class Codex:
             params["model"] = model_id
         if effort:
             params["effort"] = effort
+        if selected_access_level:
+            params.update(access_params(selected_access_level))
         result = await self.request(
             "turn/start",
             params,
@@ -475,6 +552,8 @@ class Codex:
             model_id or previous_model,
             effort or previous_effort,
         )
+        if selected_access_level:
+            self._access_levels[thread_id] = selected_access_level
         return result
 
     async def steer(
@@ -510,12 +589,14 @@ class Codex:
         self._loaded.discard(thread_id)
         self._subscribed.discard(thread_id)
         self._routes.pop(thread_id, None)
+        self._access_levels.pop(thread_id, None)
 
     async def delete_thread(self, thread_id: str) -> None:
         await self.request("thread/delete", {"threadId": thread_id})
         self._loaded.discard(thread_id)
         self._subscribed.discard(thread_id)
         self._routes.pop(thread_id, None)
+        self._access_levels.pop(thread_id, None)
 
 
 def resolve_socket_path() -> Path:
@@ -550,6 +631,31 @@ def model(item: Any) -> dict[str, Any] | None:
         ],
     }
     return value
+
+
+def access_params(selected: str) -> dict[str, str]:
+    level = next((item for item in ACCESS_LEVELS if item["id"] == selected), None)
+    if level is None:
+        raise ValueError("selected access level is unavailable")
+    return {
+        "permissions": level["permissionProfile"],
+        "approvalPolicy": level["approvalPolicy"],
+        "approvalsReviewer": level["approvalsReviewer"],
+    }
+
+
+def access_level(result: dict[str, Any]) -> str | None:
+    profile = result.get("activePermissionProfile")
+    profile_id = profile.get("id") if isinstance(profile, dict) else None
+    approval = result.get("approvalPolicy")
+    reviewer = result.get("approvalsReviewer")
+    if profile_id == ":danger-full-access" and approval == "never":
+        return "full"
+    if profile_id == ":workspace" and reviewer == "auto_review":
+        return "auto"
+    if profile_id == ":workspace":
+        return "ask"
+    return None
 
 
 def user_input(text: str, images: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -602,6 +708,7 @@ def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str,
         "attention": projected_status == "waiting",
         "model": thread.get("_foremanModel"),
         "reasoningEffort": thread.get("_foremanReasoningEffort"),
+        "accessLevel": thread.get("_foremanAccessLevel"),
     }
     if include_messages:
         messages: list[dict[str, Any]] = []
@@ -844,6 +951,16 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
                 "turnId": params.get("activeTurnId"),
             }
         )
+    elif method == "thread/settings/updated":
+        settings = params.get("threadSettings", {})
+        event["kind"] = "route"
+        selected_access_level = access_level(settings)
+        if selected_access_level:
+            event["accessLevel"] = selected_access_level
+        if isinstance(settings.get("model"), str):
+            event["model"] = settings["model"]
+        if isinstance(settings.get("effort"), str):
+            event["reasoningEffort"] = settings["effort"]
     elif method in (
         "item/commandExecution/requestApproval",
         "item/fileChange/requestApproval",

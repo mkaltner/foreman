@@ -100,11 +100,13 @@ class ForemanConnectionTest {
                 "Inspect",
                 listOf(ImagePayload("image/jpeg", "YWJj")),
                 steering = false,
+                accessLevel = "auto",
                 model = model.id,
                 effort = "high",
             )
         assertEquals("gpt-test", payload.getValue("model").jsonPrimitive.content)
         assertEquals("high", payload.getValue("reasoningEffort").jsonPrimitive.content)
+        assertEquals("auto", payload.getValue("accessLevel").jsonPrimitive.content)
         assertEquals(
             "YWJj",
             payload.getValue("images").jsonArray.single().jsonObject
@@ -117,12 +119,28 @@ class ForemanConnectionTest {
                 "",
                 listOf(ImagePayload("image/png", "YWJj")),
                 steering = true,
+                accessLevel = "full",
                 model = model.id,
                 effort = "high",
             )
         assertEquals("turn-1", steering.getValue("turnId").jsonPrimitive.content)
         assertFalse(steering.containsKey("model"))
         assertFalse(steering.containsKey("reasoningEffort"))
+        assertFalse(steering.containsKey("accessLevel"))
+
+        val accessLevels =
+            listOf(
+                AccessLevelInfo("ask", "Ask for approval"),
+                AccessLevelInfo("auto", "Approve for me"),
+                AccessLevelInfo("full", "Full access"),
+            )
+        val routed =
+            UiState(composerAccessLevel = "ask")
+                .withAccessLevelsAndSessionAccess(
+                    accessLevels,
+                    session.copy(accessLevel = "full"),
+                )
+        assertEquals("full", routed.composerAccessLevel)
     }
 
     @Test

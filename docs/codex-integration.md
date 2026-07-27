@@ -31,6 +31,7 @@ uses:
   `thread/archive`, and `thread/delete`;
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
 - `model/list`;
+- `permissionProfile/list`;
 - `thread/status/changed`, `turn/started`, and `turn/completed`;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
@@ -63,8 +64,12 @@ and thread resubscription without prompt/control replay.
 - `thread/read(includeTurns: true)` provides persisted messages and lossy
   command/tool history. Codex remains authoritative; Foreman stores no
   transcript.
-- `turn/start` supports per-turn `model` and `effort`; `turn/steer` supports
-  image input but not route overrides in the verified schema.
+- `turn/start` supports per-turn permissions, approval policy/reviewer, model,
+  and effort; `turn/steer` supports image input but not route overrides in the
+  verified schema.
+- Access presets use allowed `:workspace` and `:danger-full-access` permission
+  profiles. Standard approval routes to the user, automatic approval uses
+  `auto_review`, and full access disables approval prompts.
 
 ## Proof result
 

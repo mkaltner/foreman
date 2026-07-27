@@ -141,6 +141,14 @@ data class SessionSummary(
     val activityText: String = "",
     val model: String? = null,
     val reasoningEffort: String? = null,
+    val accessLevel: String? = null,
+)
+
+@Serializable
+data class AccessLevelInfo(
+    val id: String,
+    val displayName: String,
+    val description: String = "",
 )
 
 @Serializable

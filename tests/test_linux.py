@@ -17,6 +17,8 @@ sys.path.insert(0, str(ROOT / "linux"))
 import protocol  # noqa: E402
 from codex import (  # noqa: E402
     Codex,
+    access_level,
+    access_params,
     bound_message_images,
     model,
     normalize_event,
@@ -79,7 +81,12 @@ class FakeCodex:
         pass
 
     def supports(self, method: str) -> bool:
-        return method in {"thread/archive", "thread/delete"}
+        return method in {
+            "thread/archive",
+            "thread/delete",
+            "model/list",
+            "permissionProfile/list",
+        }
 
     async def list_threads(self) -> list[dict[str, Any]]:
         return [{**THREAD, "turns": []}]
@@ -124,6 +131,27 @@ class FakeCodex:
             }
         ]
 
+    async def list_access_levels(
+        self, refresh: bool = False
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "id": "ask",
+                "displayName": "Ask for approval",
+                "description": "Ask before leaving the workspace",
+            },
+            {
+                "id": "auto",
+                "displayName": "Approve for me",
+                "description": "Automatically review requests",
+            },
+            {
+                "id": "full",
+                "displayName": "Full access",
+                "description": "Unrestricted access",
+            },
+        ]
+
     async def prompt(
         self,
         thread_id: str,
@@ -131,6 +159,7 @@ class FakeCodex:
         images: list[dict[str, str]] | None = None,
         model_id: str | None = None,
         effort: str | None = None,
+        selected_access_level: str | None = None,
     ) -> dict[str, Any]:
         self.prompts.append(
             {
@@ -139,6 +168,7 @@ class FakeCodex:
                 "images": images or [],
                 "model": model_id,
                 "effort": effort,
+                "accessLevel": selected_access_level,
             }
         )
         content: list[dict[str, Any]] = []
@@ -273,6 +303,29 @@ class PairingLimiterTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
+    def test_maps_shared_thread_access_and_route_changes(self) -> None:
+        thread_id, event = normalize_event(
+            {
+                "method": "thread/settings/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "threadSettings": {
+                        "model": "gpt-test",
+                        "effort": "high",
+                        "approvalPolicy": "on-request",
+                        "approvalsReviewer": "auto_review",
+                        "activePermissionProfile": {"id": ":workspace"},
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(event["kind"], "route")
+        self.assertEqual(event["accessLevel"], "auto")
+        self.assertEqual(event["model"], "gpt-test")
+        self.assertEqual(event["reasoningEffort"], "high")
+
     def test_session_and_conversation_mapping(self) -> None:
         mapped = session(THREAD, include_messages=True)
         self.assertEqual(mapped["status"], "completed")
@@ -457,6 +510,63 @@ schema = {"oneOf": [
                 },
             ],
         )
+        self.assertEqual(
+            access_params("auto"),
+            {
+                "permissions": ":workspace",
+                "approvalPolicy": "on-request",
+                "approvalsReviewer": "auto_review",
+            },
+        )
+        self.assertEqual(
+            access_level(
+                {
+                    "activePermissionProfile": {"id": ":danger-full-access"},
+                    "approvalPolicy": "never",
+                    "approvalsReviewer": "user",
+                }
+            ),
+            "full",
+        )
+
+    async def test_forwards_exact_access_profile_on_turn_start(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        adapter._loaded.add("thread-1")
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requests.append((method, params))
+            return {"turn": {"id": "turn-1"}}
+
+        adapter.request = request  # type: ignore[method-assign]
+        await adapter.prompt(
+            "thread-1",
+            "Inspect",
+            model_id="gpt-test",
+            effort="high",
+            selected_access_level="full",
+        )
+
+        self.assertEqual(requests[0][0], "turn/start")
+        self.assertEqual(requests[0][1]["permissions"], ":danger-full-access")
+        self.assertEqual(requests[0][1]["approvalPolicy"], "never")
+        self.assertEqual(requests[0][1]["approvalsReviewer"], "user")
+
+    async def test_lists_only_access_levels_allowed_by_codex(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+
+        async def request(_: str, __: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "data": [
+                    {"id": ":workspace", "allowed": True},
+                    {"id": ":danger-full-access", "allowed": False},
+                ]
+            }
+
+        adapter.request = request  # type: ignore[method-assign]
+        levels = await adapter.list_access_levels()
+
+        self.assertEqual([item["id"] for item in levels], ["ask", "auto"])
 
 
 class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -554,6 +664,8 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(started["id"], self.app.codex.reads)
         models = (await self.request("model.list"))["models"]
         self.assertEqual(models[0]["id"], "model-test")
+        levels = (await self.request("access.list"))["levels"]
+        self.assertEqual([level["id"] for level in levels], ["ask", "auto", "full"])
         prompted = await self.request(
             "turn.prompt",
             {
@@ -562,6 +674,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "images": [{"mimeType": "image/jpeg", "data": "YWJj"}],
                 "model": "model-test",
                 "reasoningEffort": "high",
+                "accessLevel": "auto",
             },
         )
         self.assertTrue(prompted["accepted"])
@@ -573,6 +686,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "images": [{"mimeType": "image/jpeg", "data": "YWJj"}],
                 "model": "model-test",
                 "effort": "high",
+                "accessLevel": "auto",
             },
         )
         event = next(
@@ -688,6 +802,15 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertIn("not supported", unsupported_effort["message"])
+        unsupported_access = await self.request_error(
+            "turn.prompt",
+            {
+                "sessionId": "thread-1",
+                "text": "Hello",
+                "accessLevel": "unlimited",
+            },
+        )
+        self.assertIn("access level", unsupported_access["message"])
         malformed = await self.request_error(
             "turn.prompt",
             {
