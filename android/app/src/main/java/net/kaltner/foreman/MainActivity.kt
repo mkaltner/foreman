@@ -53,9 +53,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -2003,7 +2003,7 @@ private fun UiSettingsMenu(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         IconButton(onClick = { expanded = true }) {
-            Icon(Icons.Default.Palette, contentDescription = "Appearance and scrolling")
+            Icon(Icons.Default.Settings, contentDescription = "Settings")
         }
         DropdownMenu(
             expanded = expanded,
