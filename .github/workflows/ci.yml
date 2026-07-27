@@ -31,7 +31,7 @@ jobs:
           assert websockets.__version__ == '16.1.1';
           assert 'linux/vendor' in pathlib.Path(websockets.__file__).as_posix()"
       - name: Compile Python sources
-        run: python -m compileall -q linux tests
+        run: python -m compileall -q linux scripts tests
       - name: Run Linux service tests
         run: python -m unittest discover -s tests -v
       - name: Package Linux service
