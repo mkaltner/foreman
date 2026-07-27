@@ -114,6 +114,7 @@ import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -333,6 +334,53 @@ internal fun UiState.withSynchronizedSessions(
         error = null,
     )
 
+internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): UiState {
+    val known = sessions.mapTo(mutableSetOf()) { it.id }
+    val additions = discovered.filter { known.add(it.id) }
+    return if (additions.isEmpty()) this else copy(sessions = additions + sessions)
+}
+
+internal fun UiState.shouldDiscoverSession(sessionId: String, eventKind: String): Boolean =
+    connected && eventKind == "status" && sessions.none { it.id == sessionId }
+
+internal class SessionDiscoveryQueue(private val maximumAttempts: Int = 4) {
+    private val remainingAttempts = linkedMapOf<String, Int>()
+
+    init {
+        require(maximumAttempts > 0)
+    }
+
+    fun enqueue(sessionId: String) {
+        if (sessionId !in remainingAttempts) {
+            remainingAttempts[sessionId] = maximumAttempts
+        }
+    }
+
+    fun targets(): Set<String> = remainingAttempts.keys.toSet()
+
+    fun recordAttempt(targets: Set<String>, discoveredIds: Set<String>) {
+        discoveredIds.forEach(remainingAttempts::remove)
+        targets.forEach { sessionId ->
+            val remaining = remainingAttempts[sessionId] ?: return@forEach
+            if (remaining == 1) {
+                remainingAttempts.remove(sessionId)
+            } else {
+                remainingAttempts[sessionId] = remaining - 1
+            }
+        }
+    }
+
+    fun retryDelayMillis(): Long {
+        val mostRemaining = remainingAttempts.values.maxOrNull() ?: return 0L
+        val completedAttempts = maximumAttempts - mostRemaining
+        return 250L shl (completedAttempts - 1).coerceAtLeast(0)
+    }
+
+    fun clear() {
+        remainingAttempts.clear()
+    }
+}
+
 internal data class UiState(
     val screen: Screen = Screen.Setup,
     val host: String = "",
@@ -375,11 +423,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
     private var reconnectJob: Job? = null
+    private val sessionDiscoveryLock = Any()
+    private val sessionDiscoveryQueue = SessionDiscoveryQueue()
+    private var sessionDiscoveryJob: Job? = null
     private var notificationSessionId: String? = null
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
+            synchronized(sessionDiscoveryLock) {
+                sessionDiscoveryJob?.cancel()
+                sessionDiscoveryJob = null
+                sessionDiscoveryQueue.clear()
+            }
             state.update {
                 it.copy(
                     connected = false,
@@ -579,7 +635,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(loading = true, error = null) }
         val (sessions, repositories, catalogs) =
             coroutineScope {
-                val sessionsRequest = async { client.request("session.list") }
+                val sessionsRequest = async { listSessions() }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val modelsRequest =
                     async {
@@ -597,9 +653,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             null
                         }
                     }
-                val sessions =
-                    sessionsRequest.await().payload.getValue("sessions").jsonArray
-                        .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                val sessions = sessionsRequest.await()
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
@@ -627,6 +681,47 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 .withAccessLevelsAndSessionAccess(accessLevels, selected)
         }
         selected?.let(::monitorIfActive)
+    }
+
+    private suspend fun listSessions(): List<SessionSummary> =
+        client.request("session.list").payload.getValue("sessions").jsonArray
+            .map { json.decodeFromJsonElement<SessionSummary>(it) }
+
+    private fun discoverSession(sessionId: String) {
+        synchronized(sessionDiscoveryLock) {
+            sessionDiscoveryQueue.enqueue(sessionId)
+            if (sessionDiscoveryJob?.isActive == true) return
+            sessionDiscoveryJob = viewModelScope.launch { discoverQueuedSessions() }
+        }
+    }
+
+    private suspend fun discoverQueuedSessions() {
+        while (true) {
+            val targets =
+                synchronized(sessionDiscoveryLock) {
+                    sessionDiscoveryQueue.targets().ifEmpty {
+                        sessionDiscoveryJob = null
+                        return
+                    }
+                }
+            val discovered = runCatching { listSessions() }.getOrNull()
+            if (discovered != null) {
+                state.update { it.withDiscoveredSessions(discovered) }
+            }
+            val retryDelay =
+                synchronized(sessionDiscoveryLock) {
+                    sessionDiscoveryQueue.recordAttempt(
+                        targets,
+                        discovered.orEmpty().mapTo(mutableSetOf()) { it.id },
+                    )
+                    if (sessionDiscoveryQueue.targets().isEmpty()) {
+                        sessionDiscoveryJob = null
+                        return
+                    }
+                    sessionDiscoveryQueue.retryDelayMillis()
+                }
+            delay(retryDelay)
+        }
     }
 
     private suspend fun readSession(id: String): SessionSummary {
@@ -839,6 +934,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
+        if (state.value.shouldDiscoverSession(sessionId, kind)) {
+            discoverSession(sessionId)
+        }
         state.update { current ->
             val selected = current.selected
             if (selected?.id != sessionId) {
