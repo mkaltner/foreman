@@ -1,5 +1,7 @@
 package net.kaltner.foreman
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
@@ -263,6 +265,26 @@ class ForemanConnectionTest {
         assertNull(safeMarkdownUrl("file:///etc/passwd"))
         assertNull(safeMarkdownUrl("javascript:alert(1)"))
         assertNull(safeMarkdownUrl("intent://settings"))
+    }
+
+    @Test
+    fun stylesInlineMarkdownForCompactLiveStatus() {
+        val rendered =
+            styledInlineMarkdown(
+                "**Implementing bulk session insertion helper**",
+                color = Color.White,
+                linkColor = Color.Blue,
+                codeColor = Color.Gray,
+            )
+
+        assertEquals("Implementing bulk session insertion helper", rendered.text)
+        assertTrue(
+            rendered.spanStyles.any {
+                it.item.fontWeight == FontWeight.Bold &&
+                    rendered.text.substring(it.start, it.end) ==
+                    "Implementing bulk session insertion helper"
+            },
+        )
     }
 
     @Test

@@ -107,10 +107,21 @@ private val InlineToken =
     Regex("\\[([^]\\n]+)]\\(([^)\\s]+)\\)|\\*\\*([^*\\n]+)\\*\\*|__([^_\\n]+)__|`([^`\\n]+)`|\\*([^*\\n]+)\\*|_([^_\\n]+)_")
 
 @Composable
-private fun inlineMarkdown(text: String, color: Color): AnnotatedString {
-    val linkColor = MaterialTheme.colorScheme.primary
-    val codeColor = MaterialTheme.colorScheme.onSurfaceVariant
-    return buildAnnotatedString {
+internal fun inlineMarkdown(text: String, color: Color): AnnotatedString =
+    styledInlineMarkdown(
+        text = text,
+        color = color,
+        linkColor = MaterialTheme.colorScheme.primary,
+        codeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+internal fun styledInlineMarkdown(
+    text: String,
+    color: Color,
+    linkColor: Color,
+    codeColor: Color,
+): AnnotatedString =
+    buildAnnotatedString {
         pushStyle(SpanStyle(color = color))
         var cursor = 0
         InlineToken.findAll(text).forEach { match ->
@@ -159,7 +170,6 @@ private fun inlineMarkdown(text: String, color: Color): AnnotatedString {
         append(text.substring(cursor))
         pop()
     }
-}
 
 @Composable
 internal fun MarkdownText(
