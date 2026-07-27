@@ -286,6 +286,39 @@ class StateTests(unittest.TestCase):
             self.assertNotIn(token or "", raw)
 
 
+class LauncherTests(unittest.TestCase):
+    def test_pair_uses_the_installed_virtual_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            install_dir = Path(directory)
+            interpreter = install_dir / "venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            argument_log = install_dir / "arguments"
+            interpreter.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FOREMAN_TEST_ARGS\"\n",
+                encoding="utf-8",
+            )
+            interpreter.chmod(0o755)
+            environment = {
+                **os.environ,
+                "FOREMAN_INSTALL_DIR": str(install_dir),
+                "FOREMAN_TEST_ARGS": str(argument_log),
+            }
+
+            completed = subprocess.run(
+                ["bash", str(ROOT / "linux" / "foreman"), "pair"],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                argument_log.read_text(encoding="utf-8").splitlines(),
+                [str(install_dir / "foreman_service.py"), "--create-pairing"],
+            )
+
+
 class PairingLimiterTests(unittest.TestCase):
     def test_limits_each_peer_without_revoking_codes(self) -> None:
         now = [100.0]

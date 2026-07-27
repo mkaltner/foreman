@@ -21,7 +21,8 @@ case "${1:-}" in
     journalctl --user -u "$service_name" -f
     ;;
   pair)
-    exec python3 "$install_dir/foreman_service.py" --create-pairing
+    exec "$install_dir/venv/bin/python" \
+      "$install_dir/foreman_service.py" --create-pairing
     ;;
   *)
     echo "Usage: foreman {start|stop|restart|status|logs|pair}" >&2
