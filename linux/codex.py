@@ -6,11 +6,16 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+
+VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
+if VENDOR_DIR.is_dir():
+    sys.path.insert(0, str(VENDOR_DIR))
 
 from websockets.asyncio.client import unix_connect
 

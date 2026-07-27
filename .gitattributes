@@ -1,0 +1,2 @@
+linux/vendor/**/RECORD -diff -text
+linux/vendor/**/WHEEL -diff -text

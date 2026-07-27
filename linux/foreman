@@ -21,7 +21,7 @@ case "${1:-}" in
     journalctl --user -u "$service_name" -f
     ;;
   pair)
-    exec "$install_dir/venv/bin/python" \
+    exec /usr/bin/env python3 \
       "$install_dir/foreman_service.py" --create-pairing
     ;;
   *)

@@ -5,16 +5,63 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 config_dir="$HOME/.config/foreman"
 state_dir="$HOME/.local/state/foreman"
 install_dir="$HOME/.local/share/foreman"
+install_parent="$HOME/.local/share"
 bin_dir="$HOME/.local/bin"
 unit_dir="$HOME/.config/systemd/user"
 config_file="$config_dir/foreman.env"
+launcher_file="$bin_dir/foreman"
+unit_file="$unit_dir/foreman.service"
+pinned_version="$(sed -n 's/^websockets==//p' "$project_dir/requirements.txt")"
+staging_dir=""
+backup_dir=""
+rollback_required=0
+had_launcher=0
+had_unit=0
+
+cleanup() {
+  status=$?
+  set +e
+  if [[ "$rollback_required" == 1 && -n "$backup_dir" && -d "$backup_dir/install" ]]; then
+    systemctl --user stop foreman.service >/dev/null 2>&1
+    rm -rf -- "$install_dir"
+    mv -- "$backup_dir/install" "$install_dir"
+    if [[ "$had_launcher" == 1 ]]; then
+      install -m 755 "$backup_dir/foreman" "$launcher_file"
+    else
+      rm -f -- "$launcher_file"
+    fi
+    if [[ "$had_unit" == 1 ]]; then
+      install -m 644 "$backup_dir/foreman.service" "$unit_file"
+    else
+      rm -f -- "$unit_file"
+    fi
+    systemctl --user daemon-reload >/dev/null 2>&1
+    systemctl --user restart foreman.service >/dev/null 2>&1
+  fi
+  if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
+    rm -rf -- "$staging_dir"
+  fi
+  if [[ -n "$backup_dir" && -d "$backup_dir" ]]; then
+    rm -rf -- "$backup_dir"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 command -v python3 >/dev/null || {
   echo "python3 is required" >&2
   exit 1
 }
-python3 -c 'import ensurepip' >/dev/null 2>&1 || {
-  echo "Python venv support is required (install python3-venv on Debian/Ubuntu)" >&2
+python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || {
+  echo "Python 3.10 or newer is required" >&2
+  exit 1
+}
+[[ -d "$project_dir/linux/vendor/websockets" ]] || {
+  echo "Vendored Python dependencies are missing from the install payload" >&2
+  exit 1
+}
+[[ -n "$pinned_version" ]] || {
+  echo "requirements.txt must pin websockets with ==" >&2
   exit 1
 }
 codex_executable="$(command -v codex || true)"
@@ -25,17 +72,38 @@ fi
 codex_executable="$(readlink -f "$codex_executable")"
 
 install -d -m 700 "$config_dir" "$state_dir"
-install -d -m 755 "$install_dir" "$bin_dir" "$unit_dir"
-python3 -m venv "$install_dir/venv"
-"$install_dir/venv/bin/python" -m pip install \
-  --disable-pip-version-check \
-  -r "$project_dir/requirements.txt"
-install -m 755 "$project_dir/linux/foreman_service.py" "$install_dir/foreman_service.py"
-install -m 644 "$project_dir/linux/codex.py" "$install_dir/codex.py"
-install -m 644 "$project_dir/linux/protocol.py" "$install_dir/protocol.py"
-install -m 644 "$project_dir/linux/state.py" "$install_dir/state.py"
-install -m 755 "$project_dir/linux/foreman" "$bin_dir/foreman"
-install -m 644 "$project_dir/linux/foreman.service" "$unit_dir/foreman.service"
+install -d -m 755 "$install_parent" "$bin_dir" "$unit_dir"
+
+staging_dir="$(mktemp -d "$install_parent/.foreman-install.XXXXXX")"
+install -m 755 "$project_dir/linux/foreman_service.py" "$staging_dir/foreman_service.py"
+install -m 644 "$project_dir/linux/codex.py" "$staging_dir/codex.py"
+install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
+install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
+cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
+if [[ -d "$install_dir/venv" ]]; then
+  cp -a "$install_dir/venv" "$staging_dir/venv"
+fi
+
+python3 -m compileall -q \
+  "$staging_dir/foreman_service.py" \
+  "$staging_dir/codex.py" \
+  "$staging_dir/protocol.py" \
+  "$staging_dir/state.py" \
+  "$staging_dir/vendor"
+FOREMAN_STAGING_DIR="$staging_dir" \
+FOREMAN_WEBSOCKETS_VERSION="$pinned_version" \
+python3 -c '
+import os, pathlib, sys
+root = pathlib.Path(os.environ["FOREMAN_STAGING_DIR"])
+sys.path.insert(0, str(root))
+import codex
+import websockets
+assert websockets.__version__ == os.environ["FOREMAN_WEBSOCKETS_VERSION"]
+assert pathlib.Path(websockets.__file__).is_relative_to(root / "vendor")
+from websockets.asyncio.client import unix_connect
+from websockets.asyncio.server import unix_serve
+'
+python3 "$staging_dir/foreman_service.py" --help >/dev/null
 
 if [[ ! -e "$config_file" ]]; then
   {
@@ -47,10 +115,43 @@ if [[ ! -e "$config_file" ]]; then
   chmod 600 "$config_file"
 fi
 
-"$install_dir/venv/bin/python" -m compileall -q "$install_dir"
+backup_dir="$(mktemp -d "$install_parent/.foreman-backup.XXXXXX")"
+if [[ -d "$install_dir" ]]; then
+  mv -- "$install_dir" "$backup_dir/install"
+else
+  mkdir "$backup_dir/install"
+fi
+if [[ -e "$launcher_file" ]]; then
+  cp -a "$launcher_file" "$backup_dir/foreman"
+  had_launcher=1
+fi
+if [[ -e "$unit_file" ]]; then
+  cp -a "$unit_file" "$backup_dir/foreman.service"
+  had_unit=1
+fi
+mv -- "$staging_dir" "$install_dir"
+staging_dir=""
+rollback_required=1
+install -m 755 "$project_dir/linux/foreman" "$launcher_file"
+install -m 644 "$project_dir/linux/foreman.service" "$unit_file"
+
+python3 -m compileall -q \
+  "$install_dir/foreman_service.py" \
+  "$install_dir/codex.py" \
+  "$install_dir/protocol.py" \
+  "$install_dir/state.py" \
+  "$install_dir/vendor"
+python3 "$install_dir/foreman_service.py" --help >/dev/null
 systemctl --user daemon-reload
 systemctl --user enable foreman.service
 systemctl --user restart foreman.service
+sleep 2
+systemctl --user is-active --quiet foreman.service
+rollback_required=0
+
+rm -rf -- "$install_dir/venv"
+rm -rf -- "$backup_dir"
+backup_dir=""
 
 echo
 echo "Foreman is installed and running."

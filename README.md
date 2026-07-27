@@ -41,7 +41,8 @@ trusted private LAN or through a secure tunnel.
 ## Linux
 
 Requirements: Linux with user systemd, Python 3.10+, Git, and an authenticated
-`codex` CLI.
+`codex` CLI. The payload includes its pinned `websockets` dependency, so the
+installer doesn't need pip or Python venv support.
 
 ```sh
 ./install.sh

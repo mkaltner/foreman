@@ -12,10 +12,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from websockets.asyncio.server import unix_serve
-
 ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "linux" / "vendor"))
 sys.path.insert(0, str(ROOT / "linux"))
+
+from websockets.asyncio.server import unix_serve  # noqa: E402
 
 import protocol  # noqa: E402
 from codex import (  # noqa: E402
@@ -146,6 +147,7 @@ class FakeSocketServer:
 
 FAKE_CODEX = r"""#!/usr/bin/env python3
 import asyncio, json, os, pathlib, signal, socket, sys
+sys.path.insert(0, os.environ["FAKE_CODEX_VENDOR"])
 from websockets.asyncio.server import unix_serve
 
 if "generate-json-schema" in sys.argv:
@@ -223,13 +225,19 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.executable.stat().st_mode | stat.S_IXUSR
         )
         self.previous_log = os.environ.get("FAKE_CODEX_LOG")
+        self.previous_vendor = os.environ.get("FAKE_CODEX_VENDOR")
         os.environ["FAKE_CODEX_LOG"] = str(self.log_path)
+        os.environ["FAKE_CODEX_VENDOR"] = str(ROOT / "linux" / "vendor")
 
     async def asyncTearDown(self) -> None:
         if self.previous_log is None:
             os.environ.pop("FAKE_CODEX_LOG", None)
         else:
             os.environ["FAKE_CODEX_LOG"] = self.previous_log
+        if self.previous_vendor is None:
+            os.environ.pop("FAKE_CODEX_VENDOR", None)
+        else:
+            os.environ["FAKE_CODEX_VENDOR"] = self.previous_vendor
         self.temporary.cleanup()
 
     async def test_attaches_to_healthy_socket_without_launch_or_ownership(self) -> None:

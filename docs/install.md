@@ -3,7 +3,9 @@
 ## Linux host
 
 Install Codex, authenticate it, and confirm `codex --version` works. Foreman
-needs Python 3.10+, Python venv support, Git, and a user systemd session.
+needs Python 3.10+, Git, and a user systemd session. Its pinned `websockets`
+dependency is included in the install payload, so installation doesn't require
+pip, venv support, root, or network access.
 
 ```sh
 ./install.sh
@@ -18,6 +20,10 @@ CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
 ~/.config/foreman/foreman.env
 ~/.local/state/foreman
 ```
+
+Reinstalling validates a staged copy before replacing the running installation.
+An older `~/.local/share/foreman/venv` is retained through service activation
+and removed only after the system-Python service starts successfully.
 
 Configuration defaults:
 
@@ -39,6 +45,18 @@ co-presence.
 After edits, use `foreman restart`. `foreman logs` follows the user journal.
 Allow TCP port 8765 only on the trusted LAN; the prototype authenticates but
 does not encrypt transport.
+
+## Refresh the vendored Python dependency
+
+Maintainers can refresh the committed dependency payload from the exact pin in
+`requirements.txt` with:
+
+```sh
+PYTHON=/path/to/python-with-pip scripts/vendor_python_dependencies.sh
+```
+
+This preparation command may access the package index. `./install.sh` never
+invokes it and remains offline.
 
 ## Android phone
 
