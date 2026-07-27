@@ -24,6 +24,8 @@ APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MODEL_CACHE_SECONDS = 30
 ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
+DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
+DESKTOP_REQUEST_MARKER = "\n## My request for Codex:\n"
 SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
 SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
 
@@ -796,6 +798,16 @@ def bound_message_images(
         message["images"] = list(reversed(kept))
 
 
+def display_user_text(text: str) -> str:
+    candidate = text.lstrip("\r\n").replace("\r\n", "\n")
+    if not candidate.startswith(DESKTOP_ATTACHMENT_HEADER):
+        return text
+    marker = candidate.find(DESKTOP_REQUEST_MARKER)
+    if marker == -1:
+        return text
+    return candidate[marker + len(DESKTOP_REQUEST_MARKER) :].strip()
+
+
 def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
     kind = item.get("type")
     base = {"id": item.get("id", ""), "rawType": kind}
@@ -828,7 +840,7 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
         return {
             **base,
             "kind": "user",
-            "text": text,
+            "text": display_user_text(text),
             "images": images,
             "imageCount": image_count,
         }

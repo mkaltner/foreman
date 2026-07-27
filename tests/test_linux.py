@@ -20,6 +20,7 @@ from codex import (  # noqa: E402
     access_level,
     access_params,
     bound_message_images,
+    display_user_text,
     model,
     normalize_event,
     normalize_item,
@@ -304,6 +305,37 @@ class PairingLimiterTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
+    def test_strips_the_desktop_attachment_envelope_from_android_text(self) -> None:
+        wrapped = """# Files mentioned by the user:
+
+## screenshot.png: /home/user/.codex/attachments/private/screenshot.png
+
+## My request for Codex:
+Tighten up this layout, please.
+"""
+        self.assertEqual(
+            display_user_text(wrapped),
+            "Tighten up this layout, please.",
+        )
+        ordinary = "# Files mentioned by the user:\nThis is ordinary Markdown."
+        self.assertEqual(display_user_text(ordinary), ordinary)
+
+        item = normalize_item(
+            {
+                "id": "user-image",
+                "type": "userMessage",
+                "content": [
+                    {"type": "text", "text": wrapped},
+                    {"type": "image", "url": "data:image/png;base64,YWJj"},
+                ],
+            }
+        )
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["text"], "Tighten up this layout, please.")
+        self.assertEqual(item["imageCount"], 1)
+        self.assertEqual(item["images"], [{"mimeType": "image/png", "data": "YWJj"}])
+
     def test_maps_shared_thread_access_and_route_changes(self) -> None:
         thread_id, event = normalize_event(
             {
