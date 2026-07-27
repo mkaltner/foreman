@@ -1,13 +1,18 @@
 package net.kaltner.foreman
 
+import android.Manifest
 import android.app.Application
 import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -135,19 +140,53 @@ private val DarkColors =
 
 class MainActivity : ComponentActivity() {
     private val foremanViewModel: ForemanViewModel by viewModels()
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            foremanViewModel.setMonitorActiveTurns(granted)
+            if (!granted) foremanViewModel.notificationPermissionDenied()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
-            ForemanApp(foremanViewModel)
+            ForemanApp(foremanViewModel, ::requestTurnMonitoring)
         }
+        openNotificationSession(intent)
     }
 
     override fun onResume() {
         super.onResume()
+        foremanViewModel.onNotificationPermissionState(notificationPermissionGranted())
         foremanViewModel.onForeground()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openNotificationSession(intent)
+    }
+
+    private fun requestTurnMonitoring(enabled: Boolean) {
+        if (!enabled) {
+            foremanViewModel.setMonitorActiveTurns(false)
+        } else if (notificationPermissionGranted()) {
+            foremanViewModel.setMonitorActiveTurns(true)
+        } else {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun notificationPermissionGranted(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+
+    private fun openNotificationSession(intent: Intent?) {
+        intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)?.let {
+            foremanViewModel.openSessionFromNotification(it)
+        }
     }
 }
 
@@ -168,6 +207,7 @@ internal data class UiState(
     val showNewSession: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.System,
     val followNewMessages: Boolean = true,
+    val monitorActiveTurns: Boolean = false,
 )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -178,11 +218,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             UiState(
                 themeMode = savedPreferences.themeMode,
                 followNewMessages = savedPreferences.followNewMessages,
+                monitorActiveTurns = savedPreferences.monitorActiveTurns,
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
     private var reconnectJob: Job? = null
+    private var notificationSessionId: String? = null
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
@@ -216,6 +258,34 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.setFollowNewMessages(enabled)
         state.update { it.copy(followNewMessages = enabled) }
+    }
+
+    fun setMonitorActiveTurns(enabled: Boolean) {
+        preferences.setMonitorActiveTurns(enabled)
+        state.update { it.copy(monitorActiveTurns = enabled, error = null) }
+        if (enabled) {
+            state.value.selected?.let(::monitorIfActive)
+        } else {
+            TurnMonitorService.stopAll(getApplication())
+        }
+    }
+
+    fun notificationPermissionDenied() {
+        state.update {
+            it.copy(error = "Allow notifications to monitor active turns in the background.")
+        }
+    }
+
+    fun onNotificationPermissionState(granted: Boolean) {
+        if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
+    }
+
+    fun openSessionFromNotification(id: String) {
+        notificationSessionId = id
+        if (state.value.connected) {
+            notificationSessionId = null
+            openSession(id)
+        }
     }
 
     fun connect() {
@@ -289,7 +359,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
             }
             refresh()
-            selectedId?.let { openSession(it) }
+            (notificationSessionId ?: selectedId)?.let {
+                notificationSessionId = null
+                openSession(it)
+            }
         }.onFailure(::fail)
     }
 
@@ -333,6 +406,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         response.payload.getValue("session"),
                     )
                 state.update { it.copy(selected = selected, loading = false) }
+                monitorIfActive(selected)
             }.onFailure(::fail)
         }
     }
@@ -365,35 +439,44 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val current = state.value
         val selected = current.selected ?: return
         if (current.submitting || text.isBlank()) return
+        val steering = selected.status == "working" && selected.activeTurnId != null
+        val preparedMonitor = prepareMonitor(selected, active = steering)
         viewModelScope.launch {
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
-                val steering =
-                    selected.status == "working" && selected.activeTurnId != null
                 val type = if (steering) "turn.steer" else "turn.prompt"
                 val response = client.request(
                     type,
                     buildJsonObject {
                         put("sessionId", selected.id)
                         put("text", text.trim())
-                        if (steering) put("turnId", selected.activeTurnId!!)
+                        if (steering) put("turnId", requireNotNull(selected.activeTurnId))
                     },
                 )
                 val turnId = response.payload["turnId"]?.jsonPrimitive?.content
+                var monitored: SessionSummary? = null
                 state.update {
+                    val updated =
+                        it.selected?.copy(
+                            status = "working",
+                            activeTurnId = turnId ?: it.selected.activeTurnId,
+                            activityLabel = "Thinking",
+                            activityText = "",
+                        )
+                    monitored = updated
                     it.copy(
                         submitting = false,
-                        selected =
-                            it.selected?.copy(
-                                status = "working",
-                                activeTurnId = turnId ?: it.selected.activeTurnId,
-                                activityLabel = "Thinking",
-                                activityText = "",
-                            ),
+                        selected = updated,
                     )
                 }
+                monitored?.let(::monitorIfActive)
                 accepted()
-            }.onFailure(::fail)
+            }.onFailure {
+                if (preparedMonitor && !steering) {
+                    runCatching { TurnMonitorService.cancel(getApplication(), selected.id) }
+                }
+                fail(it)
+            }
         }
     }
 
@@ -551,13 +634,31 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    private fun monitorIfActive(session: SessionSummary) {
+        if (session.status == "working") prepareMonitor(session, active = true)
+    }
+
+    private fun prepareMonitor(session: SessionSummary, active: Boolean): Boolean {
+        if (!state.value.monitorActiveTurns) return false
+        return runCatching {
+            TurnMonitorService.monitor(getApplication(), session.id, active)
+        }.onFailure { error ->
+            state.update {
+                it.copy(error = error.message ?: "Android could not start background monitoring.")
+            }
+        }.isSuccess
+    }
+
     override fun onCleared() {
         client.close()
     }
 }
 
 @Composable
-private fun ForemanApp(viewModel: ForemanViewModel = viewModel()) {
+private fun ForemanApp(
+    viewModel: ForemanViewModel = viewModel(),
+    requestTurnMonitoring: (Boolean) -> Unit = viewModel::setMonitorActiveTurns,
+) {
     val state by viewModel.state.collectAsState()
     val systemDark = isSystemInDarkTheme()
     val darkTheme =
@@ -581,16 +682,20 @@ private fun ForemanApp(viewModel: ForemanViewModel = viewModel()) {
             color = MaterialTheme.colorScheme.background,
         ) {
             when (state.screen) {
-                Screen.Setup -> SetupScreen(state, viewModel)
-                Screen.Sessions -> SessionsScreen(state, viewModel)
-                Screen.Detail -> SessionDetailScreen(state, viewModel)
+                Screen.Setup -> SetupScreen(state, viewModel, requestTurnMonitoring)
+                Screen.Sessions -> SessionsScreen(state, viewModel, requestTurnMonitoring)
+                Screen.Detail -> SessionDetailScreen(state, viewModel, requestTurnMonitoring)
             }
         }
     }
 }
 
 @Composable
-private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
+private fun SetupScreen(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
+) {
     Box(
         Modifier.fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing),
@@ -598,6 +703,7 @@ private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
         UiSettingsMenu(
             state = state,
             viewModel = viewModel,
+            requestTurnMonitoring = requestTurnMonitoring,
             modifier = Modifier.align(Alignment.TopEnd),
         )
         Column(
@@ -678,7 +784,11 @@ private fun SetupScreen(state: UiState, viewModel: ForemanViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
+private fun SessionsScreen(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
+) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -700,7 +810,7 @@ private fun SessionsScreen(state: UiState, viewModel: ForemanViewModel) {
                     IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected) {
                         Icon(Icons.Default.Add, contentDescription = "New session")
                     }
-                    UiSettingsMenu(state, viewModel)
+                    UiSettingsMenu(state, viewModel, requestTurnMonitoring)
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(
@@ -800,7 +910,11 @@ private fun SessionCard(session: SessionSummary, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
+private fun SessionDetailScreen(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
+) {
     val selected = state.selected
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
@@ -859,7 +973,7 @@ private fun SessionDetailScreen(state: UiState, viewModel: ForemanViewModel) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                         }
                     }
-                    UiSettingsMenu(state, viewModel)
+                    UiSettingsMenu(state, viewModel, requestTurnMonitoring)
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(
@@ -1036,6 +1150,7 @@ private fun PromptBox(
 private fun UiSettingsMenu(
     state: UiState,
     viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1079,6 +1194,18 @@ private fun UiSettingsMenu(
                 },
                 onClick = {
                     viewModel.setFollowNewMessages(!state.followNewMessages)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Notify for active turns") },
+                leadingIcon = {
+                    Checkbox(
+                        checked = state.monitorActiveTurns,
+                        onCheckedChange = null,
+                    )
+                },
+                onClick = {
+                    requestTurnMonitoring(!state.monitorActiveTurns)
                 },
             )
         }

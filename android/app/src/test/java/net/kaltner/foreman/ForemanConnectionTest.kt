@@ -10,6 +10,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -160,5 +162,73 @@ class ForemanConnectionTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun mapsOnlyAttentionAndTerminalStatusesToNotifications() {
+        assertEquals(
+            "Foreman needs your attention",
+            monitorOutcome("waiting")?.title,
+        )
+        assertEquals("Foreman turn completed", monitorOutcome("completed")?.title)
+        assertEquals("Foreman turn failed", monitorOutcome("failed")?.title)
+        assertEquals("Foreman turn interrupted", monitorOutcome("interrupted")?.title)
+        assertEquals(null, monitorOutcome("working"))
+        assertEquals(null, monitorOutcome("unknown"))
+    }
+
+    @Test
+    fun monitorLifecycleRequiresActiveConfirmationBeforeCompleting() {
+        val lifecycle = MonitorLifecycle()
+
+        lifecycle.monitor("session-1", active = false)
+        assertNull(lifecycle.status("session-1", "completed"))
+        assertTrue(lifecycle.contains("session-1"))
+
+        lifecycle.monitor("session-1", active = true)
+        lifecycle.monitor("session-1", active = false)
+        assertEquals(
+            "Foreman turn completed",
+            lifecycle.status("session-1", "completed")?.title,
+        )
+        assertTrue(lifecycle.isEmpty())
+    }
+
+    @Test
+    fun promptFailureCancellationPreventsLateStaleNotifications() {
+        val lifecycle = MonitorLifecycle()
+
+        lifecycle.monitor("session-1", active = false)
+        assertTrue(lifecycle.cancel("session-1"))
+        assertNull(lifecycle.status("session-1", "working"))
+        assertNull(lifecycle.status("session-1", "completed"))
+        assertFalse(lifecycle.contains("session-1"))
+    }
+
+    @Test
+    fun monitorLifecycleCleansUpOnlyTheCompletedSession() {
+        val lifecycle = MonitorLifecycle()
+        lifecycle.monitor("session-1", active = true)
+        lifecycle.monitor("session-2", active = true)
+
+        assertEquals(
+            "Foreman needs your attention",
+            lifecycle.status("session-1", "waiting")?.title,
+        )
+        assertFalse(lifecycle.contains("session-1"))
+        assertTrue(lifecycle.contains("session-2"))
+        assertEquals(setOf("session-2"), lifecycle.sessionIds())
+    }
+
+    @Test
+    fun reconnectBackoffCapsAndResetsDeterministically() {
+        val lifecycle = MonitorLifecycle()
+
+        assertEquals(
+            listOf(2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L),
+            List(6) { lifecycle.nextReconnectDelay() },
+        )
+        lifecycle.resetReconnectDelay()
+        assertEquals(2_000L, lifecycle.nextReconnectDelay())
     }
 }

@@ -44,4 +44,9 @@ debug app, and run `foreman pair` immediately before setup. Enter:
 The device token is encrypted by an Android Keystore key. Closing the app or
 restarting Foreman reconnects with that token and reloads current Codex state.
 
+To receive completion and attention alerts for active turns, enable **Notify
+for active turns** in Foreman's settings and grant Android's notification
+permission. A foreground-service notification remains visible only while turns
+are being monitored. Tapping a result notification reopens its session.
+
 Linux installation never runs Gradle or requires Java.

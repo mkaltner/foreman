@@ -17,6 +17,8 @@ The current prototype can:
 - show user/assistant messages and compact command/tool activity;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
 - stream assistant deltas and terminal status;
+- optionally monitor active turns in an Android foreground service and notify
+  when they finish or need attention;
 - reconnect by reloading Codex-authoritative state.
 
 It does not expose a shell, HTTP server, Git writes, approvals, or structured
@@ -51,6 +53,16 @@ root or listener should change.
 Open [`android`](android) in current Android Studio, build the debug app, and
 install it on the phone. In Foreman enter the Linux host/IP, the output of
 `foreman pair`, and a device name. A host without a port uses `8765`.
+
+Enable **Notify for active turns** in the app settings to monitor turns that you
+open or start. Android will ask for notification permission. While at least one
+turn is active, Foreman shows a low-priority foreground-service notification and
+keeps a separate authenticated connection to the Linux host. It posts an alert
+when a turn completes, fails, is interrupted, or needs attention, then stops
+monitoring that turn. This is on-demand rather than an always-running push
+service, so it cannot discover turns started elsewhere after Foreman is fully
+closed. Notification text intentionally omits session titles and transcript
+content so private prompts do not appear on the lock screen.
 
 For local development, the installed-Codex proof is:
 
