@@ -66,6 +66,13 @@ class ForemanConnectionTest {
                 ),
             ),
         )
+        assertEquals(6, maximumDecodedImageBytes(8))
+        val bounded = BoundedImageOutputStream(3)
+        bounded.write(byteArrayOf(1, 2, 3))
+        assertThrows(ImageBudgetExceeded::class.java) {
+            bounded.write(4)
+        }
+        assertEquals(3, bounded.size())
     }
 
     @Test

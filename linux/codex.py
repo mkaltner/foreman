@@ -75,7 +75,6 @@ class Codex:
                             "Codex socket accepted a connection but its WebSocket "
                             "handshake failed"
                         )
-                    self._remove_stale_socket()
                 else:
                     try:
                         await self._activate(websocket)
@@ -139,9 +138,11 @@ class Codex:
     async def _launch_app_server(self) -> None:
         await self._retire_owned_process()
         self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        identity = self._socket_identity()
         if self.socket_path.exists() and await self._socket_accepts_connections():
             return
-        self._remove_stale_socket()
+        if identity is not None and not self._remove_stale_socket(identity):
+            return
         listen = "unix://" if self._uses_default_socket else f"unix://{self.socket_path}"
         self.process = await asyncio.create_subprocess_exec(
             self.executable,
@@ -281,13 +282,24 @@ class Codex:
             self._reader_task = None
         self._fail_pending("Codex app-server disconnected")
 
-    def _remove_stale_socket(self) -> None:
+    def _socket_identity(self) -> tuple[int, int] | None:
         try:
-            mode = self.socket_path.stat().st_mode
-            if stat.S_ISSOCK(mode):
-                self.socket_path.unlink()
+            value = self.socket_path.stat()
         except FileNotFoundError:
-            pass
+            return None
+        return value.st_dev, value.st_ino
+
+    def _remove_stale_socket(self, expected: tuple[int, int]) -> bool:
+        try:
+            value = self.socket_path.stat()
+            if (value.st_dev, value.st_ino) != expected:
+                return False
+            if not stat.S_ISSOCK(value.st_mode):
+                return False
+            self.socket_path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
 
     async def _socket_accepts_connections(self) -> bool:
         try:

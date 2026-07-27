@@ -30,6 +30,29 @@ internal fun imageSampleSize(width: Int, height: Int): Int {
 internal fun encodedImageBytes(images: List<ImagePayload>): Int =
     images.sumOf { it.data.toByteArray(Charsets.US_ASCII).size }
 
+internal class ImageBudgetExceeded : RuntimeException()
+
+internal class BoundedImageOutputStream(
+    private val maximum: Int,
+) : ByteArrayOutputStream(minOf(maximum, 8192)) {
+    override fun write(value: Int) {
+        ensureCapacityFor(1)
+        super.write(value)
+    }
+
+    override fun write(buffer: ByteArray, offset: Int, length: Int) {
+        ensureCapacityFor(length)
+        super.write(buffer, offset, length)
+    }
+
+    private fun ensureCapacityFor(additional: Int) {
+        if (additional > maximum - size()) throw ImageBudgetExceeded()
+    }
+}
+
+internal fun maximumDecodedImageBytes(encodedBudget: Int): Int =
+    (encodedBudget / 4) * 3
+
 suspend fun preparePickedImages(
     context: Context,
     uris: List<Uri>,
@@ -37,14 +60,21 @@ suspend fun preparePickedImages(
     require(uris.size <= MAX_IMAGES_PER_MESSAGE) {
         "Choose at most $MAX_IMAGES_PER_MESSAGE images"
     }
-    val prepared = uris.map { prepareImage(context, it) }
-    require(encodedImageBytes(prepared) <= MAX_ENCODED_IMAGE_BYTES) {
-        "Combined images must be at most 8 MiB"
+    val prepared = mutableListOf<ImagePayload>()
+    var remaining = MAX_ENCODED_IMAGE_BYTES
+    uris.forEach { uri ->
+        val image = prepareImage(context, uri, remaining)
+        remaining -= image.data.length
+        prepared += image
     }
     prepared
 }
 
-private fun prepareImage(context: Context, uri: Uri): ImagePayload {
+private fun prepareImage(
+    context: Context,
+    uri: Uri,
+    encodedBudget: Int,
+): ImagePayload {
     val resolver = context.contentResolver
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     resolver.openInputStream(uri).use { input ->
@@ -73,19 +103,34 @@ private fun prepareImage(context: Context, uri: Uri): ImagePayload {
         }
     return try {
         val png = bitmap.hasAlpha()
-        val output = ByteArrayOutputStream()
-        val compressed =
-            bitmap.compress(
-                if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
-                if (png) 100 else 85,
-                output,
-            )
-        require(compressed) { "The selected image could not be compressed" }
+        val maximumBytes = maximumDecodedImageBytes(encodedBudget)
+        val (mimeType, bytes) =
+            try {
+                if (!png) throw ImageBudgetExceeded()
+                "image/png" to compress(bitmap, Bitmap.CompressFormat.PNG, 100, maximumBytes)
+            } catch (_: ImageBudgetExceeded) {
+                "image/jpeg" to
+                    compress(bitmap, Bitmap.CompressFormat.JPEG, 85, maximumBytes)
+            }
         ImagePayload(
-            mimeType = if (png) "image/png" else "image/jpeg",
-            data = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP),
+            mimeType = mimeType,
+            data = Base64.encodeToString(bytes, Base64.NO_WRAP),
         )
+    } catch (_: ImageBudgetExceeded) {
+        throw IllegalArgumentException("Combined images must be at most 8 MiB")
     } finally {
         bitmap.recycle()
     }
+}
+
+private fun compress(
+    bitmap: Bitmap,
+    format: Bitmap.CompressFormat,
+    quality: Int,
+    maximumBytes: Int,
+): ByteArray {
+    val output = BoundedImageOutputStream(maximumBytes)
+    val compressed = bitmap.compress(format, quality, output)
+    require(compressed) { "The selected image could not be compressed" }
+    return output.toByteArray()
 }

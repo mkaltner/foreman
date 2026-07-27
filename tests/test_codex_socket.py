@@ -236,6 +236,36 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await adapter.stop()
 
+    async def test_does_not_unlink_a_socket_rebound_during_stale_check(self) -> None:
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(self.socket_path))
+        stale.close()
+        server = FakeSocketServer(self.socket_path)
+
+        class RacingCodex(Codex):
+            checks = 0
+
+            async def _socket_accepts_connections(self) -> bool:
+                self.checks += 1
+                if self.checks == 2:
+                    self.socket_path.unlink()
+                    await server.start()
+                    return False
+                return False
+
+        adapter = RacingCodex(
+            str(self.executable),
+            lambda _: asyncio.sleep(0),
+            self.socket_path,
+        )
+        await adapter.start()
+        try:
+            self.assertIsNone(adapter.process)
+            self.assertEqual(server.methods.count("initialize"), 1)
+        finally:
+            await adapter.stop()
+            await server.stop()
+
     async def test_recovers_stale_socket_reconnects_and_does_not_resend_prompt(self) -> None:
         server = FakeSocketServer(self.socket_path)
         await server.start()
