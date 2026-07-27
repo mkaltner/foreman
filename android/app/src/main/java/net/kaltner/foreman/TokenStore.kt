@@ -14,8 +14,14 @@ data class SavedConnection(val host: String, val deviceName: String, val token: 
 
 enum class ThemeMode { System, Light, Dark }
 
+enum class AccentColor { Purple, Blue, Teal, Green, Orange, Red, Pink }
+
+internal fun parseAccentColor(value: String?): AccentColor =
+    AccentColor.values().firstOrNull { it.name == value } ?: AccentColor.Purple
+
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
+    val accentColor: AccentColor = AccentColor.Purple,
     val followNewMessages: Boolean = true,
     val monitorActiveTurns: Boolean = false,
     val accessLevel: String? = null,
@@ -35,6 +41,7 @@ class PreferenceStore(context: Context) {
                         preferences.getString("themeMode", ThemeMode.System.name)!!,
                     )
                 }.getOrDefault(ThemeMode.System),
+            accentColor = parseAccentColor(preferences.getString("accentColor", null)),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
             monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
             accessLevel = preferences.getString("accessLevel", null),
@@ -44,6 +51,10 @@ class PreferenceStore(context: Context) {
 
     fun setThemeMode(mode: ThemeMode) {
         preferences.edit().putString("themeMode", mode.name).apply()
+    }
+
+    fun setAccentColor(color: AccentColor) {
+        preferences.edit().putString("accentColor", color.name).apply()
     }
 
     fun setFollowNewMessages(enabled: Boolean) {
