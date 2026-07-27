@@ -10,6 +10,42 @@ Foreman is an early-alpha Linux user service and Android companion app for
 viewing and controlling local Codex sessions over an authenticated TCP
 connection.
 
+## Install
+
+Clone Foreman and run the rootless, offline installer from the repository:
+
+```sh
+git clone https://github.com/mkaltner/foreman.git
+cd foreman
+./install.sh
+```
+
+Then confirm the service and create a short-lived pairing code:
+
+```sh
+foreman status
+foreman pair
+```
+
+To update an existing installation:
+
+```sh
+cd foreman
+git pull
+./install.sh
+```
+
+Tagged Linux archives are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
+as an alternative when a Git checkout is not convenient. Android is currently
+installed by sideloading the signed release APK from the same release.
+
+## Alpha status
+
+Foreman is intentionally small and is ready for limited testing on trusted
+networks. Breaking behavior and incompatible Codex changes may occur during the
+alpha. Approval and structured-input requests must still be answered through
+another Codex client.
+
 The current alpha can:
 
 - pair multiple Android devices, each with a short-lived six-digit one-time
@@ -74,23 +110,17 @@ Requirements: Linux with user systemd, Python 3.10+, Git, and an authenticated
 `codex` CLI. The payload includes its pinned `websockets` dependency, so the
 installer doesn't need pip or Python venv support.
 
-```sh
-./install.sh
-foreman status
-foreman pair
-```
-
 The service listens on `0.0.0.0:8765`. Edit
 `~/.config/foreman/foreman.env`, then run `foreman restart`, if the repository
 root or listener should change.
 
 ## Android
 
-Install the signed APK from a tagged [GitHub release](https://github.com/mkaltner/foreman/releases),
-or open [`android`](android) in current Android Studio and build the debug app.
-In Foreman enter the Linux host/IP, the output of `foreman pair`, and a device
-name. A host without a port uses `8765`; run `foreman pair` again for each
-additional device.
+Install the signed release APK from a tagged [GitHub release](https://github.com/mkaltner/foreman/releases).
+For development, open [`android`](android) in a current Android Studio and build
+the debug app. In Foreman enter the Linux host/IP, the output of `foreman pair`,
+and a device name. A host without a port uses `8765`; run `foreman pair` again
+for each additional device.
 
 Enable **Notify for active turns** in the app settings to monitor turns that you
 open or start. Android will ask for notification permission. While at least one
