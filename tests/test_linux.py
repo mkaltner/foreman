@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -253,6 +254,17 @@ class ImagePayloadTests(unittest.TestCase):
             image_payloads({"images": [{**valid, "mimeType": "image/gif"}]})
         with self.assertRaisesRegex(ValueError, "at most"):
             image_payloads({"images": [valid] * 5})
+        with self.assertRaisesRegex(ValueError, "too large"):
+            image_payloads(
+                {
+                    "images": [
+                        {
+                            "mimeType": "image/jpeg",
+                            "data": "A" * (8 * 1024 * 1024 + 4),
+                        }
+                    ]
+                }
+            )
 
     def test_bounds_historical_image_projection_preferring_recent_images(self) -> None:
         messages = [
@@ -285,6 +297,15 @@ class StateTests(unittest.TestCase):
             raw = Path(directory, "state.json").read_text(encoding="utf-8")
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
+
+    def test_pairing_expires_at_its_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            with patch("state.time.time", return_value=1_000):
+                key, expires_at = state.create_pairing(lifetime_seconds=10)
+            self.assertEqual(expires_at, 1_010)
+            with patch("state.time.time", return_value=1_010):
+                self.assertIsNone(state.pair(key, "Late phone"))
 
 
 class PairingLimiterTests(unittest.TestCase):
@@ -749,6 +770,25 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(deleted["deleted"])
         self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_persistent_token_authenticates_a_new_connection(self) -> None:
+        paired = await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Persistent phone"},
+        )
+        token = paired["deviceToken"]
+        self.writer.close()
+        await self.writer.wait_closed()
+
+        socket = self.app.server.sockets[0]
+        self.reader, self.writer = await asyncio.open_connection(
+            *socket.getsockname()[:2]
+        )
+        authenticated = await self.request(
+            "authenticate", {"deviceToken": token}
+        )
+        self.assertTrue(authenticated["authenticated"])
+        self.assertTrue((await self.request("session.list"))["sessions"])
 
     async def test_rejects_unconfirmed_or_active_session_deletion(self) -> None:
         await self.request(
