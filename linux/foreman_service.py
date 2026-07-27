@@ -155,8 +155,11 @@ class Foreman:
                 pass
         finally:
             self.clients.discard(client)
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
 
     async def dispatch(
         self, client: Client, request: dict[str, Any]
@@ -173,6 +176,8 @@ class Foreman:
                 "capabilities": {
                     "steer": True,
                     "interrupt": True,
+                    "archive": True,
+                    "delete": True,
                     "approvals": False,
                     "structuredInput": False,
                 },
@@ -223,6 +228,20 @@ class Foreman:
             thread_id = required_text(payload, "sessionId", 100)
             client.subscriptions.add(thread_id)
             return {"subscribed": True}
+        if message_type == "session.archive":
+            thread_id = required_text(payload, "sessionId", 100)
+            await self.require_inactive_session(thread_id)
+            await self.codex.archive_thread(thread_id)
+            self.discard_subscriptions(thread_id)
+            return {"archived": True}
+        if message_type == "session.delete":
+            thread_id = required_text(payload, "sessionId", 100)
+            if payload.get("confirm") is not True:
+                raise ValueError("permanent deletion requires confirm=true")
+            await self.require_inactive_session(thread_id)
+            await self.codex.delete_thread(thread_id)
+            self.discard_subscriptions(thread_id)
+            return {"deleted": True}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)
             text = required_text(payload, "text", 100_000)
@@ -241,6 +260,15 @@ class Foreman:
             await self.codex.interrupt(thread_id, turn_id)
             return {"accepted": True}
         raise ValueError(f"unknown message type: {message_type}")
+
+    async def require_inactive_session(self, thread_id: str) -> None:
+        projected = session(await self.codex.read_thread(thread_id))
+        if projected["status"] in ("working", "waiting"):
+            raise ValueError("session is active; interrupt it before archive or delete")
+
+    def discard_subscriptions(self, thread_id: str) -> None:
+        for connected in self.clients:
+            connected.subscriptions.discard(thread_id)
 
     def repositories(self) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []

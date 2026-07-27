@@ -43,11 +43,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -67,6 +71,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
@@ -192,6 +197,20 @@ class MainActivity : ComponentActivity() {
 
 internal enum class Screen { Setup, Sessions, Detail }
 
+internal enum class SessionAction { Archive, Delete }
+
+internal data class PendingSessionAction(
+    val sessionId: String,
+    val sessionTitle: String,
+    val action: SessionAction,
+)
+
+internal fun sessionCanBeManaged(status: String): Boolean =
+    status != "working" && status != "waiting"
+
+internal fun eventShowsWorkingActivity(kind: String): Boolean =
+    kind == "assistant.delta" || kind == "item" || kind == "activity"
+
 internal data class UiState(
     val screen: Screen = Screen.Setup,
     val host: String = "",
@@ -208,6 +227,7 @@ internal data class UiState(
     val themeMode: ThemeMode = ThemeMode.System,
     val followNewMessages: Boolean = true,
     val monitorActiveTurns: Boolean = false,
+    val pendingSessionAction: PendingSessionAction? = null,
 )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -367,7 +387,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun refresh() {
-        if (!state.value.connected) return
+        if (!state.value.connected || state.value.loading) return
         viewModelScope.launch {
             state.update { it.copy(loading = true, error = null) }
             runCatching {
@@ -414,6 +434,60 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun backToSessions() {
         state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
         refresh()
+    }
+
+    fun requestSessionAction(session: SessionSummary, action: SessionAction) {
+        if (!sessionCanBeManaged(session.status)) {
+            state.update {
+                it.copy(error = "Interrupt the active session before archive or delete.")
+            }
+            return
+        }
+        state.update {
+            it.copy(
+                pendingSessionAction =
+                    PendingSessionAction(session.id, session.title, action),
+                error = null,
+            )
+        }
+    }
+
+    fun dismissSessionAction() {
+        if (!state.value.submitting) {
+            state.update { it.copy(pendingSessionAction = null) }
+        }
+    }
+
+    fun confirmSessionAction() {
+        val pending = state.value.pendingSessionAction ?: return
+        if (state.value.submitting) return
+        viewModelScope.launch {
+            state.update { it.copy(submitting = true, error = null) }
+            runCatching {
+                client.request(
+                    if (pending.action == SessionAction.Archive) {
+                        "session.archive"
+                    } else {
+                        "session.delete"
+                    },
+                    buildJsonObject {
+                        put("sessionId", pending.sessionId)
+                        if (pending.action == SessionAction.Delete) put("confirm", true)
+                    },
+                )
+                runCatching { TurnMonitorService.cancel(getApplication(), pending.sessionId) }
+                state.update { current ->
+                    val wasSelected = current.selected?.id == pending.sessionId
+                    current.copy(
+                        submitting = false,
+                        pendingSessionAction = null,
+                        sessions = current.sessions.filterNot { it.id == pending.sessionId },
+                        selected = if (wasSelected) null else current.selected,
+                        screen = if (wasSelected) Screen.Sessions else current.screen,
+                    )
+                }
+            }.onFailure(::fail)
+        }
     }
 
     fun startSession(repository: RepositoryInfo) {
@@ -507,11 +581,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { current ->
             val selected = current.selected
             if (selected?.id != sessionId) {
+                val inferredStatus =
+                    if (eventShowsWorkingActivity(kind)) {
+                        "working"
+                    } else if (kind == "status") {
+                        event["status"]?.jsonPrimitive?.content
+                    } else {
+                        null
+                    }
                 return@update current.copy(
                     sessions =
                         current.sessions.map {
-                            if (it.id == sessionId && kind == "status") {
-                                it.copy(status = event["status"]?.jsonPrimitive?.content ?: it.status)
+                            if (it.id == sessionId && inferredStatus != null) {
+                                it.copy(
+                                    status = inferredStatus,
+                                    attention = inferredStatus == "waiting",
+                                )
                             } else {
                                 it
                             }
@@ -540,6 +625,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         selected =
                             selected.copy(
                                 messages = messages,
+                                status = "working",
+                                attention = false,
+                                activeTurnId =
+                                    event["turnId"]?.jsonPrimitive?.content
+                                        ?: selected.activeTurnId,
                                 activityLabel = "Responding",
                                 activityText = "",
                             ),
@@ -570,6 +660,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         selected =
                             selected.copy(
                                 messages = messages,
+                                status = "working",
+                                attention = false,
+                                activeTurnId =
+                                    event["turnId"]?.jsonPrimitive?.content
+                                        ?: selected.activeTurnId,
                                 activityLabel = nextLabel,
                                 activityText = "",
                             ),
@@ -590,6 +685,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     current.copy(
                         selected =
                             selected.copy(
+                                status = "working",
+                                attention = false,
+                                activeTurnId =
+                                    event["turnId"]?.jsonPrimitive?.content
+                                        ?: selected.activeTurnId,
                                 activityLabel = label,
                                 activityText = activityText,
                             ),
@@ -607,6 +707,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         selected =
                             selected.copy(
                                 status = newStatus,
+                                attention = newStatus == "waiting",
                                 activeTurnId = active,
                                 activityLabel =
                                     if (newStatus == "working") {
@@ -685,6 +786,14 @@ private fun ForemanApp(
                 Screen.Setup -> SetupScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Sessions -> SessionsScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Detail -> SessionDetailScreen(state, viewModel, requestTurnMonitoring)
+            }
+            state.pendingSessionAction?.let { pending ->
+                SessionActionDialog(
+                    pending = pending,
+                    busy = state.submitting,
+                    onConfirm = viewModel::confirmSessionAction,
+                    onDismiss = viewModel::dismissSessionAction,
+                )
             }
         }
     }
@@ -804,7 +913,10 @@ private fun SessionsScreen(
                     )
                 },
                 actions = {
-                    IconButton(onClick = viewModel::refresh, enabled = state.connected) {
+                    IconButton(
+                        onClick = viewModel::refresh,
+                        enabled = state.connected && !state.loading,
+                    ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
                     IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected) {
@@ -835,14 +947,35 @@ private fun SessionsScreen(
                 val active = state.sessions.filter { it.status == "working" }
                 val waiting = state.sessions.filter { it.status == "waiting" || it.attention }
                 val recent = state.sessions.filterNot { it in active || it in waiting }
-                LazyColumn(
+                PullToRefreshBox(
+                    isRefreshing = state.loading,
+                    onRefresh = viewModel::refresh,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    sessionSection("Active", active, viewModel::openSession)
-                    sessionSection("Waiting", waiting, viewModel::openSession)
-                    sessionSection("Recent", recent, viewModel::openSession)
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        sessionSection(
+                            "Active",
+                            active,
+                            viewModel::openSession,
+                            viewModel::requestSessionAction,
+                        )
+                        sessionSection(
+                            "Waiting",
+                            waiting,
+                            viewModel::openSession,
+                            viewModel::requestSessionAction,
+                        )
+                        sessionSection(
+                            "Recent",
+                            recent,
+                            viewModel::openSession,
+                            viewModel::requestSessionAction,
+                        )
+                    }
                 }
             }
         }
@@ -860,6 +993,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     title: String,
     sessions: List<SessionSummary>,
     open: (String) -> Unit,
+    action: (SessionSummary, SessionAction) -> Unit,
 ) {
     if (sessions.isEmpty()) return
     item {
@@ -872,12 +1006,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
         )
     }
     items(sessions, key = { it.id }) { session ->
-        SessionCard(session) { open(session.id) }
+        SessionCard(
+            session = session,
+            onClick = { open(session.id) },
+            onAction = { action(session, it) },
+        )
     }
 }
 
 @Composable
-private fun SessionCard(session: SessionSummary, onClick: () -> Unit) {
+private fun SessionCard(
+    session: SessionSummary,
+    onClick: () -> Unit,
+    onAction: (SessionAction) -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -890,6 +1032,10 @@ private fun SessionCard(session: SessionSummary, onClick: () -> Unit) {
                 )
                 Spacer(Modifier.width(8.dp))
                 StatusPill(session.status)
+                SessionActionsMenu(
+                    enabled = sessionCanBeManaged(session.status),
+                    onAction = onAction,
+                )
             }
             Text(
                 session.repository.substringAfterLast('/'),
@@ -972,6 +1118,13 @@ private fun SessionDetailScreen(
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                         }
+                    }
+                    if (selected != null) {
+                        SessionActionsMenu(
+                            enabled =
+                                sessionCanBeManaged(selected.status) && !state.submitting,
+                            onAction = { viewModel.requestSessionAction(selected, it) },
+                        )
                     }
                     UiSettingsMenu(state, viewModel, requestTurnMonitoring)
                 },
@@ -1069,8 +1222,8 @@ private fun LiveActivityRow(session: SessionSummary) {
 private fun ConversationRow(item: ConversationItem) {
     when (item.kind) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Text(
-                item.text,
+            MarkdownText(
+                text = item.text,
                 modifier =
                     Modifier.fillMaxWidth(0.86f)
                         .background(
@@ -1078,13 +1231,13 @@ private fun ConversationRow(item: ConversationItem) {
                             RoundedCornerShape(16.dp),
                         )
                         .padding(14.dp),
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
-        "assistant" -> Text(
-            item.text,
+        "assistant" -> MarkdownText(
+            text = item.text,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            style = MaterialTheme.typography.bodyLarge,
+            contentColor = MaterialTheme.colorScheme.onBackground,
         )
         "command", "tool" -> Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1210,6 +1363,88 @@ private fun UiSettingsMenu(
             )
         }
     }
+}
+
+@Composable
+private fun SessionActionsMenu(
+    enabled: Boolean,
+    onAction: (SessionAction) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+        ) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Session actions")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Archive") },
+                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onAction(SessionAction.Archive)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Delete permanently") },
+                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onAction(SessionAction.Delete)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionActionDialog(
+    pending: PendingSessionAction,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val deleting = pending.action == SessionAction.Delete
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (deleting) "Delete session permanently?" else "Archive session?") },
+        text = {
+            Text(
+                if (deleting) {
+                    "\u201c${pending.sessionTitle}\u201d and any sessions it spawned will be permanently " +
+                        "deleted. This cannot be undone."
+                } else {
+                    "\u201c${pending.sessionTitle}\u201d will be removed from the active list. " +
+                        "It can be restored from the Codex archive."
+                },
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = !busy,
+                colors =
+                    if (deleting) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors()
+                    },
+            ) {
+                Text(if (deleting) "Delete permanently" else "Archive")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

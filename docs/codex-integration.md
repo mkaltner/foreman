@@ -26,7 +26,8 @@ codex app-server generate-json-schema --experimental --out /tmp/schema
 Foreman initializes each connection with `initialize` and `initialized`, then
 uses:
 
-- `thread/list`, `thread/read`, `thread/start`, and `thread/resume`;
+- `thread/list`, `thread/read`, `thread/start`, `thread/resume`,
+  `thread/archive`, and `thread/delete`;
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
 - `thread/status/changed`, `turn/started`, and `turn/completed`;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command

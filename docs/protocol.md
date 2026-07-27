@@ -22,10 +22,16 @@ Implemented types:
 - `hello`, `pair`, `authenticate`, `ping`;
 - `repository.list`;
 - `session.list`, `session.read`, `session.start`, `session.resume`,
-  `session.subscribe`;
+  `session.subscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
 
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
 `deviceToken`. `session.event` carries normalized status, assistant delta, and
 command/tool item events. Reconnect is intentionally a fresh list, read, and
 subscribe sequence; there are no cursors or replay logs.
+
+`session.archive` moves an inactive Codex thread out of the active list and is
+reversible through Codex's `thread/unarchive` API. `session.delete` requires
+`confirm: true` and permanently deletes the inactive thread plus its spawned
+descendants. Foreman rejects both operations while a session is working or
+waiting for input.

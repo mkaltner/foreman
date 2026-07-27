@@ -117,6 +117,46 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun parsesSupportedMarkdownBlocksAndRejectsUnsafeLinks() {
+        val blocks =
+            parseMarkdown(
+                """
+                # Heading
+
+                A **bold** paragraph.
+
+                - first
+                2. second
+
+                ```kotlin
+                val answer = 42
+                ```
+                """.trimIndent(),
+            )
+
+        assertEquals(MarkdownBlock.Heading(1, "Heading"), blocks[0])
+        assertEquals(MarkdownBlock.Paragraph("A **bold** paragraph."), blocks[1])
+        assertEquals(MarkdownBlock.ListItem("\u2022", "first"), blocks[2])
+        assertEquals(MarkdownBlock.ListItem("2.", "second"), blocks[3])
+        assertEquals(MarkdownBlock.Code("kotlin", "val answer = 42"), blocks[4])
+        assertEquals("https://example.com/docs", safeMarkdownUrl("https://example.com/docs"))
+        assertNull(safeMarkdownUrl("file:///etc/passwd"))
+        assertNull(safeMarkdownUrl("javascript:alert(1)"))
+        assertNull(safeMarkdownUrl("intent://settings"))
+    }
+
+    @Test
+    fun activityEventsRestoreWorkingStatusAndActiveSessionsCannotBeManaged() {
+        assertTrue(eventShowsWorkingActivity("assistant.delta"))
+        assertTrue(eventShowsWorkingActivity("item"))
+        assertTrue(eventShowsWorkingActivity("activity"))
+        assertFalse(eventShowsWorkingActivity("status"))
+        assertFalse(sessionCanBeManaged("working"))
+        assertFalse(sessionCanBeManaged("waiting"))
+        assertTrue(sessionCanBeManaged("completed"))
+    }
+
+    @Test
     fun choosesCompactLiveActivityLabels() {
         val base =
             SessionSummary(

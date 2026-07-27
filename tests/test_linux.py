@@ -52,6 +52,9 @@ THREAD = {
 class FakeCodex:
     def __init__(self, executable: str, on_event) -> None:
         self.on_event = on_event
+        self.active: set[str] = set()
+        self.archived: list[str] = []
+        self.deleted: list[str] = []
 
     async def start(self) -> None:
         pass
@@ -63,7 +66,14 @@ class FakeCodex:
         return [{**THREAD, "turns": []}]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
-        return THREAD
+        return {
+            **THREAD,
+            "id": thread_id,
+            "status":
+                {"type": "active", "activeFlags": []}
+                if thread_id in self.active
+                else {"type": "idle"},
+        }
 
     async def start_thread(self, cwd: str) -> dict[str, Any]:
         return {
@@ -98,6 +108,12 @@ class FakeCodex:
 
     async def interrupt(self, thread_id: str, turn_id: str) -> None:
         pass
+
+    async def archive_thread(self, thread_id: str) -> None:
+        self.archived.append(thread_id)
+
+    async def delete_thread(self, thread_id: str) -> None:
+        self.deleted.append(thread_id)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -165,6 +181,16 @@ class MappingTests(unittest.TestCase):
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
             "waiting",
         )
+        persisted_active = session(
+            {
+                **THREAD,
+                "status": {"type": "notLoaded"},
+                "turns": [{"id": "turn-live", "status": "inProgress", "items": []}],
+            },
+            include_messages=True,
+        )
+        self.assertEqual(persisted_active["status"], "working")
+        self.assertEqual(persisted_active["activeTurnId"], "turn-live")
 
     def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
         thread_id, event = normalize_event(
@@ -201,6 +227,29 @@ class MappingTests(unittest.TestCase):
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_steer_reconciles_a_stale_active_turn_id(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        async def read_thread(_: str) -> dict[str, Any]:
+            return {
+                **THREAD,
+                "status": {"type": "active", "activeFlags": []},
+                "turns": [{"id": "turn-current", "status": "inProgress", "items": []}],
+            }
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requests.append((method, params))
+            return {"turnId": params["expectedTurnId"]}
+
+        adapter.read_thread = read_thread  # type: ignore[method-assign]
+        adapter.request = request  # type: ignore[method-assign]
+
+        result = await adapter.steer("thread-1", "turn-stale", "continue")
+
+        self.assertEqual(result["turnId"], "turn-current")
+        self.assertEqual(requests[0][1]["expectedTurnId"], "turn-current")
+
     async def test_reads_app_server_messages_larger_than_asyncio_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory, "fake-codex")
@@ -265,6 +314,20 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def request(
         self, message_type: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        message = await self.exchange(message_type, payload)
+        self.assertNotEqual(message["type"], "error", message)
+        return message["payload"]
+
+    async def request_error(
+        self, message_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        message = await self.exchange(message_type, payload)
+        self.assertEqual(message["type"], "error", message)
+        return message["payload"]
+
+    async def exchange(
+        self, message_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         self.next_id += 1
         request_id = f"test-{self.next_id}"
         self.writer.write(
@@ -281,8 +344,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         while True:
             message = protocol.decode(await self.reader.readline())
             if message.get("id") == request_id:
-                self.assertNotEqual(message["type"], "error", message)
-                return message["payload"]
+                return message
             self.unsolicited.append(message)
 
     async def test_pair_list_read_start_and_prompt(self) -> None:
@@ -315,6 +377,39 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             if message.get("type") == "session.event"
         )
         self.assertEqual(event["payload"]["event"]["text"], "Hello")
+
+        archived = await self.request(
+            "session.archive", {"sessionId": "thread-1"}
+        )
+        self.assertTrue(archived["archived"])
+        self.assertEqual(self.app.codex.archived, ["thread-1"])
+        deleted = await self.request(
+            "session.delete", {"sessionId": started["id"], "confirm": True}
+        )
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_rejects_unconfirmed_or_active_session_deletion(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
+        )
+        unconfirmed = await self.request_error(
+            "session.delete", {"sessionId": "thread-1"}
+        )
+        self.assertIn("confirm=true", unconfirmed["message"])
+
+        self.app.codex.active.add("thread-1")
+        active = await self.request_error(
+            "session.delete", {"sessionId": "thread-1", "confirm": True}
+        )
+        self.assertIn("session is active", active["message"])
+        self.assertEqual(self.app.codex.deleted, [])
+        archived = await self.request_error(
+            "session.archive", {"sessionId": "thread-1"}
+        )
+        self.assertIn("session is active", archived["message"])
+        self.assertEqual(self.app.codex.archived, [])
 
 
 if __name__ == "__main__":

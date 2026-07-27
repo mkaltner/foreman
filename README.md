@@ -15,7 +15,10 @@ The current prototype can:
 - list Git repositories below one configured root;
 - list and read real local Codex threads;
 - show user/assistant messages and compact command/tool activity;
+- render common Markdown, including headings, lists, emphasis, links, and code;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
+- refresh the session list with a pull gesture, and archive or permanently delete
+  inactive sessions with confirmation;
 - stream assistant deltas and terminal status;
 - optionally monitor active turns in an Android foreground service and notify
   when they finish or need attention;
@@ -63,6 +66,13 @@ monitoring that turn. This is on-demand rather than an always-running push
 service, so it cannot discover turns started elsewhere after Foreman is fully
 closed. Notification text intentionally omits session titles and transcript
 content so private prompts do not appear on the lock screen.
+
+Live status is scoped to the Codex app-server process Foreman runs. If a turn is
+started in Codex Desktop, another CLI, or another app-server process, Foreman
+cannot receive that process's live event stream. Pull to refresh to reconcile
+status and transcript data after Codex persists it. If another client replaces
+an active turn between refresh and steering, the Linux service reconciles the
+current turn before sending rather than exposing a stale-turn error.
 
 For local development, the installed-Codex proof is:
 
