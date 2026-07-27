@@ -48,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
@@ -97,6 +98,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -279,6 +281,11 @@ internal fun accentPalette(color: AccentColor): AccentPalette =
             )
     }
 
+internal fun mutedAccentContainer(tones: AccentTones, darkTheme: Boolean): Color =
+    tones.primary
+        .copy(alpha = if (darkTheme) 0.14f else 0.10f)
+        .compositeOver(if (darkTheme) Color(0xFF3D3A43) else Color(0xFFE7E0EB))
+
 internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
     accentPalette(accentColor).let { palette ->
         val tones = if (darkTheme) palette.dark else palette.light
@@ -289,7 +296,7 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 primaryContainer = tones.container,
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
-                secondaryContainer = tones.container,
+                secondaryContainer = mutedAccentContainer(tones, darkTheme = true),
                 onSecondaryContainer = tones.onContainer,
                 background = Color(0xFF111827),
                 surface = Color(0xFF182235),
@@ -304,7 +311,7 @@ internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
                 primaryContainer = tones.container,
                 onPrimaryContainer = tones.onContainer,
                 secondary = tones.secondary,
-                secondaryContainer = tones.container,
+                secondaryContainer = mutedAccentContainer(tones, darkTheme = false),
                 onSecondaryContainer = tones.onContainer,
                 background = Color(0xFFF6F7F9),
                 surface = Color.White,
@@ -2267,99 +2274,143 @@ private fun UiSettingsMenu(
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showingAccentColors by remember { mutableStateOf(false) }
     Box(modifier) {
-        IconButton(onClick = { expanded = true }) {
+        IconButton(
+            onClick = {
+                showingAccentColors = false
+                expanded = true
+            },
+        ) {
             Icon(Icons.Default.Settings, contentDescription = "Settings")
         }
         DropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false },
+            onDismissRequest = {
+                expanded = false
+                showingAccentColors = false
+            },
         ) {
-            Text(
-                "Theme",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            ThemeMode.values().forEach { mode ->
+            if (showingAccentColors) {
                 DropdownMenuItem(
-                    text = { Text(mode.name) },
+                    text = {
+                        Text(
+                            "Accent color",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    },
                     leadingIcon = {
-                        RadioButton(
-                            selected = state.themeMode == mode,
-                            onClick = null,
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to settings",
+                        )
+                    },
+                    onClick = { showingAccentColors = false },
+                )
+                HorizontalDivider()
+                AccentColor.values().forEach { color ->
+                    val selected = state.accentColor == color
+                    DropdownMenuItem(
+                        text = { Text(color.name) },
+                        leadingIcon = { AccentSwatch(color, selected) },
+                        trailingIcon = {
+                            if (selected) {
+                                Icon(Icons.Default.Check, contentDescription = "Selected")
+                            }
+                        },
+                        onClick = {
+                            viewModel.setAccentColor(color)
+                            expanded = false
+                            showingAccentColors = false
+                        },
+                    )
+                }
+            } else {
+                Text(
+                    "Theme",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                ThemeMode.values().forEach { mode ->
+                    DropdownMenuItem(
+                        text = { Text(mode.name) },
+                        leadingIcon = {
+                            RadioButton(
+                                selected = state.themeMode == mode,
+                                onClick = null,
+                            )
+                        },
+                        onClick = {
+                            viewModel.setThemeMode(mode)
+                            expanded = false
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Accent color") },
+                    leadingIcon = { AccentSwatch(state.accentColor) },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                state.accentColor.name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                            )
+                        }
+                    },
+                    onClick = { showingAccentColors = true },
+                )
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Follow new messages") },
+                    leadingIcon = {
+                        Checkbox(
+                            checked = state.followNewMessages,
+                            onCheckedChange = null,
                         )
                     },
                     onClick = {
-                        viewModel.setThemeMode(mode)
-                        expanded = false
+                        viewModel.setFollowNewMessages(!state.followNewMessages)
                     },
                 )
-            }
-            Text(
-                "Accent color",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            AccentColor.values().forEach { color ->
-                val selected = state.accentColor == color
                 DropdownMenuItem(
-                    text = { Text(color.name) },
+                    text = { Text("Notify for active turns") },
                     leadingIcon = {
-                        Surface(
-                            modifier = Modifier.size(20.dp),
-                            shape = CircleShape,
-                            color = accentPalette(color).light.primary,
-                            border =
-                                BorderStroke(
-                                    if (selected) 2.dp else 1.dp,
-                                    if (selected) {
-                                        MaterialTheme.colorScheme.onSurface
-                                    } else {
-                                        MaterialTheme.colorScheme.outline
-                                    },
-                                ),
-                        ) {}
-                    },
-                    trailingIcon = {
-                        if (selected) {
-                            Icon(Icons.Default.Check, contentDescription = "Selected")
-                        }
+                        Checkbox(
+                            checked = state.monitorActiveTurns,
+                            onCheckedChange = null,
+                        )
                     },
                     onClick = {
-                        viewModel.setAccentColor(color)
-                        expanded = false
+                        requestTurnMonitoring(!state.monitorActiveTurns)
                     },
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("Follow new messages") },
-                leadingIcon = {
-                    Checkbox(
-                        checked = state.followNewMessages,
-                        onCheckedChange = null,
-                    )
-                },
-                onClick = {
-                    viewModel.setFollowNewMessages(!state.followNewMessages)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Notify for active turns") },
-                leadingIcon = {
-                    Checkbox(
-                        checked = state.monitorActiveTurns,
-                        onCheckedChange = null,
-                    )
-                },
-                onClick = {
-                    requestTurnMonitoring(!state.monitorActiveTurns)
-                },
-            )
         }
     }
+}
+
+@Composable
+private fun AccentSwatch(color: AccentColor, selected: Boolean = false) {
+    Surface(
+        modifier = Modifier.size(20.dp),
+        shape = CircleShape,
+        color = accentPalette(color).light.primary,
+        border =
+            BorderStroke(
+                if (selected) 2.dp else 1.dp,
+                if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.outline
+                },
+            ),
+    ) {}
 }
 
 @Composable
