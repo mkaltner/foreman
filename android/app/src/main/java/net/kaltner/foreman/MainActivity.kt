@@ -101,6 +101,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -219,6 +220,28 @@ internal fun sessionActionCanBeConfirmed(
 
 internal fun eventShowsWorkingActivity(kind: String): Boolean =
     kind == "assistant.delta" || kind == "item" || kind == "activity"
+
+internal fun UiState.withSynchronizedSessions(
+    sessions: List<SessionSummary>,
+    repositories: List<RepositoryInfo>,
+    selectedSessionId: String?,
+    selectedSession: SessionSummary?,
+): UiState =
+    copy(
+        sessions = sessions,
+        repositories = repositories,
+        selected = selectedSession,
+        screen =
+            if (selectedSessionId != null && selectedSession != null) {
+                Screen.Detail
+            } else if (screen == Screen.Detail) {
+                Screen.Sessions
+            } else {
+                screen
+            },
+        loading = false,
+        error = null,
+    )
 
 internal data class UiState(
     val screen: Screen = Screen.Setup,
@@ -342,12 +365,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     it.copy(
                         connected = true,
                         screen = Screen.Sessions,
-                        loading = false,
                         pairingKey = "",
                         capabilities = client.capabilities,
                     )
                 }
-                refresh()
+                synchronizeSessions()
             }.onFailure(::fail)
         }
     }
@@ -371,7 +393,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             withTimeout(5_000) { client.request("ping") }
                         }.isSuccess
                     if (healthy) {
-                        state.update { it.copy(error = null) }
+                        synchronizeSessions(state.value.selected?.id)
                         return@launch
                     }
                 }
@@ -385,7 +407,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private suspend fun reconnectSaved(saved: SavedConnection) {
-        val selectedId = state.value.selected?.id
+        val selectedId = notificationSessionId ?: state.value.selected?.id
         state.update { it.copy(loading = true, error = null) }
         runCatching {
             client.authenticate(saved.host, saved.token)
@@ -393,16 +415,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 it.copy(
                     connected = true,
                     screen = if (selectedId == null) Screen.Sessions else Screen.Detail,
-                    loading = false,
                     error = null,
                     capabilities = client.capabilities,
                 )
             }
-            refresh()
-            (notificationSessionId ?: selectedId)?.let {
-                notificationSessionId = null
-                openSession(it)
-            }
+            synchronizeSessions(selectedId)
+            notificationSessionId = null
         }.onFailure(::fail)
     }
 
@@ -410,22 +428,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!state.value.connected || state.value.loading) return
         viewModelScope.launch {
             state.update { it.copy(loading = true, error = null) }
-            runCatching {
-                val sessionsRequest = async { client.request("session.list") }
-                val repositoriesRequest = async { client.request("repository.list") }
-                val sessions = sessionsRequest.await().payload.getValue("sessions").jsonArray
-                    .map { json.decodeFromJsonElement<SessionSummary>(it) }
-                val repositories =
-                    repositoriesRequest.await().payload.getValue("repositories").jsonArray
-                        .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
-                state.update {
-                    it.copy(
-                        sessions = sessions,
-                        repositories = repositories,
-                        loading = false,
-                    )
-                }
-            }.onFailure(::fail)
+            runCatching { synchronizeSessions(state.value.selected?.id) }.onFailure(::fail)
         }
     }
 
@@ -433,22 +436,52 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         viewModelScope.launch {
             state.update { it.copy(screen = Screen.Detail, loading = true, error = null) }
             runCatching {
-                client.request(
-                    "session.subscribe",
-                    buildJsonObject { put("sessionId", id) },
-                )
-                val response = client.request(
-                    "session.read",
-                    buildJsonObject { put("sessionId", id) },
-                )
-                val selected =
-                    json.decodeFromJsonElement<SessionSummary>(
-                        response.payload.getValue("session"),
-                    )
+                val selected = readSession(id)
                 state.update { it.copy(selected = selected, loading = false) }
                 monitorIfActive(selected)
             }.onFailure(::fail)
         }
+    }
+
+    private suspend fun synchronizeSessions(selectedSessionId: String? = null) {
+        state.update { it.copy(loading = true, error = null) }
+        val (sessions, repositories) =
+            coroutineScope {
+                val sessionsRequest = async { client.request("session.list") }
+                val repositoriesRequest = async { client.request("repository.list") }
+                val sessions =
+                    sessionsRequest.await().payload.getValue("sessions").jsonArray
+                        .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                val repositories =
+                    repositoriesRequest.await().payload.getValue("repositories").jsonArray
+                        .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
+                sessions to repositories
+            }
+        val selected = selectedSessionId?.let { readSession(it) }
+        state.update {
+            it.withSynchronizedSessions(
+                sessions = sessions,
+                repositories = repositories,
+                selectedSessionId = selectedSessionId,
+                selectedSession = selected,
+            )
+        }
+        selected?.let(::monitorIfActive)
+    }
+
+    private suspend fun readSession(id: String): SessionSummary {
+        client.request(
+            "session.subscribe",
+            buildJsonObject { put("sessionId", id) },
+        )
+        val response =
+            client.request(
+                "session.read",
+                buildJsonObject { put("sessionId", id) },
+            )
+        return json.decodeFromJsonElement(
+            response.payload.getValue("session"),
+        )
     }
 
     fun backToSessions() {

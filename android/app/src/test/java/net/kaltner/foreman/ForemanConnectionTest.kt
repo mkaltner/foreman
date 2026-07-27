@@ -173,6 +173,53 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun foregroundSynchronizationReplacesStaleOverviewAndSelectedStatus() {
+        val stale =
+            UiState(
+                screen = Screen.Detail,
+                loading = true,
+                sessions =
+                    listOf(
+                        SessionSummary(
+                            id = "thread-1",
+                            repository = "/projects/example",
+                            title = "Example",
+                            status = "idle",
+                        ),
+                    ),
+                selected =
+                    SessionSummary(
+                        id = "thread-1",
+                        repository = "/projects/example",
+                        title = "Example",
+                        status = "interrupted",
+                    ),
+            )
+        val working =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+                activeTurnId = "turn-live",
+            )
+
+        val synchronized =
+            stale.withSynchronizedSessions(
+                sessions = listOf(working),
+                repositories = emptyList(),
+                selectedSessionId = working.id,
+                selectedSession = working,
+            )
+
+        assertEquals("working", synchronized.sessions.single().status)
+        assertEquals("working", synchronized.selected?.status)
+        assertEquals("turn-live", synchronized.selected?.activeTurnId)
+        assertEquals(Screen.Detail, synchronized.screen)
+        assertFalse(synchronized.loading)
+    }
+
+    @Test
     fun choosesCompactLiveActivityLabels() {
         val base =
             SessionSummary(
