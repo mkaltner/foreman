@@ -125,7 +125,7 @@ class FakeSocketServer:
 
 
 FAKE_CODEX = r"""#!/usr/bin/env python3
-import asyncio, json, os, pathlib, signal, sys
+import asyncio, json, os, pathlib, signal, socket, sys
 from websockets.asyncio.server import unix_serve
 
 if "generate-json-schema" in sys.argv:
@@ -168,6 +168,16 @@ async def handler(ws):
 
 async def main():
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+    if pathlib.Path(path).exists():
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(path)
+        except OSError:
+            pathlib.Path(path).unlink(missing_ok=True)
+        else:
+            raise RuntimeError("socket is already active")
+        finally:
+            probe.close()
     server = await unix_serve(handler, path)
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -260,10 +270,10 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         await adapter.start()
         try:
-            self.assertIsNone(adapter.process)
             self.assertEqual(server.methods.count("initialize"), 1)
         finally:
             await adapter.stop()
+            self.assertIsNotNone(server.server)
             await server.stop()
 
     async def test_recovers_stale_socket_reconnects_and_does_not_resend_prompt(self) -> None:
