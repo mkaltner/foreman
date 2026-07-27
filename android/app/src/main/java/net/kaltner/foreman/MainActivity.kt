@@ -343,6 +343,44 @@ internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): U
 internal fun UiState.shouldDiscoverSession(sessionId: String, eventKind: String): Boolean =
     connected && eventKind == "status" && sessions.none { it.id == sessionId }
 
+internal class SessionDiscoveryQueue(private val maximumAttempts: Int = 4) {
+    private val remainingAttempts = linkedMapOf<String, Int>()
+
+    init {
+        require(maximumAttempts > 0)
+    }
+
+    fun enqueue(sessionId: String) {
+        if (sessionId !in remainingAttempts) {
+            remainingAttempts[sessionId] = maximumAttempts
+        }
+    }
+
+    fun targets(): Set<String> = remainingAttempts.keys.toSet()
+
+    fun recordAttempt(targets: Set<String>, discoveredIds: Set<String>) {
+        discoveredIds.forEach(remainingAttempts::remove)
+        targets.forEach { sessionId ->
+            val remaining = remainingAttempts[sessionId] ?: return@forEach
+            if (remaining == 1) {
+                remainingAttempts.remove(sessionId)
+            } else {
+                remainingAttempts[sessionId] = remaining - 1
+            }
+        }
+    }
+
+    fun retryDelayMillis(): Long {
+        val mostRemaining = remainingAttempts.values.maxOrNull() ?: return 0L
+        val completedAttempts = maximumAttempts - mostRemaining
+        return 250L shl (completedAttempts - 1).coerceAtLeast(0)
+    }
+
+    fun clear() {
+        remainingAttempts.clear()
+    }
+}
+
 internal data class UiState(
     val screen: Screen = Screen.Setup,
     val host: String = "",
@@ -385,14 +423,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
     private var reconnectJob: Job? = null
+    private val sessionDiscoveryLock = Any()
+    private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
     private var notificationSessionId: String? = null
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
-            sessionDiscoveryJob?.cancel()
-            sessionDiscoveryJob = null
+            synchronized(sessionDiscoveryLock) {
+                sessionDiscoveryJob?.cancel()
+                sessionDiscoveryJob = null
+                sessionDiscoveryQueue.clear()
+            }
             state.update {
                 it.copy(
                     connected = false,
@@ -645,18 +688,40 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             .map { json.decodeFromJsonElement<SessionSummary>(it) }
 
     private fun discoverSession(sessionId: String) {
-        if (sessionDiscoveryJob?.isActive == true) return
-        sessionDiscoveryJob =
-            viewModelScope.launch {
-                repeat(4) { attempt ->
-                    val discovered = runCatching { listSessions() }.getOrNull()
-                    if (discovered != null) {
-                        state.update { it.withDiscoveredSessions(discovered) }
-                        if (discovered.any { it.id == sessionId }) return@launch
+        synchronized(sessionDiscoveryLock) {
+            sessionDiscoveryQueue.enqueue(sessionId)
+            if (sessionDiscoveryJob?.isActive == true) return
+            sessionDiscoveryJob = viewModelScope.launch { discoverQueuedSessions() }
+        }
+    }
+
+    private suspend fun discoverQueuedSessions() {
+        while (true) {
+            val targets =
+                synchronized(sessionDiscoveryLock) {
+                    sessionDiscoveryQueue.targets().ifEmpty {
+                        sessionDiscoveryJob = null
+                        return
                     }
-                    if (attempt < 3) delay(250L shl attempt)
                 }
+            val discovered = runCatching { listSessions() }.getOrNull()
+            if (discovered != null) {
+                state.update { it.withDiscoveredSessions(discovered) }
             }
+            val retryDelay =
+                synchronized(sessionDiscoveryLock) {
+                    sessionDiscoveryQueue.recordAttempt(
+                        targets,
+                        discovered.orEmpty().mapTo(mutableSetOf()) { it.id },
+                    )
+                    if (sessionDiscoveryQueue.targets().isEmpty()) {
+                        sessionDiscoveryJob = null
+                        return
+                    }
+                    sessionDiscoveryQueue.retryDelayMillis()
+                }
+            delay(retryDelay)
+        }
     }
 
     private suspend fun readSession(id: String): SessionSummary {

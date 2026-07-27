@@ -361,6 +361,25 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun concurrentSessionDiscoveriesRemainQueued() {
+        val queue = SessionDiscoveryQueue()
+        queue.enqueue("thread-first")
+        val firstRequest = queue.targets()
+
+        queue.enqueue("thread-second")
+        queue.recordAttempt(firstRequest, setOf("thread-first"))
+
+        assertEquals(setOf("thread-second"), queue.targets())
+        repeat(3) {
+            val request = queue.targets()
+            queue.recordAttempt(request, emptySet())
+            assertEquals(setOf("thread-second"), queue.targets())
+        }
+        queue.recordAttempt(queue.targets(), emptySet())
+        assertTrue(queue.targets().isEmpty())
+    }
+
+    @Test
     fun choosesCompactLiveActivityLabels() {
         val base =
             SessionSummary(
