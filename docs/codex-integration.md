@@ -26,11 +26,16 @@ codex app-server generate-json-schema --experimental --out /tmp/schema
 Foreman initializes each connection with `initialize` and `initialized`, then
 uses:
 
-- `thread/list`, `thread/read`, `thread/start`, and `thread/resume`;
+- `thread/list`, `thread/read`, `thread/start`, `thread/resume`,
+  `thread/archive`, and `thread/delete`;
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
 - `thread/status/changed`, `turn/started`, and `turn/completed`;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
+
+At startup, Foreman generates the installed app-server JSON schema and only
+advertises optional archive/delete capabilities present in that Codex version.
+If schema discovery is unavailable, those destructive UI actions stay disabled.
 
 The server also exposes command/file approval requests,
 `item/tool/requestUserInput`, and permission approval requests. Foreman detects

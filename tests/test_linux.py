@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
 from codex import Codex, normalize_event, normalize_item, session, status  # noqa: E402
-from foreman_service import Foreman, PairingLimiter  # noqa: E402
+from foreman_service import Client, Foreman, PairingLimiter  # noqa: E402
 from state import State  # noqa: E402
 
 
@@ -52,6 +52,9 @@ THREAD = {
 class FakeCodex:
     def __init__(self, executable: str, on_event) -> None:
         self.on_event = on_event
+        self.active: set[str] = set()
+        self.archived: list[str] = []
+        self.deleted: list[str] = []
 
     async def start(self) -> None:
         pass
@@ -59,11 +62,21 @@ class FakeCodex:
     async def stop(self) -> None:
         pass
 
+    def supports(self, method: str) -> bool:
+        return method in {"thread/archive", "thread/delete"}
+
     async def list_threads(self) -> list[dict[str, Any]]:
         return [{**THREAD, "turns": []}]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
-        return THREAD
+        return {
+            **THREAD,
+            "id": thread_id,
+            "status":
+                {"type": "active", "activeFlags": []}
+                if thread_id in self.active
+                else {"type": "idle"},
+        }
 
     async def start_thread(self, cwd: str) -> dict[str, Any]:
         return {
@@ -98,6 +111,12 @@ class FakeCodex:
 
     async def interrupt(self, thread_id: str, turn_id: str) -> None:
         pass
+
+    async def archive_thread(self, thread_id: str) -> None:
+        self.archived.append(thread_id)
+
+    async def delete_thread(self, thread_id: str) -> None:
+        self.deleted.append(thread_id)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -165,6 +184,16 @@ class MappingTests(unittest.TestCase):
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
             "waiting",
         )
+        persisted_active = session(
+            {
+                **THREAD,
+                "status": {"type": "notLoaded"},
+                "turns": [{"id": "turn-live", "status": "inProgress", "items": []}],
+            },
+            include_messages=True,
+        )
+        self.assertEqual(persisted_active["status"], "working")
+        self.assertEqual(persisted_active["activeTurnId"], "turn-live")
 
     def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
         thread_id, event = normalize_event(
@@ -201,6 +230,52 @@ class MappingTests(unittest.TestCase):
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discovers_supported_methods_from_installed_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory, "schema-codex")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import json, pathlib, sys
+output = pathlib.Path(sys.argv[-1])
+output.mkdir(parents=True, exist_ok=True)
+schema = {"oneOf": [
+    {"properties": {"method": {"enum": ["thread/archive"]}}},
+    {"properties": {"method": {"enum": ["thread/delete"]}}},
+]}
+(output / "ClientRequest.json").write_text(json.dumps(schema))
+""",
+                encoding="utf-8",
+            )
+            os.chmod(executable, 0o700)
+            adapter = Codex(str(executable), lambda _: asyncio.sleep(0))
+
+            methods = await asyncio.to_thread(adapter._discover_supported_methods)
+
+            self.assertEqual(methods, {"thread/archive", "thread/delete"})
+
+    async def test_steer_reconciles_a_stale_active_turn_id(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        async def read_thread(_: str) -> dict[str, Any]:
+            return {
+                **THREAD,
+                "status": {"type": "active", "activeFlags": []},
+                "turns": [{"id": "turn-current", "status": "inProgress", "items": []}],
+            }
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requests.append((method, params))
+            return {"turnId": params["expectedTurnId"]}
+
+        adapter.read_thread = read_thread  # type: ignore[method-assign]
+        adapter.request = request  # type: ignore[method-assign]
+
+        result = await adapter.steer("thread-1", "turn-stale", "continue")
+
+        self.assertEqual(result["turnId"], "turn-current")
+        self.assertEqual(requests[0][1]["expectedTurnId"], "turn-current")
+
     async def test_reads_app_server_messages_larger_than_asyncio_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory, "fake-codex")
@@ -265,6 +340,20 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def request(
         self, message_type: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        message = await self.exchange(message_type, payload)
+        self.assertNotEqual(message["type"], "error", message)
+        return message["payload"]
+
+    async def request_error(
+        self, message_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        message = await self.exchange(message_type, payload)
+        self.assertEqual(message["type"], "error", message)
+        return message["payload"]
+
+    async def exchange(
+        self, message_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         self.next_id += 1
         request_id = f"test-{self.next_id}"
         self.writer.write(
@@ -281,13 +370,14 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         while True:
             message = protocol.decode(await self.reader.readline())
             if message.get("id") == request_id:
-                self.assertNotEqual(message["type"], "error", message)
-                return message["payload"]
+                return message
             self.unsolicited.append(message)
 
     async def test_pair_list_read_start_and_prompt(self) -> None:
         hello = await self.request("hello")
         self.assertTrue(hello["capabilities"]["steer"])
+        self.assertTrue(hello["capabilities"]["archive"])
+        self.assertTrue(hello["capabilities"]["delete"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
@@ -315,6 +405,78 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             if message.get("type") == "session.event"
         )
         self.assertEqual(event["payload"]["event"]["text"], "Hello")
+
+        archived = await self.request(
+            "session.archive", {"sessionId": "thread-1"}
+        )
+        self.assertTrue(archived["archived"])
+        self.assertEqual(self.app.codex.archived, ["thread-1"])
+        deleted = await self.request(
+            "session.delete", {"sessionId": started["id"], "confirm": True}
+        )
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_rejects_unconfirmed_or_active_session_deletion(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
+        )
+        unconfirmed = await self.request_error(
+            "session.delete", {"sessionId": "thread-1"}
+        )
+        self.assertIn("confirm=true", unconfirmed["message"])
+
+        self.app.codex.active.add("thread-1")
+        active = await self.request_error(
+            "session.delete", {"sessionId": "thread-1", "confirm": True}
+        )
+        self.assertIn("session is active", active["message"])
+        self.assertEqual(self.app.codex.deleted, [])
+        archived = await self.request_error(
+            "session.archive", {"sessionId": "thread-1"}
+        )
+        self.assertIn("session is active", archived["message"])
+        self.assertEqual(self.app.codex.archived, [])
+
+    async def test_serializes_archive_check_with_same_session_prompt(self) -> None:
+        read_started = asyncio.Event()
+        release_read = asyncio.Event()
+        original_read = self.app.codex.read_thread
+
+        async def paused_read(thread_id: str) -> dict[str, Any]:
+            if thread_id == "thread-race":
+                read_started.set()
+                await release_read.wait()
+            return await original_read(thread_id)
+
+        self.app.codex.read_thread = paused_read
+        client = Client(self.writer, "test", authenticated=True)
+        archive = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "session.archive",
+                    "payload": {"sessionId": "thread-race"},
+                },
+            )
+        )
+        await read_started.wait()
+        prompt = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-race", "text": "Hello"},
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(prompt.done())
+
+        release_read.set()
+        self.assertTrue((await archive)["archived"])
+        self.assertTrue((await prompt)["accepted"])
 
 
 if __name__ == "__main__":

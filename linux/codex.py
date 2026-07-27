@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -27,8 +30,10 @@ class Codex:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr: list[str] = []
         self._loaded: set[str] = set()
+        self._supported_methods: set[str] = set()
 
     async def start(self) -> None:
+        self._supported_methods = await asyncio.to_thread(self._discover_supported_methods)
         self.process = await asyncio.create_subprocess_exec(
             self.executable,
             "app-server",
@@ -52,6 +57,51 @@ class Codex:
             },
         )
         await self.notify("initialized")
+
+    def supports(self, method: str) -> bool:
+        return method in self._supported_methods
+
+    def _discover_supported_methods(self) -> set[str]:
+        with tempfile.TemporaryDirectory(prefix="foreman-schema-") as directory:
+            try:
+                completed = subprocess.run(
+                    [
+                        self.executable,
+                        "app-server",
+                        "generate-json-schema",
+                        "--experimental",
+                        "--out",
+                        directory,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    return set()
+                schema = json.loads(Path(directory, "ClientRequest.json").read_text())
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+                return set()
+
+        methods: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                method = value.get("properties", {}).get("method", {})
+                if isinstance(method, dict):
+                    methods.update(
+                        item for item in method.get("enum", []) if isinstance(item, str)
+                    )
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(schema)
+        return methods
 
     async def stop(self) -> None:
         if not self.process:
@@ -169,6 +219,13 @@ class Codex:
     async def steer(
         self, thread_id: str, turn_id: str, text: str
     ) -> dict[str, Any]:
+        # A different Codex client can start a newer turn after Foreman last read
+        # the thread. Reconcile immediately before steering so an otherwise valid
+        # message does not fail with an "expected active turn id" race.
+        current = session(await self.read_thread(thread_id), True)
+        current_turn_id = current.get("activeTurnId")
+        if current_turn_id:
+            turn_id = current_turn_id
         return await self.request(
             "turn/steer",
             {
@@ -182,6 +239,14 @@ class Codex:
         await self.request(
             "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
         )
+
+    async def archive_thread(self, thread_id: str) -> None:
+        await self.request("thread/archive", {"threadId": thread_id})
+        self._loaded.discard(thread_id)
+
+    async def delete_thread(self, thread_id: str) -> None:
+        await self.request("thread/delete", {"threadId": thread_id})
+        self._loaded.discard(thread_id)
 
 
 def status(raw: Any, last_turn: str | None = None) -> str:
@@ -204,20 +269,24 @@ def status(raw: Any, last_turn: str | None = None) -> str:
 def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str, Any]:
     turns = thread.get("turns", [])
     last_turn = turns[-1].get("status") if turns else None
+    active_turn_id = next(
+        (turn.get("id") for turn in reversed(turns) if turn.get("status") == "inProgress"),
+        None,
+    )
+    projected_status = status(thread.get("status"), last_turn)
+    if active_turn_id and projected_status == "idle":
+        projected_status = "working"
     value: dict[str, Any] = {
         "id": thread["id"],
         "repository": thread.get("cwd", ""),
         "title": thread.get("name") or thread.get("preview") or "Untitled session",
-        "status": status(thread.get("status"), last_turn),
+        "status": projected_status,
         "lastActivity": thread.get("recencyAt") or thread.get("updatedAt"),
-        "attention": status(thread.get("status"), last_turn) == "waiting",
+        "attention": projected_status == "waiting",
     }
     if include_messages:
         messages: list[dict[str, Any]] = []
-        active_turn_id = None
         for turn in turns:
-            if turn.get("status") == "inProgress":
-                active_turn_id = turn.get("id")
             for item in turn.get("items", []):
                 normalized = normalize_item(item)
                 if normalized:

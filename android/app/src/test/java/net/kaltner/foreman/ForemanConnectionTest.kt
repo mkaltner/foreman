@@ -64,7 +64,16 @@ class ForemanConnectionTest {
                         if (request.type == "pair") {
                             buildJsonObject { put("deviceToken", "fmt_test") }
                         } else {
-                            buildJsonObject { put("server", "Foreman") }
+                            buildJsonObject {
+                                put("server", "Foreman")
+                                put(
+                                    "capabilities",
+                                    buildJsonObject {
+                                        put("archive", true)
+                                        put("delete", false)
+                                    },
+                                )
+                            }
                         }
                     FrameCodec.write(
                         socket.getOutputStream(),
@@ -86,6 +95,7 @@ class ForemanConnectionTest {
                 "fmt_test",
                 client.pair("127.0.0.1:${server.localPort}", "fmp_test", "Phone"),
             )
+            assertEquals(setOf("archive"), client.capabilities)
         } finally {
             client.close()
             server.close()
@@ -114,6 +124,52 @@ class ForemanConnectionTest {
         assertEquals(emptyList<ConversationItem>(), session.messages)
         assertEquals("", session.activityLabel)
         assertEquals("", session.activityText)
+    }
+
+    @Test
+    fun parsesSupportedMarkdownBlocksAndRejectsUnsafeLinks() {
+        val blocks =
+            parseMarkdown(
+                """
+                # Heading
+
+                A **bold** paragraph.
+
+                - first
+                2. second
+
+                ```kotlin
+                val answer = 42
+                ```
+                """.trimIndent(),
+            )
+
+        assertEquals(MarkdownBlock.Heading(1, "Heading"), blocks[0])
+        assertEquals(MarkdownBlock.Paragraph("A **bold** paragraph."), blocks[1])
+        assertEquals(MarkdownBlock.ListItem("\u2022", "first"), blocks[2])
+        assertEquals(MarkdownBlock.ListItem("2.", "second"), blocks[3])
+        assertEquals(MarkdownBlock.Code("kotlin", "val answer = 42"), blocks[4])
+        assertEquals("https://example.com/docs", safeMarkdownUrl("https://example.com/docs"))
+        assertNull(safeMarkdownUrl("file:///etc/passwd"))
+        assertNull(safeMarkdownUrl("javascript:alert(1)"))
+        assertNull(safeMarkdownUrl("intent://settings"))
+    }
+
+    @Test
+    fun activityEventsRestoreWorkingStatusAndActiveSessionsCannotBeManaged() {
+        assertTrue(eventShowsWorkingActivity("assistant.delta"))
+        assertTrue(eventShowsWorkingActivity("item"))
+        assertTrue(eventShowsWorkingActivity("activity"))
+        assertFalse(eventShowsWorkingActivity("status"))
+        assertFalse(sessionCanBeManaged("working"))
+        assertFalse(sessionCanBeManaged("waiting"))
+        assertTrue(sessionCanBeManaged("completed"))
+        assertTrue(sessionActionSupported(setOf("archive"), SessionAction.Archive))
+        assertFalse(sessionActionSupported(setOf("archive"), SessionAction.Delete))
+        assertFalse(sessionActionSupported(emptySet(), SessionAction.Archive))
+        assertTrue(sessionActionCanBeConfirmed(true, setOf("delete"), SessionAction.Delete))
+        assertFalse(sessionActionCanBeConfirmed(false, setOf("delete"), SessionAction.Delete))
+        assertFalse(sessionActionCanBeConfirmed(true, emptySet(), SessionAction.Delete))
     }
 
     @Test

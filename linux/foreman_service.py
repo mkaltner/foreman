@@ -89,6 +89,7 @@ class Foreman:
         self.repository_root = repository_root.resolve()
         self.state = state
         self.clients: set[Client] = set()
+        self.thread_locks: dict[str, asyncio.Lock] = {}
         self.pairing_limiter = PairingLimiter()
         self.codex = codex_factory(codex_executable, self.codex_event)
         self.server: asyncio.Server | None = None
@@ -155,8 +156,11 @@ class Foreman:
                 pass
         finally:
             self.clients.discard(client)
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
 
     async def dispatch(
         self, client: Client, request: dict[str, Any]
@@ -173,6 +177,8 @@ class Foreman:
                 "capabilities": {
                     "steer": True,
                     "interrupt": True,
+                    "archive": self.codex.supports("thread/archive"),
+                    "delete": self.codex.supports("thread/delete"),
                     "approvals": False,
                     "structuredInput": False,
                 },
@@ -223,24 +229,55 @@ class Foreman:
             thread_id = required_text(payload, "sessionId", 100)
             client.subscriptions.add(thread_id)
             return {"subscribed": True}
+        if message_type == "session.archive":
+            thread_id = required_text(payload, "sessionId", 100)
+            async with self.thread_lock(thread_id):
+                await self.require_inactive_session(thread_id)
+                await self.codex.archive_thread(thread_id)
+            self.discard_subscriptions(thread_id)
+            return {"archived": True}
+        if message_type == "session.delete":
+            thread_id = required_text(payload, "sessionId", 100)
+            if payload.get("confirm") is not True:
+                raise ValueError("permanent deletion requires confirm=true")
+            async with self.thread_lock(thread_id):
+                await self.require_inactive_session(thread_id)
+                await self.codex.delete_thread(thread_id)
+            self.discard_subscriptions(thread_id)
+            return {"deleted": True}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)
             text = required_text(payload, "text", 100_000)
-            result = await self.codex.prompt(thread_id, text)
+            async with self.thread_lock(thread_id):
+                result = await self.codex.prompt(thread_id, text)
             client.subscriptions.add(thread_id)
             return {"accepted": True, "turnId": result["turn"]["id"]}
         if message_type == "turn.steer":
             thread_id = required_text(payload, "sessionId", 100)
             turn_id = required_text(payload, "turnId", 100)
             text = required_text(payload, "text", 100_000)
-            result = await self.codex.steer(thread_id, turn_id, text)
+            async with self.thread_lock(thread_id):
+                result = await self.codex.steer(thread_id, turn_id, text)
             return {"accepted": True, "turnId": result["turnId"]}
         if message_type == "turn.interrupt":
             thread_id = required_text(payload, "sessionId", 100)
             turn_id = required_text(payload, "turnId", 100)
-            await self.codex.interrupt(thread_id, turn_id)
+            async with self.thread_lock(thread_id):
+                await self.codex.interrupt(thread_id, turn_id)
             return {"accepted": True}
         raise ValueError(f"unknown message type: {message_type}")
+
+    async def require_inactive_session(self, thread_id: str) -> None:
+        projected = session(await self.codex.read_thread(thread_id))
+        if projected["status"] in ("working", "waiting"):
+            raise ValueError("session is active; interrupt it before archive or delete")
+
+    def thread_lock(self, thread_id: str) -> asyncio.Lock:
+        return self.thread_locks.setdefault(thread_id, asyncio.Lock())
+
+    def discard_subscriptions(self, thread_id: str) -> None:
+        for connected in self.clients:
+            connected.subscriptions.discard(thread_id)
 
     def repositories(self) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
