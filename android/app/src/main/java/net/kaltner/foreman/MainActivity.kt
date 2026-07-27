@@ -219,6 +219,9 @@ internal data class PendingSessionAction(
     val action: SessionAction,
 )
 
+internal fun sessionDisplayTitle(session: SessionSummary?): String =
+    session?.title?.ifBlank { "Untitled session" } ?: "Session"
+
 internal fun sessionCanBeManaged(status: String): Boolean =
     status != "working" && status != "waiting"
 
@@ -1323,7 +1326,7 @@ private fun SessionCard(
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    session.title.ifBlank { "Untitled session" },
+                    sessionDisplayTitle(session),
                     modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
@@ -1397,7 +1400,7 @@ private fun SessionDetailScreen(
                 title = {
                     Column {
                         Text(
-                            selected?.repository?.substringAfterLast('/') ?: "Session",
+                            sessionDisplayTitle(selected),
                             fontWeight = FontWeight.Bold,
                         )
                         if (selected != null) {

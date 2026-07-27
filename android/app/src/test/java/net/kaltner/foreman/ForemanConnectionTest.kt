@@ -222,6 +222,21 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun sessionDisplayTitleUsesTheCodexTitleInsteadOfTheRepositoryName() {
+        val session =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/home/user",
+                title = "Fix the Foreman header",
+                status = "working",
+            )
+
+        assertEquals("Fix the Foreman header", sessionDisplayTitle(session))
+        assertEquals("Untitled session", sessionDisplayTitle(session.copy(title = "")))
+        assertEquals("Session", sessionDisplayTitle(null))
+    }
+
+    @Test
     fun parsesSupportedMarkdownBlocksAndRejectsUnsafeLinks() {
         val blocks =
             parseMarkdown(
