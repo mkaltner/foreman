@@ -1504,6 +1504,7 @@ private fun SessionDetailScreen(
 @Composable
 private fun LiveActivityRow(session: SessionSummary) {
     val activityMessage = liveActivityMessage(session)
+    val activityTitle = activityMessage ?: "${liveActivityLabel(session)}…"
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -1521,7 +1522,10 @@ private fun LiveActivityRow(session: SessionSummary) {
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    activityMessage ?: "${liveActivityLabel(session)}…",
+                    inlineMarkdown(
+                        activityTitle,
+                        MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 3,
