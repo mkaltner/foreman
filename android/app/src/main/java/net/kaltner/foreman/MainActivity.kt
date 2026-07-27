@@ -114,6 +114,7 @@ import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -333,6 +334,15 @@ internal fun UiState.withSynchronizedSessions(
         error = null,
     )
 
+internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): UiState {
+    val known = sessions.mapTo(mutableSetOf()) { it.id }
+    val additions = discovered.filter { known.add(it.id) }
+    return if (additions.isEmpty()) this else copy(sessions = additions + sessions)
+}
+
+internal fun UiState.shouldDiscoverSession(sessionId: String, eventKind: String): Boolean =
+    connected && eventKind == "status" && sessions.none { it.id == sessionId }
+
 internal data class UiState(
     val screen: Screen = Screen.Setup,
     val host: String = "",
@@ -375,11 +385,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val json = Json { ignoreUnknownKeys = true }
     private val tokens = TokenStore(application)
     private var reconnectJob: Job? = null
+    private var sessionDiscoveryJob: Job? = null
     private var notificationSessionId: String? = null
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
+            sessionDiscoveryJob?.cancel()
+            sessionDiscoveryJob = null
             state.update {
                 it.copy(
                     connected = false,
@@ -579,7 +592,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(loading = true, error = null) }
         val (sessions, repositories, catalogs) =
             coroutineScope {
-                val sessionsRequest = async { client.request("session.list") }
+                val sessionsRequest = async { listSessions() }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val modelsRequest =
                     async {
@@ -597,9 +610,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             null
                         }
                     }
-                val sessions =
-                    sessionsRequest.await().payload.getValue("sessions").jsonArray
-                        .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                val sessions = sessionsRequest.await()
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
@@ -627,6 +638,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 .withAccessLevelsAndSessionAccess(accessLevels, selected)
         }
         selected?.let(::monitorIfActive)
+    }
+
+    private suspend fun listSessions(): List<SessionSummary> =
+        client.request("session.list").payload.getValue("sessions").jsonArray
+            .map { json.decodeFromJsonElement<SessionSummary>(it) }
+
+    private fun discoverSession(sessionId: String) {
+        if (sessionDiscoveryJob?.isActive == true) return
+        sessionDiscoveryJob =
+            viewModelScope.launch {
+                repeat(4) { attempt ->
+                    val discovered = runCatching { listSessions() }.getOrNull()
+                    if (discovered != null) {
+                        state.update { it.withDiscoveredSessions(discovered) }
+                        if (discovered.any { it.id == sessionId }) return@launch
+                    }
+                    if (attempt < 3) delay(250L shl attempt)
+                }
+            }
     }
 
     private suspend fun readSession(id: String): SessionSummary {
@@ -839,6 +869,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
+        if (state.value.shouldDiscoverSession(sessionId, kind)) {
+            discoverSession(sessionId)
+        }
         state.update { current ->
             val selected = current.selected
             if (selected?.id != sessionId) {
