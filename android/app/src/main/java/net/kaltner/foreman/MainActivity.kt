@@ -211,6 +211,12 @@ internal fun sessionCanBeManaged(status: String): Boolean =
 internal fun sessionActionSupported(capabilities: Set<String>, action: SessionAction): Boolean =
     capabilities.contains(if (action == SessionAction.Archive) "archive" else "delete")
 
+internal fun sessionActionCanBeConfirmed(
+    connected: Boolean,
+    capabilities: Set<String>,
+    action: SessionAction,
+): Boolean = connected && sessionActionSupported(capabilities, action)
+
 internal fun eventShowsWorkingActivity(kind: String): Boolean =
     kind == "assistant.delta" || kind == "item" || kind == "activity"
 
@@ -259,6 +265,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     loading = false,
                     error = message,
                     capabilities = emptySet(),
+                    pendingSessionAction = null,
                 )
             }
         },
@@ -479,6 +486,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val pending = state.value.pendingSessionAction ?: return
         if (state.value.submitting) return
         viewModelScope.launch {
+            val current = state.value
+            if (
+                current.pendingSessionAction != pending ||
+                    !sessionActionCanBeConfirmed(
+                        current.connected,
+                        current.capabilities,
+                        pending.action,
+                    )
+            ) {
+                state.update {
+                    it.copy(
+                        pendingSessionAction = null,
+                        error = "Reconnect to a server that supports this action.",
+                    )
+                }
+                return@launch
+            }
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
                 client.request(

@@ -167,6 +167,9 @@ class ForemanConnectionTest {
         assertTrue(sessionActionSupported(setOf("archive"), SessionAction.Archive))
         assertFalse(sessionActionSupported(setOf("archive"), SessionAction.Delete))
         assertFalse(sessionActionSupported(emptySet(), SessionAction.Archive))
+        assertTrue(sessionActionCanBeConfirmed(true, setOf("delete"), SessionAction.Delete))
+        assertFalse(sessionActionCanBeConfirmed(false, setOf("delete"), SessionAction.Delete))
+        assertFalse(sessionActionCanBeConfirmed(true, emptySet(), SessionAction.Delete))
     }
 
     @Test
