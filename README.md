@@ -6,14 +6,16 @@
   <strong>Monitor. Orchestrate. Command.</strong>
 </p>
 
-Foreman is a small Linux user service and Android app for viewing and controlling
-local Codex sessions over a direct TCP connection.
+Foreman is an early-alpha Linux user service and Android companion app for
+viewing and controlling local Codex sessions over an authenticated TCP
+connection.
 
-The current prototype can:
+The current alpha can:
 
-- pair one Android device with a short-lived one-time key;
+- pair multiple Android devices, each with a short-lived six-digit one-time
+  code;
 - list Git repositories below one configured root;
-- list and read real local Codex threads;
+- list and read real local Codex threads, grouped by active and recent status;
 - show user/assistant messages and compact command/tool activity;
 - render common Markdown, including headings, lists, emphasis, links, and code;
 - start or resume a thread, prompt it, steer an active turn, and interrupt it;
@@ -21,10 +23,14 @@ The current prototype can:
 - attach up to four processed images to a prompt or steer;
 - refresh the session list with a pull gesture, and archive or permanently delete
   inactive sessions with confirmation;
-- stream assistant deltas and terminal status;
+- share Codex's Desktop app-server when available so work and live status remain
+  visible across clients;
+- stream assistant deltas, tool activity, progress messages, and terminal status;
 - optionally monitor active turns in an Android foreground service and notify
   when they finish or need attention;
-- reconnect by reloading Codex-authoritative state.
+- reconnect and refresh foregrounded sessions from Codex-authoritative state;
+- follow the Android system theme by default, with explicit light and dark
+  options and a purple Foreman palette.
 
 ## Screenshots
 
@@ -41,9 +47,11 @@ The current prototype can:
   </tr>
 </table>
 
-It does not expose a shell, HTTP server, Git writes, approvals, or structured
-input. The TCP connection is authenticated but not encrypted; use it only on a
-trusted private LAN or through a secure tunnel.
+Foreman does not provide standalone shell, HTTP, Git-operation, approval, or
+structured-input endpoints. Codex may still run tools and modify files according
+to the access level selected for a turn. The TCP connection is authenticated
+but not encrypted; use it only on a trusted private LAN or through a secure
+tunnel.
 
 > [!CAUTION]
 > Do not expose Foreman's TCP port (`8765`) directly to the public internet.
@@ -52,6 +60,13 @@ trusted private LAN or through a secure tunnel.
 > code that expires after ten minutes and throttles failed guesses per source
 > address. Have the phone ready, run `foreman pair` only when needed, and finish
 > pairing promptly—especially if the service is reachable beyond your LAN.
+
+> [!NOTE]
+> Foreman is alpha software built against Codex's evolving app-server interface.
+> The current integration is verified with `codex-cli 0.145.0`; a future Codex
+> update may require a matching Foreman update. Approval and structured-input
+> requests are detected as waiting states but must still be answered in another
+> Codex client.
 
 ## Linux
 
@@ -71,9 +86,11 @@ root or listener should change.
 
 ## Android
 
-Open [`android`](android) in current Android Studio, build the debug app, and
-install it on the phone. In Foreman enter the Linux host/IP, the output of
-`foreman pair`, and a device name. A host without a port uses `8765`.
+Install the signed APK from a tagged [GitHub release](https://github.com/mkaltner/foreman/releases),
+or open [`android`](android) in current Android Studio and build the debug app.
+In Foreman enter the Linux host/IP, the output of `foreman pair`, and a device
+name. A host without a port uses `8765`; run `foreman pair` again for each
+additional device.
 
 Enable **Notify for active turns** in the app settings to monitor turns that you
 open or start. Android will ask for notification permission. While at least one
