@@ -1718,8 +1718,8 @@ private fun PromptBox(
         shadowElevation = 6.dp,
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             ComposerRouteRow(
                 accessLevels = accessLevels,
@@ -1929,59 +1929,62 @@ private fun ComposerRouteRow(
 ) {
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(
-            onClick = showAccessLevels,
-            enabled = enabled && accessLevels.isNotEmpty(),
-            modifier = Modifier.weight(1f),
-        ) {
-            Icon(
-                Icons.Default.Security,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                selectedAccessLevel?.displayName ?: accessLevelId ?: "Access",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color =
-                    if (accessLevelId == "full") {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        Color.Unspecified
-                    },
-            )
-        }
-        TextButton(
-            onClick = showModels,
-            enabled = enabled && models.isNotEmpty(),
-            modifier = Modifier.weight(1.1f),
-        ) {
-            Text(
-                selectedModel?.displayName ?: modelId ?: "Default model",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Box {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             TextButton(
-                onClick = showEfforts,
-                enabled = enabled && !selectedModel?.reasoningEfforts.isNullOrEmpty(),
+                onClick = showAccessLevels,
+                enabled = enabled && accessLevels.isNotEmpty(),
             ) {
-                Text(effort?.replaceFirstChar { it.uppercase() } ?: "Default")
+                Icon(
+                    Icons.Default.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    selectedAccessLevel?.displayName ?: accessLevelId ?: "Access",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color =
+                        if (accessLevelId == "full") {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            Color.Unspecified
+                        },
+                )
             }
-            DropdownMenu(
-                expanded = effortsExpanded,
-                onDismissRequest = dismissEfforts,
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            TextButton(
+                onClick = showModels,
+                enabled = enabled && models.isNotEmpty(),
             ) {
-                selectedModel?.reasoningEfforts?.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option.replaceFirstChar { it.uppercase() }) },
-                        onClick = { selectEffort(option) },
-                    )
+                Text(
+                    selectedModel?.displayName ?: modelId ?: "Default model",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            Box {
+                TextButton(
+                    onClick = showEfforts,
+                    enabled = enabled && !selectedModel?.reasoningEfforts.isNullOrEmpty(),
+                ) {
+                    Text(effort?.replaceFirstChar { it.uppercase() } ?: "Default")
+                }
+                DropdownMenu(
+                    expanded = effortsExpanded,
+                    onDismissRequest = dismissEfforts,
+                ) {
+                    selectedModel?.reasoningEfforts?.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.replaceFirstChar { it.uppercase() }) },
+                            onClick = { selectEffort(option) },
+                        )
+                    }
                 }
             }
         }
