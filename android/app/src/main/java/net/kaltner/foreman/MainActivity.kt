@@ -2231,9 +2231,9 @@ private fun CompactMessageField(
                 contentPadding =
                     OutlinedTextFieldDefaults.contentPadding(
                         start = 4.dp,
-                        top = 0.dp,
+                        top = 12.dp,
                         end = 12.dp,
-                        bottom = 0.dp,
+                        bottom = 12.dp,
                     ),
                 container = {
                     OutlinedTextFieldDefaults.Container(
