@@ -208,6 +208,9 @@ internal data class PendingSessionAction(
 internal fun sessionCanBeManaged(status: String): Boolean =
     status != "working" && status != "waiting"
 
+internal fun sessionActionSupported(capabilities: Set<String>, action: SessionAction): Boolean =
+    capabilities.contains(if (action == SessionAction.Archive) "archive" else "delete")
+
 internal fun eventShowsWorkingActivity(kind: String): Boolean =
     kind == "assistant.delta" || kind == "item" || kind == "activity"
 
@@ -228,6 +231,7 @@ internal data class UiState(
     val followNewMessages: Boolean = true,
     val monitorActiveTurns: Boolean = false,
     val pendingSessionAction: PendingSessionAction? = null,
+    val capabilities: Set<String> = emptySet(),
 )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -249,7 +253,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
-            state.update { it.copy(connected = false, loading = false, error = message) }
+            state.update {
+                it.copy(
+                    connected = false,
+                    loading = false,
+                    error = message,
+                    capabilities = emptySet(),
+                )
+            }
         },
     )
 
@@ -326,6 +337,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         screen = Screen.Sessions,
                         loading = false,
                         pairingKey = "",
+                        capabilities = client.capabilities,
                     )
                 }
                 refresh()
@@ -376,6 +388,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     screen = if (selectedId == null) Screen.Sessions else Screen.Detail,
                     loading = false,
                     error = null,
+                    capabilities = client.capabilities,
                 )
             }
             refresh()
@@ -437,6 +450,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun requestSessionAction(session: SessionSummary, action: SessionAction) {
+        if (!sessionActionSupported(state.value.capabilities, action)) {
+            state.update { it.copy(error = "The connected Foreman server does not support this action.") }
+            return
+        }
         if (!sessionCanBeManaged(session.status)) {
             state.update {
                 it.copy(error = "Interrupt the active session before archive or delete.")
@@ -962,18 +979,21 @@ private fun SessionsScreen(
                             active,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            state.capabilities,
                         )
                         sessionSection(
                             "Waiting",
                             waiting,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            state.capabilities,
                         )
                         sessionSection(
                             "Recent",
                             recent,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            state.capabilities,
                         )
                     }
                 }
@@ -994,6 +1014,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     sessions: List<SessionSummary>,
     open: (String) -> Unit,
     action: (SessionSummary, SessionAction) -> Unit,
+    capabilities: Set<String>,
 ) {
     if (sessions.isEmpty()) return
     item {
@@ -1010,6 +1031,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             session = session,
             onClick = { open(session.id) },
             onAction = { action(session, it) },
+            capabilities = capabilities,
         )
     }
 }
@@ -1019,6 +1041,7 @@ private fun SessionCard(
     session: SessionSummary,
     onClick: () -> Unit,
     onAction: (SessionAction) -> Unit,
+    capabilities: Set<String>,
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1034,6 +1057,8 @@ private fun SessionCard(
                 StatusPill(session.status)
                 SessionActionsMenu(
                     enabled = sessionCanBeManaged(session.status),
+                    archiveSupported = sessionActionSupported(capabilities, SessionAction.Archive),
+                    deleteSupported = sessionActionSupported(capabilities, SessionAction.Delete),
                     onAction = onAction,
                 )
             }
@@ -1123,6 +1148,10 @@ private fun SessionDetailScreen(
                         SessionActionsMenu(
                             enabled =
                                 sessionCanBeManaged(selected.status) && !state.submitting,
+                            archiveSupported =
+                                sessionActionSupported(state.capabilities, SessionAction.Archive),
+                            deleteSupported =
+                                sessionActionSupported(state.capabilities, SessionAction.Delete),
                             onAction = { viewModel.requestSessionAction(selected, it) },
                         )
                     }
@@ -1368,13 +1397,15 @@ private fun UiSettingsMenu(
 @Composable
 private fun SessionActionsMenu(
     enabled: Boolean,
+    archiveSupported: Boolean,
+    deleteSupported: Boolean,
     onAction: (SessionAction) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         IconButton(
             onClick = { expanded = true },
-            enabled = enabled,
+            enabled = enabled && (archiveSupported || deleteSupported),
         ) {
             Icon(Icons.Default.MoreVert, contentDescription = "Session actions")
         }
@@ -1389,6 +1420,7 @@ private fun SessionActionsMenu(
                     expanded = false
                     onAction(SessionAction.Archive)
                 },
+                enabled = archiveSupported,
             )
             DropdownMenuItem(
                 text = { Text("Delete permanently") },
@@ -1397,6 +1429,7 @@ private fun SessionActionsMenu(
                     expanded = false
                     onAction(SessionAction.Delete)
                 },
+                enabled = deleteSupported,
             )
         }
     }

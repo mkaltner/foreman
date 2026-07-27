@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -27,8 +30,10 @@ class Codex:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr: list[str] = []
         self._loaded: set[str] = set()
+        self._supported_methods: set[str] = set()
 
     async def start(self) -> None:
+        self._supported_methods = await asyncio.to_thread(self._discover_supported_methods)
         self.process = await asyncio.create_subprocess_exec(
             self.executable,
             "app-server",
@@ -52,6 +57,51 @@ class Codex:
             },
         )
         await self.notify("initialized")
+
+    def supports(self, method: str) -> bool:
+        return method in self._supported_methods
+
+    def _discover_supported_methods(self) -> set[str]:
+        with tempfile.TemporaryDirectory(prefix="foreman-schema-") as directory:
+            try:
+                completed = subprocess.run(
+                    [
+                        self.executable,
+                        "app-server",
+                        "generate-json-schema",
+                        "--experimental",
+                        "--out",
+                        directory,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    return set()
+                schema = json.loads(Path(directory, "ClientRequest.json").read_text())
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+                return set()
+
+        methods: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                method = value.get("properties", {}).get("method", {})
+                if isinstance(method, dict):
+                    methods.update(
+                        item for item in method.get("enum", []) if isinstance(item, str)
+                    )
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(schema)
+        return methods
 
     async def stop(self) -> None:
         if not self.process:

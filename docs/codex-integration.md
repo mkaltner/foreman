@@ -33,6 +33,10 @@ uses:
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
 
+At startup, Foreman generates the installed app-server JSON schema and only
+advertises optional archive/delete capabilities present in that Codex version.
+If schema discovery is unavailable, those destructive UI actions stay disabled.
+
 The server also exposes command/file approval requests,
 `item/tool/requestUserInput`, and permission approval requests. Foreman detects
 these as waiting states but does not answer them in this milestone.

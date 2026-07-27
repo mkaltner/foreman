@@ -161,10 +161,12 @@ class ForemanClient(
     private var socket: Socket? = null
     private var readerJob: Job? = null
     @Volatile private var closing = false
+    var capabilities: Set<String> = emptySet()
+        private set
 
     suspend fun pair(host: String, pairingKey: String, deviceName: String): String {
         open(host)
-        request("hello")
+        hello()
         val result = request(
             "pair",
             buildJsonObject {
@@ -177,8 +179,17 @@ class ForemanClient(
 
     suspend fun authenticate(host: String, token: String) {
         open(host)
-        request("hello")
+        hello()
         request("authenticate", buildJsonObject { put("deviceToken", token) })
+    }
+
+    private suspend fun hello() {
+        val response = request("hello")
+        capabilities =
+            response.payload["capabilities"]?.jsonObject?.entries
+                ?.filter { (_, value) -> value.jsonPrimitive.content == "true" }
+                ?.mapTo(mutableSetOf()) { it.key }
+                ?: emptySet()
     }
 
     suspend fun request(type: String, payload: JsonObject = JsonObject(emptyMap())): WireMessage {
@@ -217,6 +228,7 @@ class ForemanClient(
 
     private suspend fun open(host: String) {
         close()
+        capabilities = emptySet()
         closing = false
         val endpoint = parseHost(host)
         val connected = withContext(Dispatchers.IO) {

@@ -64,7 +64,16 @@ class ForemanConnectionTest {
                         if (request.type == "pair") {
                             buildJsonObject { put("deviceToken", "fmt_test") }
                         } else {
-                            buildJsonObject { put("server", "Foreman") }
+                            buildJsonObject {
+                                put("server", "Foreman")
+                                put(
+                                    "capabilities",
+                                    buildJsonObject {
+                                        put("archive", true)
+                                        put("delete", false)
+                                    },
+                                )
+                            }
                         }
                     FrameCodec.write(
                         socket.getOutputStream(),
@@ -86,6 +95,7 @@ class ForemanConnectionTest {
                 "fmt_test",
                 client.pair("127.0.0.1:${server.localPort}", "fmp_test", "Phone"),
             )
+            assertEquals(setOf("archive"), client.capabilities)
         } finally {
             client.close()
             server.close()
@@ -154,6 +164,9 @@ class ForemanConnectionTest {
         assertFalse(sessionCanBeManaged("working"))
         assertFalse(sessionCanBeManaged("waiting"))
         assertTrue(sessionCanBeManaged("completed"))
+        assertTrue(sessionActionSupported(setOf("archive"), SessionAction.Archive))
+        assertFalse(sessionActionSupported(setOf("archive"), SessionAction.Delete))
+        assertFalse(sessionActionSupported(emptySet(), SessionAction.Archive))
     }
 
     @Test

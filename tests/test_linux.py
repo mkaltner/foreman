@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
 from codex import Codex, normalize_event, normalize_item, session, status  # noqa: E402
-from foreman_service import Foreman, PairingLimiter  # noqa: E402
+from foreman_service import Client, Foreman, PairingLimiter  # noqa: E402
 from state import State  # noqa: E402
 
 
@@ -61,6 +61,9 @@ class FakeCodex:
 
     async def stop(self) -> None:
         pass
+
+    def supports(self, method: str) -> bool:
+        return method in {"thread/archive", "thread/delete"}
 
     async def list_threads(self) -> list[dict[str, Any]]:
         return [{**THREAD, "turns": []}]
@@ -227,6 +230,29 @@ class MappingTests(unittest.TestCase):
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discovers_supported_methods_from_installed_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory, "schema-codex")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import json, pathlib, sys
+output = pathlib.Path(sys.argv[-1])
+output.mkdir(parents=True, exist_ok=True)
+schema = {"oneOf": [
+    {"properties": {"method": {"enum": ["thread/archive"]}}},
+    {"properties": {"method": {"enum": ["thread/delete"]}}},
+]}
+(output / "ClientRequest.json").write_text(json.dumps(schema))
+""",
+                encoding="utf-8",
+            )
+            os.chmod(executable, 0o700)
+            adapter = Codex(str(executable), lambda _: asyncio.sleep(0))
+
+            methods = await asyncio.to_thread(adapter._discover_supported_methods)
+
+            self.assertEqual(methods, {"thread/archive", "thread/delete"})
+
     async def test_steer_reconciles_a_stale_active_turn_id(self) -> None:
         adapter = Codex("unused", lambda _: asyncio.sleep(0))
         requests: list[tuple[str, dict[str, Any]]] = []
@@ -350,6 +376,8 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_pair_list_read_start_and_prompt(self) -> None:
         hello = await self.request("hello")
         self.assertTrue(hello["capabilities"]["steer"])
+        self.assertTrue(hello["capabilities"]["archive"])
+        self.assertTrue(hello["capabilities"]["delete"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
@@ -410,6 +438,45 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("session is active", archived["message"])
         self.assertEqual(self.app.codex.archived, [])
+
+    async def test_serializes_archive_check_with_same_session_prompt(self) -> None:
+        read_started = asyncio.Event()
+        release_read = asyncio.Event()
+        original_read = self.app.codex.read_thread
+
+        async def paused_read(thread_id: str) -> dict[str, Any]:
+            if thread_id == "thread-race":
+                read_started.set()
+                await release_read.wait()
+            return await original_read(thread_id)
+
+        self.app.codex.read_thread = paused_read
+        client = Client(self.writer, "test", authenticated=True)
+        archive = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "session.archive",
+                    "payload": {"sessionId": "thread-race"},
+                },
+            )
+        )
+        await read_started.wait()
+        prompt = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-race", "text": "Hello"},
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(prompt.done())
+
+        release_read.set()
+        self.assertTrue((await archive)["archived"])
+        self.assertTrue((await prompt)["accepted"])
 
 
 if __name__ == "__main__":

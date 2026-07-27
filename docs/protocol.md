@@ -34,4 +34,5 @@ subscribe sequence; there are no cursors or replay logs.
 reversible through Codex's `thread/unarchive` API. `session.delete` requires
 `confirm: true` and permanently deletes the inactive thread plus its spawned
 descendants. Foreman rejects both operations while a session is working or
-waiting for input.
+waiting for input. Per-session locks serialize this check and mutation with
+prompt, steer, and interrupt requests from other connected Foreman clients.
