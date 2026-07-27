@@ -1993,8 +1993,8 @@ private fun PromptBox(
         shadowElevation = 6.dp,
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             ComposerRouteRow(
                 accessLevels = accessLevels,
@@ -2023,27 +2023,30 @@ private fun PromptBox(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                IconButton(
-                    onClick = {
-                        picker.launch(
-                            PickVisualMediaRequest(
-                                ActivityResultContracts.PickVisualMedia.ImageOnly,
-                            ),
-                        )
-                    },
-                    enabled =
-                        enabled &&
-                            !processing &&
-                            imageSupported &&
-                            images.size < MAX_IMAGES_PER_MESSAGE,
-                ) {
-                    Icon(Icons.Default.AttachFile, contentDescription = "Attach images")
-                }
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
                     placeholder = { Text(if (working) "Steer this turn…" else "Message Foreman…") },
                     modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(20.dp),
+                    leadingIcon = {
+                        IconButton(
+                            onClick = {
+                                picker.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            },
+                            enabled =
+                                enabled &&
+                                    !processing &&
+                                    imageSupported &&
+                                    images.size < MAX_IMAGES_PER_MESSAGE,
+                        ) {
+                            Icon(Icons.Default.AttachFile, contentDescription = "Attach images")
+                        }
+                    },
                     maxLines = 5,
                 )
                 Button(
@@ -2057,6 +2060,10 @@ private fun PromptBox(
                         enabled &&
                             !processing &&
                             (text.isNotBlank() || images.isNotEmpty()),
+                    modifier = Modifier.height(56.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding =
+                        androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
                 ) {
                     Text(if (working) "Steer" else "Send")
                 }
@@ -2210,6 +2217,8 @@ private fun ComposerRouteRow(
             TextButton(
                 onClick = showAccessLevels,
                 enabled = enabled && accessLevels.isNotEmpty(),
+                contentPadding =
+                    androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 Icon(
                     Icons.Default.Security,
@@ -2234,6 +2243,8 @@ private fun ComposerRouteRow(
             TextButton(
                 onClick = showModels,
                 enabled = enabled && models.isNotEmpty(),
+                contentPadding =
+                    androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 Text(
                     selectedModel?.displayName ?: modelId ?: "Default model",
@@ -2247,6 +2258,8 @@ private fun ComposerRouteRow(
                 TextButton(
                     onClick = showEfforts,
                     enabled = enabled && !selectedModel?.reasoningEfforts.isNullOrEmpty(),
+                    contentPadding =
+                        androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                 ) {
                     Text(effort?.replaceFirstChar { it.uppercase() } ?: "Default")
                 }
