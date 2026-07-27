@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 VERSION = 1
-MAX_FRAME_BYTES = 1024 * 1024
+MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 class ProtocolError(ValueError):

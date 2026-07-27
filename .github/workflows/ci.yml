@@ -24,12 +24,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install Linux service dependencies
+        run: python -m pip install -r requirements.txt
       - name: Compile Python sources
         run: python -m compileall -q linux tests
       - name: Run Linux service tests
         run: python -m unittest discover -s tests -v
       - name: Package Linux service
-        run: tar -czf foreman-linux.tar.gz install.sh linux docs README.md
+        run: tar -czf foreman-linux.tar.gz install.sh requirements.txt linux docs README.md
       - name: Verify Linux archive
         run: tar -tzf foreman-linux.tar.gz
       - uses: actions/upload-artifact@v4

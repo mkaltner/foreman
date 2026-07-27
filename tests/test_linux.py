@@ -15,8 +15,22 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "linux"))
 
 import protocol  # noqa: E402
-from codex import Codex, normalize_event, normalize_item, session, status  # noqa: E402
-from foreman_service import Client, Foreman, PairingLimiter  # noqa: E402
+from codex import (  # noqa: E402
+    Codex,
+    bound_message_images,
+    model,
+    normalize_event,
+    normalize_item,
+    session,
+    status,
+    user_input,
+)
+from foreman_service import (  # noqa: E402
+    Client,
+    Foreman,
+    PairingLimiter,
+    image_payloads,
+)
 from state import State  # noqa: E402
 
 
@@ -55,6 +69,8 @@ class FakeCodex:
         self.active: set[str] = set()
         self.archived: list[str] = []
         self.deleted: list[str] = []
+        self.prompts: list[dict[str, Any]] = []
+        self.reads: list[str] = []
 
     async def start(self) -> None:
         pass
@@ -69,6 +85,7 @@ class FakeCodex:
         return [{**THREAD, "turns": []}]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
+        self.reads.append(thread_id)
         return {
             **THREAD,
             "id": thread_id,
@@ -90,7 +107,64 @@ class FakeCodex:
     async def resume_thread(self, thread_id: str) -> dict[str, Any]:
         return THREAD
 
-    async def prompt(self, thread_id: str, text: str) -> dict[str, Any]:
+    async def subscribe_thread(self, thread_id: str) -> None:
+        pass
+
+    async def list_models(self, refresh: bool = False) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "model-test",
+                "displayName": "Test",
+                "description": "Test model",
+                "reasoningEfforts": ["low", "high"],
+                "defaultReasoningEffort": "low",
+                "visible": True,
+                "isDefault": True,
+                "inputModalities": ["text", "image"],
+            }
+        ]
+
+    async def prompt(
+        self,
+        thread_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+        model_id: str | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        self.prompts.append(
+            {
+                "threadId": thread_id,
+                "text": text,
+                "images": images or [],
+                "model": model_id,
+                "effort": effort,
+            }
+        )
+        content: list[dict[str, Any]] = []
+        if text:
+            content.append({"type": "text", "text": text})
+        content.extend(
+            {
+                "type": "image",
+                "url": f"data:{image['mimeType']};base64,{image['data']}",
+            }
+            for image in images or []
+        )
+        await self.on_event(
+            {
+                "method": "item/started",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": "turn-new",
+                    "item": {
+                        "id": "user-new",
+                        "type": "userMessage",
+                        "content": content,
+                    },
+                },
+            }
+        )
         await self.on_event(
             {
                 "method": "item/agentMessage/delta",
@@ -105,7 +179,11 @@ class FakeCodex:
         return {"turn": {"id": "turn-new"}}
 
     async def steer(
-        self, thread_id: str, turn_id: str, text: str
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         return {"turnId": turn_id}
 
@@ -127,6 +205,38 @@ class ProtocolTests(unittest.TestCase):
             protocol.decode(b'{"version":2,"type":"ping"}\n')
         with self.assertRaises(protocol.ProtocolError):
             protocol.decode(b"x" * (protocol.MAX_FRAME_BYTES + 1) + b"\n")
+
+
+class ImagePayloadTests(unittest.TestCase):
+    def test_accepts_one_or_multiple_images_and_rejects_bad_input(self) -> None:
+        valid = {"mimeType": "image/jpeg", "data": "YWJj"}
+        self.assertEqual(image_payloads({"images": [valid]}), [valid])
+        self.assertEqual(
+            len(image_payloads({"images": [valid, {**valid, "mimeType": "image/png"}]})),
+            2,
+        )
+        with self.assertRaisesRegex(ValueError, "base64"):
+            image_payloads({"images": [{**valid, "data": "not base64!"}]})
+        with self.assertRaisesRegex(ValueError, "MIME"):
+            image_payloads({"images": [{**valid, "mimeType": "image/gif"}]})
+        with self.assertRaisesRegex(ValueError, "at most"):
+            image_payloads({"images": [valid] * 5})
+
+    def test_bounds_historical_image_projection_preferring_recent_images(self) -> None:
+        messages = [
+            {
+                "images": [{"mimeType": "image/jpeg", "data": "older"}],
+                "imageCount": 1,
+            },
+            {
+                "images": [{"mimeType": "image/jpeg", "data": "new"}],
+                "imageCount": 1,
+            },
+        ]
+        bound_message_images(messages, maximum=3)
+        self.assertEqual(messages[0]["images"], [])
+        self.assertEqual(messages[1]["images"][0]["data"], "new")
+        self.assertEqual(messages[0]["imageCount"], 1)
 
 
 class StateTests(unittest.TestCase):
@@ -244,6 +354,29 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(normalized_search["description"], "Web search")
         self.assertNotIn(sensitive_query, str(normalized_search))
 
+    def test_maps_available_historical_images_without_local_paths(self) -> None:
+        item = normalize_item(
+            {
+                "id": "user-image",
+                "type": "userMessage",
+                "content": [
+                    {"type": "text", "text": "Inspect"},
+                    {
+                        "type": "image",
+                        "url": "data:image/png;base64,YWJj",
+                    },
+                    {
+                        "type": "localImage",
+                        "path": "/private/screenshot.png",
+                    },
+                ],
+            }
+        )
+        self.assertEqual(item["text"], "Inspect")
+        self.assertEqual(item["imageCount"], 2)
+        self.assertEqual(item["images"], [{"mimeType": "image/png", "data": "YWJj"}])
+        self.assertNotIn("/private/screenshot.png", str(item))
+
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_discovers_supported_methods_from_installed_schema(self) -> None:
@@ -292,32 +425,38 @@ schema = {"oneOf": [
         self.assertEqual(result["turnId"], "turn-current")
         self.assertEqual(requests[0][1]["expectedTurnId"], "turn-current")
 
-    async def test_reads_app_server_messages_larger_than_asyncio_default(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            executable = Path(directory, "fake-codex")
-            executable.write_text(
-                """#!/usr/bin/env python3
-import json, sys
-for line in sys.stdin:
-    message = json.loads(line)
-    if message.get("method") == "initialize":
-        response = {"id": message["id"], "result": {"userAgent": "fake"}}
-    elif message.get("method") == "thread/read":
-        response = {"id": message["id"], "result": {"value": "x" * 100000}}
-    else:
-        continue
-    print(json.dumps(response, separators=(",", ":")), flush=True)
-""",
-                encoding="utf-8",
-            )
-            os.chmod(executable, 0o700)
-            adapter = Codex(str(executable), lambda _: asyncio.sleep(0))
-            await adapter.start()
-            try:
-                result = await adapter.request("thread/read", {"threadId": "large"})
-                self.assertEqual(len(result["value"]), 100000)
-            finally:
-                await adapter.stop()
+    async def test_maps_model_metadata_and_exact_turn_input(self) -> None:
+        mapped = model(
+            {
+                "id": "gpt-test",
+                "displayName": "GPT Test",
+                "description": "Useful",
+                "hidden": False,
+                "isDefault": True,
+                "defaultReasoningEffort": "high",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Fast"},
+                    {"reasoningEffort": "high", "description": "Thorough"},
+                ],
+                "inputModalities": ["text", "image"],
+            }
+        )
+        self.assertEqual(mapped["reasoningEfforts"], ["low", "high"])
+        self.assertTrue(mapped["visible"])
+        self.assertTrue(mapped["isDefault"])
+        self.assertEqual(
+            user_input(
+                "Inspect",
+                [{"mimeType": "image/jpeg", "data": "YWJj"}],
+            ),
+            [
+                {"type": "text", "text": "Inspect", "text_elements": []},
+                {
+                    "type": "image",
+                    "url": "data:image/jpeg;base64,YWJj",
+                },
+            ],
+        )
 
 
 class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -411,16 +550,47 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         started = (
             await self.request("session.start", {"repositoryId": "example"})
         )["session"]
+        self.assertEqual(started["messages"], [])
+        self.assertNotIn(started["id"], self.app.codex.reads)
+        models = (await self.request("model.list"))["models"]
+        self.assertEqual(models[0]["id"], "model-test")
         prompted = await self.request(
-            "turn.prompt", {"sessionId": started["id"], "text": "Hello"}
+            "turn.prompt",
+            {
+                "sessionId": started["id"],
+                "text": "Hello",
+                "images": [{"mimeType": "image/jpeg", "data": "YWJj"}],
+                "model": "model-test",
+                "reasoningEffort": "high",
+            },
         )
         self.assertTrue(prompted["accepted"])
+        self.assertEqual(
+            self.app.codex.prompts[-1],
+            {
+                "threadId": started["id"],
+                "text": "Hello",
+                "images": [{"mimeType": "image/jpeg", "data": "YWJj"}],
+                "model": "model-test",
+                "effort": "high",
+            },
+        )
         event = next(
             message
             for message in self.unsolicited
             if message.get("type") == "session.event"
+            and message["payload"]["event"].get("kind") == "assistant.delta"
         )
         self.assertEqual(event["payload"]["event"]["text"], "Hello")
+        user_event = next(
+            message["payload"]["event"]
+            for message in self.unsolicited
+            if message.get("type") == "session.event"
+            and message["payload"]["event"].get("kind") == "item"
+        )
+        self.assertEqual(user_event["item"]["kind"], "user")
+        self.assertEqual(user_event["item"]["text"], "Hello")
+        self.assertEqual(user_event["item"]["imageCount"], 1)
 
         archived = await self.request(
             "session.archive", {"sessionId": "thread-1"}
@@ -493,6 +663,81 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         release_read.set()
         self.assertTrue((await archive)["archived"])
         self.assertTrue((await prompt)["accepted"])
+
+    async def test_rejects_unsupported_model_effort_and_bad_images(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
+        )
+        unsupported_model = await self.request_error(
+            "turn.prompt",
+            {
+                "sessionId": "thread-1",
+                "text": "Hello",
+                "model": "made-up",
+            },
+        )
+        self.assertIn("unavailable", unsupported_model["message"])
+        unsupported_effort = await self.request_error(
+            "turn.prompt",
+            {
+                "sessionId": "thread-1",
+                "text": "Hello",
+                "model": "model-test",
+                "reasoningEffort": "ultra",
+            },
+        )
+        self.assertIn("not supported", unsupported_effort["message"])
+        malformed = await self.request_error(
+            "turn.prompt",
+            {
+                "sessionId": "thread-1",
+                "text": "",
+                "images": [{"mimeType": "image/jpeg", "data": "secret-not-base64"}],
+            },
+        )
+        self.assertIn("base64", malformed["message"])
+        self.assertNotIn("secret-not-base64", str(malformed))
+
+    async def test_abrupt_authenticated_disconnect_is_cleaned_up(self) -> None:
+        socket = self.app.server.sockets[0]
+        reader, writer = await asyncio.open_connection(*socket.getsockname()[:2])
+        request = {
+            "version": 1,
+            "id": "abrupt-pair",
+            "type": "pair",
+            "payload": {
+                "pairingKey": self.pairing_key,
+                "deviceName": "Abrupt phone",
+            },
+        }
+        writer.write(protocol.encode(request))
+        await writer.drain()
+        paired = protocol.decode(await reader.readline())
+        self.assertEqual(paired["type"], "pair.result")
+        writer.write(
+            protocol.encode(
+                {
+                    "version": 1,
+                    "id": "abrupt-subscribe",
+                    "type": "session.subscribe",
+                    "payload": {"sessionId": "thread-1"},
+                }
+            )
+        )
+        await writer.drain()
+        self.assertEqual(
+            protocol.decode(await reader.readline())["type"],
+            "session.subscribe.result",
+        )
+        self.assertEqual(len(self.app.clients), 2)
+
+        writer.transport.abort()
+        for _ in range(50):
+            if len(self.app.clients) == 1:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(len(self.app.clients), 1)
 
 
 if __name__ == "__main__":

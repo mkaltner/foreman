@@ -13,6 +13,10 @@ command -v python3 >/dev/null || {
   echo "python3 is required" >&2
   exit 1
 }
+python3 -c 'import ensurepip' >/dev/null 2>&1 || {
+  echo "Python venv support is required (install python3-venv on Debian/Ubuntu)" >&2
+  exit 1
+}
 codex_executable="$(command -v codex || true)"
 if [[ -z "$codex_executable" ]]; then
   echo "codex is required and must be on PATH" >&2
@@ -22,6 +26,10 @@ codex_executable="$(readlink -f "$codex_executable")"
 
 install -d -m 700 "$config_dir" "$state_dir"
 install -d -m 755 "$install_dir" "$bin_dir" "$unit_dir"
+python3 -m venv "$install_dir/venv"
+"$install_dir/venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  -r "$project_dir/requirements.txt"
 install -m 755 "$project_dir/linux/foreman_service.py" "$install_dir/foreman_service.py"
 install -m 644 "$project_dir/linux/codex.py" "$install_dir/codex.py"
 install -m 644 "$project_dir/linux/protocol.py" "$install_dir/protocol.py"
@@ -39,7 +47,7 @@ if [[ ! -e "$config_file" ]]; then
   chmod 600 "$config_file"
 fi
 
-python3 -m compileall -q "$install_dir"
+"$install_dir/venv/bin/python" -m compileall -q "$install_dir"
 systemctl --user daemon-reload
 systemctl --user enable foreman.service
 systemctl --user restart foreman.service

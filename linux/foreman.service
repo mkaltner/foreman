@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/share/foreman/foreman_service.py
+ExecStart=%h/.local/share/foreman/venv/bin/python %h/.local/share/foreman/foreman_service.py
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15

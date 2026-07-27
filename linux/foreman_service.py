@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 from collections import deque
 import os
 import signal
@@ -17,6 +19,10 @@ from typing import Any, Callable
 from codex import Codex, CodexError, normalize_event, session
 from protocol import MAX_FRAME_BYTES, VERSION, ProtocolError, encode, error, read, response
 from state import State
+
+MAX_IMAGES = 4
+MAX_IMAGE_PAYLOAD_BYTES = 8 * 1024 * 1024
+IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 def load_env(path: Path) -> None:
@@ -107,8 +113,12 @@ class Foreman:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+        writers = []
         for client in list(self.clients):
             client.writer.close()
+            writers.append(client.writer.wait_closed())
+        if writers:
+            await asyncio.gather(*writers, return_exceptions=True)
         await self.codex.stop()
 
     async def codex_event(self, message: dict[str, Any]) -> None:
@@ -123,7 +133,11 @@ class Foreman:
         targets = [
             client
             for client in self.clients
-            if client.authenticated and thread_id in client.subscriptions
+            if client.authenticated
+            and (
+                event.get("kind") == "status"
+                or thread_id in client.subscriptions
+            )
         ]
         await asyncio.gather(
             *(client.send(outgoing) for client in targets), return_exceptions=True
@@ -152,8 +166,16 @@ class Foreman:
         except ProtocolError as exc:
             try:
                 await client.send(error(request, "protocolError", str(exc)))
-            except Exception:
+            except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
                 pass
+        except (
+            ConnectionResetError,
+            BrokenPipeError,
+            asyncio.IncompleteReadError,
+        ):
+            pass
+        except asyncio.CancelledError:
+            pass
         finally:
             self.clients.discard(client)
             try:
@@ -181,6 +203,8 @@ class Foreman:
                     "delete": self.codex.supports("thread/delete"),
                     "approvals": False,
                     "structuredInput": False,
+                    "models": self.codex.supports("model/list"),
+                    "images": True,
                 },
             }
         if message_type == "pair":
@@ -208,6 +232,12 @@ class Foreman:
 
         if message_type == "repository.list":
             return {"repositories": await asyncio.to_thread(self.repositories)}
+        if message_type == "model.list":
+            return {
+                "models": await self.codex.list_models(
+                    refresh=payload.get("refresh") is True
+                )
+            }
         if message_type == "session.list":
             return {
                 "sessions": [session(item) for item in await self.codex.list_threads()]
@@ -220,7 +250,7 @@ class Foreman:
             repository = self.resolve_repository(repository_id)
             thread = await self.codex.start_thread(str(repository))
             client.subscriptions.add(thread["id"])
-            return {"session": session(thread)}
+            return {"session": session(thread, True)}
         if message_type == "session.resume":
             thread_id = required_text(payload, "sessionId", 100)
             thread = await self.codex.resume_thread(thread_id)
@@ -228,6 +258,7 @@ class Foreman:
         if message_type == "session.subscribe":
             thread_id = required_text(payload, "sessionId", 100)
             client.subscriptions.add(thread_id)
+            await self.codex.subscribe_thread(thread_id)
             return {"subscribed": True}
         if message_type == "session.archive":
             thread_id = required_text(payload, "sessionId", 100)
@@ -247,17 +278,28 @@ class Foreman:
             return {"deleted": True}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)
-            text = required_text(payload, "text", 100_000)
+            images = image_payloads(payload)
+            text = message_text(payload, images)
+            model_id, effort = await self.route(payload)
             async with self.thread_lock(thread_id):
-                result = await self.codex.prompt(thread_id, text)
+                result = await self.codex.prompt(
+                    thread_id,
+                    text,
+                    images,
+                    model_id,
+                    effort,
+                )
             client.subscriptions.add(thread_id)
             return {"accepted": True, "turnId": result["turn"]["id"]}
         if message_type == "turn.steer":
             thread_id = required_text(payload, "sessionId", 100)
             turn_id = required_text(payload, "turnId", 100)
-            text = required_text(payload, "text", 100_000)
+            if payload.get("model") is not None or payload.get("reasoningEffort") is not None:
+                raise ValueError("model and reasoning effort cannot change while steering")
+            images = image_payloads(payload)
+            text = message_text(payload, images)
             async with self.thread_lock(thread_id):
-                result = await self.codex.steer(thread_id, turn_id, text)
+                result = await self.codex.steer(thread_id, turn_id, text, images)
             return {"accepted": True, "turnId": result["turnId"]}
         if message_type == "turn.interrupt":
             thread_id = required_text(payload, "sessionId", 100)
@@ -266,6 +308,23 @@ class Foreman:
                 await self.codex.interrupt(thread_id, turn_id)
             return {"accepted": True}
         raise ValueError(f"unknown message type: {message_type}")
+
+    async def route(
+        self, payload: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        model_id = optional_text(payload, "model", 200)
+        effort = optional_text(payload, "reasoningEffort", 100)
+        if model_id is None and effort is None:
+            return None, None
+        if model_id is None:
+            raise ValueError("model is required when reasoningEffort is set")
+        models = await self.codex.list_models()
+        selected = next((item for item in models if item["id"] == model_id), None)
+        if selected is None or selected.get("visible") is False:
+            raise ValueError("selected model is unavailable")
+        if effort is not None and effort not in selected["reasoningEfforts"]:
+            raise ValueError("reasoning effort is not supported by the selected model")
+        return model_id, effort
 
     async def require_inactive_session(self, thread_id: str) -> None:
         projected = session(await self.codex.read_thread(thread_id))
@@ -322,6 +381,65 @@ def required_text(payload: dict[str, Any], key: str, maximum: int) -> str:
     if len(value.encode()) > maximum:
         raise ValueError(f"{key} is too large")
     return value.strip()
+
+
+def optional_text(
+    payload: dict[str, Any], key: str, maximum: int
+) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be non-empty text")
+    if len(value.encode()) > maximum:
+        raise ValueError(f"{key} is too large")
+    return value.strip()
+
+
+def message_text(
+    payload: dict[str, Any], images: list[dict[str, str]]
+) -> str:
+    value = payload.get("text", "")
+    if not isinstance(value, str):
+        raise ValueError("text must be text")
+    if len(value.encode()) > 100_000:
+        raise ValueError("text is too large")
+    text = value.strip()
+    if not text and not images:
+        raise ValueError("text or an image is required")
+    return text
+
+
+def image_payloads(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw = payload.get("images", [])
+    if not isinstance(raw, list):
+        raise ValueError("images must be a list")
+    if len(raw) > MAX_IMAGES:
+        raise ValueError(f"at most {MAX_IMAGES} images are allowed")
+    total = 0
+    images: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each image must be an object")
+        mime_type = item.get("mimeType")
+        data = item.get("data")
+        if mime_type not in IMAGE_MIME_TYPES:
+            raise ValueError("unsupported image MIME type")
+        if not isinstance(data, str) or not data:
+            raise ValueError("image data is required")
+        try:
+            encoded = data.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError("image data is not valid base64") from error
+        total += len(encoded)
+        if total > MAX_IMAGE_PAYLOAD_BYTES:
+            raise ValueError("combined image payload is too large")
+        try:
+            base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("image data is not valid base64") from error
+        images.append({"mimeType": mime_type, "data": data})
+    return images
 
 
 def git(path: Path, *args: str) -> str:
