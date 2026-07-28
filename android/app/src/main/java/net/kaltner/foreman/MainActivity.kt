@@ -2219,22 +2219,31 @@ private fun PromptBox(
             text = {
                 LazyColumn(Modifier.height(360.dp)) {
                     items(models, key = { it.id }) { model ->
-                        Column(
+                        Row(
                             Modifier.fillMaxWidth()
                                 .clickable {
                                     selectModel(model.id)
                                     showModels = false
                                 }
                                 .padding(vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Text(model.displayName, fontWeight = FontWeight.SemiBold)
-                            if (model.description.isNotBlank()) {
-                                Text(
-                                    model.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                            Column(
+                                Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(model.displayName, fontWeight = FontWeight.SemiBold)
+                                if (model.description.isNotBlank()) {
+                                    Text(
+                                        model.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (model.id == modelId) {
+                                Icon(Icons.Default.Check, contentDescription = "Selected")
                             }
                         }
                         HorizontalDivider()
@@ -2395,6 +2404,11 @@ private fun ComposerRouteRow(
                         DropdownMenuItem(
                             text = { Text(option.replaceFirstChar { it.uppercase() }) },
                             onClick = { selectEffort(option) },
+                            trailingIcon = {
+                                if (option == effort) {
+                                    Icon(Icons.Default.Check, contentDescription = "Selected")
+                                }
+                            },
                         )
                     }
                 }
