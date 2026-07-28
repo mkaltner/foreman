@@ -2329,14 +2329,16 @@ private fun ComposerRouteRow(
                 onClick = showAccessLevels,
                 enabled = enabled && accessLevels.isNotEmpty(),
                 colors =
-                    ButtonDefaults.textButtonColors(
-                        contentColor =
-                            if (accessLevelId == "full") {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                    ),
+                    if (accessLevelId == "full") {
+                        ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                            disabledContentColor = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
                 contentPadding =
                     androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
