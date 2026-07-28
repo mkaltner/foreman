@@ -23,6 +23,7 @@ data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
     val followNewMessages: Boolean = true,
+    val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
     val accessLevel: String? = null,
     val model: String? = null,
@@ -43,6 +44,7 @@ class PreferenceStore(context: Context) {
                 }.getOrDefault(ThemeMode.System),
             accentColor = parseAccentColor(preferences.getString("accentColor", null)),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
+            hapticsEnabled = preferences.getBoolean("hapticsEnabled", true),
             monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
             accessLevel = preferences.getString("accessLevel", null),
             model = preferences.getString("model", null),
@@ -59,6 +61,10 @@ class PreferenceStore(context: Context) {
 
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.edit().putBoolean("followNewMessages", enabled).apply()
+    }
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean("hapticsEnabled", enabled).apply()
     }
 
     fun setMonitorActiveTurns(enabled: Boolean) {

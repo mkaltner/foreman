@@ -102,11 +102,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
@@ -138,6 +141,13 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+
+internal val composerKeyboardOptions =
+    KeyboardOptions(
+        capitalization = KeyboardCapitalization.Sentences,
+        autoCorrectEnabled = true,
+        keyboardType = KeyboardType.Text,
+    )
 
 internal data class AccentTones(
     val primary: Color,
@@ -566,6 +576,7 @@ internal data class UiState(
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
     val followNewMessages: Boolean = true,
+    val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
     val pendingSessionAction: PendingSessionAction? = null,
     val capabilities: Set<String> = emptySet(),
@@ -585,6 +596,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
                 followNewMessages = savedPreferences.followNewMessages,
+                hapticsEnabled = savedPreferences.hapticsEnabled,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
                 composerAccessLevel = savedPreferences.accessLevel,
                 composerModel = savedPreferences.model,
@@ -679,6 +691,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.setFollowNewMessages(enabled)
         state.update { it.copy(followNewMessages = enabled) }
+    }
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        preferences.setHapticsEnabled(enabled)
+        state.update { it.copy(hapticsEnabled = enabled) }
     }
 
     fun setMonitorActiveTurns(enabled: Boolean) {
@@ -1728,6 +1745,7 @@ private fun SessionDetailScreen(
                 models = state.models,
                 modelId = state.composerModel,
                 effort = state.composerEffort,
+                hapticsEnabled = state.hapticsEnabled,
                 selectAccessLevel = viewModel::setComposerAccessLevel,
                 selectModel = viewModel::setComposerModel,
                 selectEffort = viewModel::setComposerEffort,
@@ -1947,6 +1965,7 @@ private fun PromptBox(
     models: List<ModelInfo>,
     modelId: String?,
     effort: String?,
+    hapticsEnabled: Boolean,
     selectAccessLevel: (String) -> Unit,
     selectModel: (String) -> Unit,
     selectEffort: (String) -> Unit,
@@ -1961,6 +1980,7 @@ private fun PromptBox(
     var showModels by remember { mutableStateOf(false) }
     var showEfforts by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val selectedAccessLevel = accessLevels.firstOrNull { it.id == accessLevelId }
     val selectedModel = models.firstOrNull { it.id == modelId }
@@ -2054,6 +2074,9 @@ private fun PromptBox(
                 )
                 Button(
                     onClick = {
+                        if (hapticsEnabled) {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+                        }
                         send(text, images) {
                             text = ""
                             images = emptyList()
@@ -2215,6 +2238,7 @@ private fun CompactMessageField(
                 color = MaterialTheme.colorScheme.onSurface,
             ),
         maxLines = 5,
+        keyboardOptions = composerKeyboardOptions,
         interactionSource = interactionSource,
         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         decorationBox = { innerTextField ->
@@ -2356,6 +2380,7 @@ private fun UiSettingsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
+    val hapticFeedback = LocalHapticFeedback.current
     Box(modifier) {
         IconButton(
             onClick = {
@@ -2457,6 +2482,26 @@ private fun UiSettingsMenu(
                     },
                     onClick = {
                         viewModel.setFollowNewMessages(!state.followNewMessages)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Haptic feedback") },
+                    leadingIcon = {
+                        Checkbox(
+                            checked = state.hapticsEnabled,
+                            onCheckedChange = null,
+                        )
+                    },
+                    onClick = {
+                        val enabled = !state.hapticsEnabled
+                        hapticFeedback.performHapticFeedback(
+                            if (enabled) {
+                                HapticFeedbackType.ToggleOn
+                            } else {
+                                HapticFeedbackType.ToggleOff
+                            },
+                        )
+                        viewModel.setHapticsEnabled(enabled)
                     },
                 )
                 DropdownMenuItem(
