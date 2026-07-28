@@ -84,6 +84,20 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun sessionHapticsOnlyFireForActiveTerminalTransitions() {
+        assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "completed"))
+        assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "idle"))
+        assertEquals(SessionHapticEvent.Attention, sessionHapticEvent("working", "waiting"))
+        assertEquals(SessionHapticEvent.Failed, sessionHapticEvent("working", "failed"))
+        assertEquals(SessionHapticEvent.Failed, sessionHapticEvent("waiting", "failed"))
+
+        assertNull(sessionHapticEvent(null, "failed"))
+        assertNull(sessionHapticEvent("completed", "failed"))
+        assertNull(sessionHapticEvent("working", "working"))
+        assertNull(sessionHapticEvent("working", "interrupted"))
+    }
+
+    @Test
     fun framingRoundTripsAndRejectsOversizeInput() {
         assertEquals(16 * 1024 * 1024, MAX_FRAME_BYTES)
         val output = ByteArrayOutputStream()

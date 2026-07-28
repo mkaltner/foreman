@@ -393,6 +393,8 @@ internal enum class Screen { Setup, Sessions, Detail }
 
 internal enum class SessionAction { Archive, Delete }
 
+internal enum class SessionHapticEvent { Completed, Attention, Failed }
+
 internal data class PendingSessionAction(
     val sessionId: String,
     val sessionTitle: String,
@@ -413,6 +415,17 @@ internal fun sessionActionCanBeConfirmed(
     capabilities: Set<String>,
     action: SessionAction,
 ): Boolean = connected && sessionActionSupported(capabilities, action)
+
+internal fun sessionHapticEvent(previous: String?, current: String?): SessionHapticEvent? {
+    if (previous == null || current == null || previous == current) return null
+    if (previous != "working" && previous != "waiting") return null
+    return when (current) {
+        "completed", "idle" -> SessionHapticEvent.Completed
+        "waiting" -> SessionHapticEvent.Attention
+        "failed" -> SessionHapticEvent.Failed
+        else -> null
+    }
+}
 
 internal fun eventShowsWorkingActivity(kind: String): Boolean =
     kind == "assistant.delta" || kind == "item" || kind == "activity"
@@ -1659,8 +1672,25 @@ private fun SessionDetailScreen(
     val selected = state.selected
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
+    val hapticFeedback = LocalHapticFeedback.current
+    var previousStatus by remember(selected?.id) { mutableStateOf(selected?.status) }
 
     BackHandler(onBack = viewModel::backToSessions)
+
+    LaunchedEffect(selected?.id, selected?.status, state.hapticsEnabled) {
+        val event = sessionHapticEvent(previousStatus, selected?.status)
+        previousStatus = selected?.status
+        if (!state.hapticsEnabled) return@LaunchedEffect
+        when (event) {
+            SessionHapticEvent.Completed ->
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+            SessionHapticEvent.Attention ->
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+            SessionHapticEvent.Failed ->
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.Reject)
+            null -> Unit
+        }
+    }
 
     LaunchedEffect(selected?.id) {
         selected?.let {
