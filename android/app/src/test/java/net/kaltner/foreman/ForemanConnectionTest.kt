@@ -2,6 +2,8 @@ package net.kaltner.foreman
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
@@ -71,6 +73,28 @@ class ForemanConnectionTest {
             assertFalse(light.primaryContainer == light.secondaryContainer)
             assertFalse(dark.primaryContainer == dark.secondaryContainer)
         }
+    }
+
+    @Test
+    fun composerUsesConversationalKeyboardDefaults() {
+        assertEquals(KeyboardCapitalization.Sentences, composerKeyboardOptions.capitalization)
+        assertEquals(true, composerKeyboardOptions.autoCorrectEnabled)
+        assertEquals(KeyboardType.Text, composerKeyboardOptions.keyboardType)
+        assertTrue(UiPreferences().hapticsEnabled)
+    }
+
+    @Test
+    fun sessionHapticsOnlyFireForActiveTerminalTransitions() {
+        assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "completed"))
+        assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "idle"))
+        assertEquals(SessionHapticEvent.Attention, sessionHapticEvent("working", "waiting"))
+        assertEquals(SessionHapticEvent.Failed, sessionHapticEvent("working", "failed"))
+        assertEquals(SessionHapticEvent.Failed, sessionHapticEvent("waiting", "failed"))
+
+        assertNull(sessionHapticEvent(null, "failed"))
+        assertNull(sessionHapticEvent("completed", "failed"))
+        assertNull(sessionHapticEvent("working", "working"))
+        assertNull(sessionHapticEvent("working", "interrupted"))
     }
 
     @Test
