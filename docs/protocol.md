@@ -36,14 +36,25 @@ Implemented types:
 - `repository.list`;
 - `model.list`;
 - `access.list`;
+- `service.status`;
 - `session.list`, `session.read`, `session.start`, `session.resume`,
-  `session.subscribe`, `session.archive`, `session.delete`;
+  `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
 
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
-`deviceToken`. `session.event` carries normalized status, assistant delta, and
-command/tool item events. Reconnect is intentionally a fresh list, read, and
-subscribe sequence; there are no cursors or replay logs.
+`deviceToken`. `service.status` returns authenticated, user-facing host health:
+Foreman and Codex versions, uptime, runtime mode, listener ports, repository
+root, browser-connection count, and last successful Codex communication. It
+never includes pairing material, device tokens, environment variables, logs,
+or process details.
+
+Session summaries include authoritative active-turn start, terminal time,
+duration, safe failure, and wait metadata when Codex supplies it.
+`session.event` carries normalized status, lifecycle, assistant delta, public
+activity, and command/tool item events. Approval and structured-input events
+identify the unsupported wait type without exposing response controls.
+Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
+cursors, replay logs, or persistent dashboard history.
 
 `session.archive` moves an inactive Codex thread out of the active list and is
 reversible through Codex's `thread/unarchive` API. `session.delete` requires
