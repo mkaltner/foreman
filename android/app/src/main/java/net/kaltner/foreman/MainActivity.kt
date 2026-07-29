@@ -2402,7 +2402,18 @@ private fun ComposerRouteRow(
                 ) {
                     selectedModel?.reasoningEfforts?.forEach { option ->
                         DropdownMenuItem(
-                            text = { Text(option.replaceFirstChar { it.uppercase() }) },
+                            text = {
+                                Column {
+                                    Text(option.replaceFirstChar { it.uppercase() })
+                                    if (option.equals("ultra", ignoreCase = true)) {
+                                        Text(
+                                            "Consumes usage limits faster",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            },
                             onClick = { selectEffort(option) },
                             trailingIcon = {
                                 if (option == effort) {
