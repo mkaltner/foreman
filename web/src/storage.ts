@@ -17,6 +17,7 @@ const HOST_KEY = "foreman.host.v1";
 const APPEARANCE_KEY = "foreman.appearance.v1";
 const NOTIFICATIONS_KEY = "foreman.notifications.v1";
 const DASHBOARD_KEY = "foreman.dashboard.v1";
+const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 export const DEFAULT_APPEARANCE: Appearance = { theme: "system", accent: "purple" };
 export const ACCENTS: AccentColor[] = [
   "purple",
@@ -118,4 +119,37 @@ export function saveDashboardPreferences(
     ...preferences,
     dismissedFailures: preferences.dismissedFailures.slice(-100),
   }));
+}
+
+export interface SessionOrganization {
+  pinnedIds: string[];
+  hiddenIds: string[];
+}
+
+export function loadSessionOrganization(storage: Storage = localStorage): SessionOrganization {
+  try {
+    const parsed = JSON.parse(storage.getItem(SESSION_ORGANIZATION_KEY) ?? "null") as Partial<SessionOrganization> | null;
+    return {
+      pinnedIds: stringIds(parsed?.pinnedIds),
+      hiddenIds: stringIds(parsed?.hiddenIds),
+    };
+  } catch {
+    return { pinnedIds: [], hiddenIds: [] };
+  }
+}
+
+export function saveSessionOrganization(
+  organization: SessionOrganization,
+  storage: Storage = localStorage,
+): void {
+  storage.setItem(SESSION_ORGANIZATION_KEY, JSON.stringify({
+    pinnedIds: [...new Set(organization.pinnedIds)].slice(-1000),
+    hiddenIds: [...new Set(organization.hiddenIds)].slice(-1000),
+  }));
+}
+
+function stringIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string => typeof id === "string" && id.length <= 100))].slice(-1000)
+    : [];
 }

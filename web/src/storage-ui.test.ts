@@ -5,10 +5,12 @@ import {
   loadDashboardPreferences,
   loadHost,
   loadNotificationsEnabled,
+  loadSessionOrganization,
   saveAppearance,
   saveDashboardPreferences,
   saveHost,
   saveNotificationsEnabled,
+  saveSessionOrganization,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -61,6 +63,12 @@ describe("storage, appearance, and interaction helpers", () => {
       repository: "/projects/foreman",
       dismissedFailures: ["failed-1"],
     });
+  });
+
+  it("persists browser-local pins and hidden sessions", () => {
+    saveSessionOrganization({ pinnedIds: ["one", "one", "two"], hiddenIds: ["noise"] });
+    expect(loadSessionOrganization()).toEqual({ pinnedIds: ["one", "two"], hiddenIds: ["noise"] });
+    expect(localStorage.getItem("foreman.session-organization.v1")).not.toContain("transcript");
   });
 
   it("persists the browser notification preference disabled by default", () => {

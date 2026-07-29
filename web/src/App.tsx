@@ -11,6 +11,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import { Dashboard } from "./Dashboard";
+import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery";
 import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
   ForemanWebClient,
@@ -31,7 +32,6 @@ import {
   applySessionEvent,
   applySessionSummaryEventBatch,
   applySessionSummaryEvent,
-  groupSessions,
   liveActivityLabel,
   liveActivityMessage,
   routeForSession,
@@ -45,6 +45,7 @@ import {
   type SessionEvent,
   type SessionEventPayload,
   type SessionSummary,
+  type SessionSearchResult,
   type WireMessage,
 } from "./protocol";
 import {
@@ -53,12 +54,25 @@ import {
   loadAppearance,
   loadHost,
   loadNotificationsEnabled,
+  loadSessionOrganization,
   saveAppearance,
   saveHost,
   saveNotificationsEnabled,
+  saveSessionOrganization,
   type Appearance,
   type StoredHost,
 } from "./storage";
+import {
+  activeFilterCount,
+  dateBounds,
+  filterSessions,
+  parseSessionFilters,
+  repositoryFilterOptions,
+  sessionFiltersSearch,
+  type SessionFilters,
+  type RepositoryFilterOption,
+  type VisibleSession,
+} from "./session-search";
 import { applyAppearance } from "./theme";
 import {
   confirmSessionAction,
@@ -78,6 +92,7 @@ type View = "dashboard" | "sessions" | "detail" | "settings";
 
 function App() {
   const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
+  const initialFilters = useRef(parseSessionFilters(window.location.search)).current;
   const [storedHost, setStoredHost] = useState<StoredHost | null>(() => loadHost());
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
@@ -90,6 +105,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
   );
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
   );
@@ -102,7 +118,17 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(loadNotificationsEnabled);
+  const [searchFilters, setSearchFilters] = useState<SessionFilters>(initialFilters);
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchRevision, setSearchRevision] = useState(0);
+  const [organization, setOrganization] = useState(loadSessionOrganization);
   const notificationsEnabledRef = useRef(notificationsEnabled);
+  const searchFiltersRef = useRef(initialFilters);
+  const lastImmediateSearch = useRef(0);
+  const lastBackendSearchKey = useRef("");
+  const searchGeneration = useRef(0);
   const sessionsRef = useRef<SessionSummary[]>([]);
   const currentRef = useRef<SessionSummary | null>(null);
   const connectedRef = useRef(false);
@@ -116,17 +142,84 @@ function App() {
 
   const updateRoute = useCallback((route: WebRoute, replace = false) => {
     const path = webRoutePath(route);
-    if (window.location.pathname === path) return;
-    window.history[replace ? "replaceState" : "pushState"](null, "", path);
+    const search = sessionFiltersSearch(searchFiltersRef.current);
+    if (window.location.pathname === path && window.location.search === search) return;
+    window.history[replace ? "replaceState" : "pushState"](null, "", `${path}${search}`);
   }, []);
 
   useEffect(() => applyAppearance(appearance), [appearance]);
   useEffect(() => { notificationsEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
+  useEffect(() => { searchFiltersRef.current = searchFilters; }, [searchFilters]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
   useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { updateRoute(initialRoute, true); }, [initialRoute, updateRoute]);
+
+  useEffect(() => {
+    if (viewRef.current === "dashboard" || viewRef.current === "sessions") {
+      const search = sessionFiltersSearch(searchFilters);
+      window.history.replaceState(null, "", `${window.location.pathname}${search}`);
+    }
+  }, [searchFilters]);
+
+  useEffect(() => {
+    const generation = ++searchGeneration.current;
+    const query = searchFilters.query.trim();
+    const immediate = searchRevision !== lastImmediateSearch.current;
+    lastImmediateSearch.current = searchRevision;
+    if (!query || connection !== "connected") {
+      setSearchResults([]);
+      setSearchLoading(false);
+      setSearchError("");
+      return;
+    }
+    const backendSearchKey = JSON.stringify([
+      query.toLocaleLowerCase(),
+      searchFilters.repository,
+      searchFilters.statuses,
+      searchFilters.dateRange,
+      searchFilters.dateFrom,
+      searchFilters.dateTo,
+    ]);
+    if (lastBackendSearchKey.current !== backendSearchKey) {
+      lastBackendSearchKey.current = backendSearchKey;
+      setSearchResults([]);
+    }
+    setSearchLoading(true);
+    setSearchError("");
+    const timer = window.setTimeout(() => {
+      const bounds = dateBounds(searchFilters);
+      void clientRef.current?.request<{
+        results: SessionSearchResult[];
+      } & Record<string, unknown>>("session.search", {
+        query,
+        repository: searchFilters.repository || null,
+        statuses: searchFilters.statuses,
+        dateFrom: bounds.dateFrom,
+        dateTo: bounds.dateTo,
+        limit: 100,
+      }).then((result) => {
+        if (searchGeneration.current === generation) setSearchResults(result.results);
+      }).catch((caught) => {
+        if (searchGeneration.current === generation && !/cancel/i.test(String(caught))) {
+          setSearchError(caught instanceof Error ? caught.message : "Search failed");
+        }
+      }).finally(() => {
+        if (searchGeneration.current === generation) setSearchLoading(false);
+      });
+    }, immediate ? 0 : 300);
+    return () => window.clearTimeout(timer);
+  }, [
+    connection,
+    searchFilters.query,
+    searchFilters.repository,
+    searchFilters.statuses,
+    searchFilters.dateRange,
+    searchFilters.dateFrom,
+    searchFilters.dateTo,
+    searchRevision,
+  ]);
 
   useEffect(() => {
     if (window.isSecureContext && "serviceWorker" in navigator) {
@@ -202,6 +295,15 @@ function App() {
           sessionsRef.current = next;
           return next;
         });
+        setSearchResults((previous) => previous.filter(({ session }) => session.id !== payload.sessionId));
+        setOrganization((previous) => {
+          const next = {
+            pinnedIds: previous.pinnedIds.filter((id) => id !== payload.sessionId),
+            hiddenIds: previous.hiddenIds.filter((id) => id !== payload.sessionId),
+          };
+          saveSessionOrganization(next);
+          return next;
+        });
       } else if (payload.event.session) {
         setSessions((previous) => {
           const next = previous.some((session) => session.id === payload.sessionId)
@@ -210,10 +312,14 @@ function App() {
           sessionsRef.current = next;
           return next;
         });
+        setSearchRevision((value) => value + 1);
       }
       return;
     }
     if (payload.event.kind === "status" && payload.event.status) {
+      if (searchFiltersRef.current.query.trim()) {
+        setSearchRevision((value) => value + 1);
+      }
       const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
       const notification = notificationMonitor.current.observe(
         payload.sessionId,
@@ -309,6 +415,18 @@ function App() {
       sessionsRef.current = reconciled;
       notificationMonitor.current.seed(reconciled);
       setSessions(reconciled);
+      const validIds = new Set(reconciled.map(({ id }) => id));
+      setOrganization((previous) => {
+        const next = {
+          pinnedIds: previous.pinnedIds.filter((id) => validIds.has(id)),
+          hiddenIds: previous.hiddenIds.filter((id) => validIds.has(id)),
+        };
+        if (next.pinnedIds.length !== previous.pinnedIds.length || next.hiddenIds.length !== previous.hiddenIds.length) {
+          saveSessionOrganization(next);
+          return next;
+        }
+        return previous;
+      });
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
@@ -374,11 +492,12 @@ function App() {
   }, [client, connectHost, storedHost]);
 
   const openSession = useCallback(
-    async (id: string, updateHistory = true) => {
+    async (id: string, updateHistory = true, matchedItemId: string | null = null) => {
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
       setSelectedId(id);
+      setHighlightItemId(matchedItemId);
       viewRef.current = "detail";
       setView("detail");
       if (updateHistory) updateRoute({ view: "detail", sessionId: id });
@@ -411,6 +530,9 @@ function App() {
   useEffect(() => {
     const restoreRoute = () => {
       const route = parseWebRoute(window.location.pathname);
+      const filters = parseSessionFilters(window.location.search);
+      searchFiltersRef.current = filters;
+      setSearchFilters(filters);
       viewRef.current = route.view;
       if (route.view === "dashboard") {
         closeSelectedSession();
@@ -483,6 +605,9 @@ function App() {
   const dashboardOpen = useCallback((id: string) => {
     void openSession(id);
   }, [openSession]);
+  const searchResultOpen = useCallback((id: string, itemId?: string | null) => {
+    void openSession(id, true, itemId ?? null);
+  }, [openSession]);
   const dashboardInterrupt = useCallback((session: SessionSummary) => {
     if (!session.activeTurnId) return;
     void client.request("turn.interrupt", {
@@ -493,6 +618,43 @@ function App() {
   const dashboardRefresh = useCallback(() => {
     void refreshState().catch((caught) => setError(String(caught)));
   }, [refreshState]);
+  const repositoryOptions = useMemo(
+    () => repositoryFilterOptions(sessions, repositories, serviceStatus?.repositoryRoot ?? ""),
+    [repositories, serviceStatus?.repositoryRoot, sessions],
+  );
+  const visibleSessions = useMemo(
+    () => filterSessions(
+      sessions,
+      searchFilters,
+      new Set(organization.pinnedIds),
+      new Set(organization.hiddenIds),
+      searchResults,
+      repositories,
+      serviceStatus?.repositoryRoot ?? "",
+    ),
+    [organization, repositories, searchFilters, searchResults, serviceStatus?.repositoryRoot, sessions],
+  );
+  const discoveryActive = activeFilterCount(searchFilters) > 0;
+  const togglePin = useCallback((id: string) => {
+    setOrganization((previous) => {
+      const pinnedIds = previous.pinnedIds.includes(id)
+        ? previous.pinnedIds.filter((value) => value !== id)
+        : [...previous.pinnedIds, id];
+      const next = { ...previous, pinnedIds };
+      saveSessionOrganization(next);
+      return next;
+    });
+  }, []);
+  const toggleHidden = useCallback((id: string) => {
+    setOrganization((previous) => {
+      const hiddenIds = previous.hiddenIds.includes(id)
+        ? previous.hiddenIds.filter((value) => value !== id)
+        : [...previous.hiddenIds, id];
+      const next = { ...previous, hiddenIds };
+      saveSessionOrganization(next);
+      return next;
+    });
+  }, []);
 
   if (!storedHost) {
     return (
@@ -571,35 +733,44 @@ function App() {
           onForget={forget}
         />
       ) : view === "dashboard" ? (
-        <Dashboard
-          sessions={sessions}
-          serviceStatus={serviceStatus}
-          repositories={repositories}
-          recentActivity={recentActivity}
-          pairedClients={pairedClients}
-          connection={connection}
-          disabled={!connected}
-          onOpen={dashboardOpen}
-          onInterrupt={dashboardInterrupt}
-          onRefresh={dashboardRefresh}
-          onRevokeClient={async (pairedClient) => {
-            try {
-              await client.request("client.revoke", { clientId: pairedClient.id });
-              setPairedClients((previous) => previous.filter((entry) => entry.id !== pairedClient.id));
-              if (pairedClient.current) forget();
-            } catch (caught) {
-              setError(caught instanceof Error ? caught.message : "Client token could not be revoked");
-              throw caught;
-            }
-          }}
-        />
+        <>
+          <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} loading={searchLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
+          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
+            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
+            <Dashboard
+            sessions={visibleSessions.map(({ session }) => session)}
+            serviceStatus={serviceStatus}
+            repositories={repositories}
+            recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(entry.sessionId))}
+            pairedClients={pairedClients}
+            connection={connection}
+            disabled={!connected}
+            onOpen={dashboardOpen}
+            onInterrupt={dashboardInterrupt}
+            onRefresh={dashboardRefresh}
+            onRevokeClient={async (pairedClient) => {
+              try {
+                await client.request("client.revoke", { clientId: pairedClient.id });
+                setPairedClients((previous) => previous.filter((entry) => entry.id !== pairedClient.id));
+                if (pairedClient.current) forget();
+              } catch (caught) {
+                setError(caught instanceof Error ? caught.message : "Client token could not be revoked");
+                throw caught;
+              }
+            }}
+          /></>}
+        </>
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
-            sessions={sessions}
+            results={visibleSessions}
+            filters={searchFilters}
+            repositoryOptions={repositoryOptions}
+            searchLoading={searchLoading}
+            searchError={searchError}
             selectedId={selectedId}
             disabled={!connected}
-            onOpen={(id) => void openSession(id)}
+            onOpen={searchResultOpen}
             onRefresh={() => void refreshState().catch((caught) => setError(String(caught)))}
             onNew={async () => {
               setNewSessionOpen(true);
@@ -612,6 +783,10 @@ function App() {
                 setError(caught instanceof Error ? caught.message : "Repositories could not be loaded");
               }
             }}
+            onFilters={setSearchFilters}
+            onSearchNow={() => setSearchRevision((value) => value + 1)}
+            onPin={togglePin}
+            onHide={toggleHidden}
             onAction={async (action, session) => {
               if (!confirmSessionAction(action, session.title)) return;
               try {
@@ -620,6 +795,17 @@ function App() {
                   ...(action === "delete" ? { confirm: true } : {}),
                 });
                 setSessions((previous) => previous.filter((item) => item.id !== session.id));
+                setSearchResults((previous) => previous.filter(({ session: result }) => result.id !== session.id));
+                if (action === "delete") {
+                  setOrganization((previous) => {
+                    const next = {
+                      pinnedIds: previous.pinnedIds.filter((id) => id !== session.id),
+                      hiddenIds: previous.hiddenIds.filter((id) => id !== session.id),
+                    };
+                    saveSessionOrganization(next);
+                    return next;
+                  });
+                }
                 if (selectedIdRef.current === session.id) {
                   selectedIdRef.current = null;
                   setSelectedId(null);
@@ -638,6 +824,7 @@ function App() {
                 models={models}
                 accessLevels={accessLevels}
                 connected={connected}
+                highlightItemId={highlightItemId}
                 onBack={() => showSessions()}
                 onRequest={(type, payload) => client.request(type, payload)}
                 onError={setError}
@@ -731,23 +918,48 @@ function ConnectionBadge({ state, detail }: { state: ConnectionState; detail: st
 }
 
 function SessionList({
-  sessions,
+  results,
+  filters,
+  repositoryOptions,
+  searchLoading,
+  searchError,
   selectedId,
   disabled,
   onOpen,
   onRefresh,
   onNew,
   onAction,
+  onFilters,
+  onSearchNow,
+  onPin,
+  onHide,
 }: {
-  sessions: SessionSummary[];
+  results: VisibleSession[];
+  filters: SessionFilters;
+  repositoryOptions: RepositoryFilterOption[];
+  searchLoading: boolean;
+  searchError: string;
   selectedId: string | null;
   disabled: boolean;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, itemId?: string | null) => void;
   onRefresh: () => void;
   onNew: () => void;
   onAction: (action: "archive" | "delete", session: SessionSummary) => void;
+  onFilters: (filters: SessionFilters) => void;
+  onSearchNow: () => void;
+  onPin: (id: string) => void;
+  onHide: (id: string) => void;
 }) {
-  const groups = groupSessions(sessions);
+  const sessions = results.map(({ session }) => session);
+  const pinnedSessions = results.filter(({ pinned }) => pinned).map(({ session }) => session);
+  const unpinnedSessions = results.filter(({ pinned }) => !pinned).map(({ session }) => session);
+  const groups = {
+    pinned: pinnedSessions,
+    waiting: unpinnedSessions.filter((session) => session.attention || session.status === "waiting"),
+    active: unpinnedSessions.filter((session) => !session.attention && session.status === "working"),
+    recent: unpinnedSessions.filter((session) => !session.attention && session.status !== "waiting" && session.status !== "working"),
+  };
+  const discoveryActive = activeFilterCount(filters) > 0;
   return (
     <aside className="session-pane">
       <div className="pane-heading">
@@ -757,12 +969,14 @@ function SessionList({
           <button className="primary" onClick={onNew} disabled={disabled}>New</button>
         </div>
       </div>
+      <SessionSearchControls filters={filters} repositories={repositoryOptions} loading={searchLoading} onChange={onFilters} onSearchNow={onSearchNow} />
       <div className="session-scroll">
+        {discoveryActive ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} onOpen={onOpen} onPin={onPin} onHide={onHide} /> : <>
         {sessions.length === 0 && <div className="empty-list"><h3>No sessions yet</h3><p>Start one from a repository.</p></div>}
-        {(["waiting", "active", "recent"] as const).map((group) =>
+        {(["pinned", "waiting", "active", "recent"] as const).map((group) =>
           groups[group].length ? (
             <section className="session-group" key={group}>
-              <h2>{group === "waiting" ? "Needs attention" : group === "active" ? "Active" : "Recent"}</h2>
+              <h2>{group === "pinned" ? "Pinned" : group === "waiting" ? "Needs attention" : group === "active" ? "Active" : "Recent"}</h2>
               {groups[group].map((session) => (
                 <article
                   key={session.id}
@@ -774,6 +988,8 @@ function SessionList({
                   <div className="session-meta">
                     <span>{formatActivity(session.lastActivity)}</span>
                     <span className="card-actions">
+                      <button className={results.find((item) => item.session.id === session.id)?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(session.id); }} aria-label={`${results.find((item) => item.session.id === session.id)?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id)?.pinned ? "★" : "☆"}</button>
+                      <button onClick={(event) => { event.stopPropagation(); onHide(session.id); }}>Hide</button>
                       <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>
                       <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>
                     </span>
@@ -783,6 +999,7 @@ function SessionList({
             </section>
           ) : null,
         )}
+        </>}
       </div>
     </aside>
   );
@@ -793,6 +1010,7 @@ function ConversationView({
   models,
   accessLevels,
   connected,
+  highlightItemId,
   onBack,
   onRequest,
   onError,
@@ -801,6 +1019,7 @@ function ConversationView({
   models: ModelInfo[];
   accessLevels: AccessLevelInfo[];
   connected: boolean;
+  highlightItemId: string | null;
   onBack: () => void;
   onRequest: <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>;
   onError: (message: string) => void;
@@ -826,10 +1045,20 @@ function ConversationView({
   }, [initialRoute.accessLevel, initialRoute.model, initialRoute.reasoningEffort, session.id]);
 
   useEffect(() => {
-    following.current = true;
+    if (!highlightItemId) return;
+    const frame = requestAnimationFrame(() => {
+      document.getElementById(`message-${highlightItemId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [highlightItemId, session.messages?.length]);
+
+  useEffect(() => {
+    following.current = !highlightItemId;
     setJumpVisible(false);
-    requestAnimationFrame(() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }));
-  }, [session.id]);
+    if (!highlightItemId) {
+      requestAnimationFrame(() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }));
+    }
+  }, [highlightItemId, session.id]);
 
   const transcriptKey = `${session.messages?.length ?? 0}:${session.messages?.at(-1)?.text?.length ?? 0}:${session.activityText?.length ?? 0}`;
   useEffect(() => {
@@ -926,7 +1155,7 @@ function ConversationView({
         }}
       >
         {!session.messages?.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>Choose a route below and send the first prompt.</p></div>}
-        {session.messages?.map((item) => <ConversationItemView key={item.id} item={item} />)}
+        {session.messages?.map((item) => <ConversationItemView key={item.id} item={item} highlighted={item.id === highlightItemId} />)}
         {(session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
@@ -1063,12 +1292,12 @@ export function RouteSelect({
   );
 }
 
-function ConversationItemView({ item }: { item: NonNullable<SessionSummary["messages"]>[number] }) {
+function ConversationItemView({ item, highlighted = false }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean }) {
   if (item.kind === "command" || item.kind === "tool") {
-    return <article className="tool-card"><span>{item.kind === "command" ? "›_" : "◇"}</span><div><strong>{item.kind === "command" ? "Command" : "Tool"}</strong><p>{item.description || "Working"}</p></div><small>{item.status || "in progress"}{item.exitCode != null ? ` · exit ${item.exitCode}` : ""}</small></article>;
+    return <article id={`message-${item.id}`} className={`tool-card ${highlighted ? "search-highlight" : ""}`}><span>{item.kind === "command" ? "›_" : "◇"}</span><div><strong>{item.kind === "command" ? "Command" : "Tool"}</strong><p>{item.description || "Working"}</p></div><small>{item.status || "in progress"}{item.exitCode != null ? ` · exit ${item.exitCode}` : ""}</small></article>;
   }
   return (
-    <article className={`message ${item.kind}`}>
+    <article id={`message-${item.id}`} className={`message ${item.kind} ${highlighted ? "search-highlight" : ""}`}>
       <div className="message-label">{item.kind === "user" ? "You" : "Foreman"}</div>
       {item.kind === "assistant" ? <Markdown text={item.text ?? ""} /> : <p className="user-text">{item.text}</p>}
       {!!item.images?.length && <div className="message-images">{item.images.map((image, index) => <img key={index} src={`data:${image.mimeType};base64,${image.data}`} alt={`Attachment ${index + 1}`} />)}</div>}

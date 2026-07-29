@@ -64,6 +64,18 @@ export interface SessionSummary {
   statusChangedAt?: number | null;
 }
 
+export interface SessionSearchMatch {
+  kind: "title" | "workspace" | "user" | "assistant" | "command" | "tool";
+  snippet: string;
+  turnId?: string | null;
+  itemId?: string | null;
+}
+
+export interface SessionSearchResult {
+  session: SessionSummary;
+  matches: SessionSearchMatch[];
+}
+
 export interface ServiceStatus {
   receivedAt?: number;
   foremanVersion: string;
