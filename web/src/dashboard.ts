@@ -35,6 +35,7 @@ export interface RepositoryGroup {
   failed: number;
   recent: number;
   lastActivity: number | null;
+  currentActivity: string | null;
   longestActiveDurationMs: number | null;
   latestCompletionAt: number | null;
 }
@@ -185,6 +186,10 @@ export function repositoryGroups(
     const completions = group.sessions
       .map((session) => timestampMilliseconds(session.terminalAt))
       .filter((value): value is number => value !== null);
+    const currentActivity = [...group.sessions]
+      .filter((session) => ["working", "waiting"].includes(session.status))
+      .sort((left, right) => (right.lastActivity ?? 0) - (left.lastActivity ?? 0))[0]
+      ?.activityLabel ?? null;
     return {
       id,
       name: group.name,
@@ -195,6 +200,7 @@ export function repositoryGroups(
       failed: group.sessions.filter((session) => session.status === "failed").length,
       recent: group.sessions.filter((session) => isRecent(session, now)).length,
       lastActivity: maximum(group.sessions.map((session) => timestampMilliseconds(session.lastActivity))),
+      currentActivity,
       longestActiveDurationMs: activeStarts.length ? now - Math.min(...activeStarts) : null,
       latestCompletionAt: completions.length ? Math.max(...completions) : null,
     };
@@ -213,6 +219,7 @@ export function recordRecentActivity(
   now = Date.now(),
 ): RecentActivityEntry[] {
   if (!session || event.kind === "assistant.delta") return entries;
+  if (event.kind === "status" && event.status === session.status) return entries;
   const projected = describeEvent(event);
   if (!projected) return entries;
   const timestamp = timestampMilliseconds(event.observedAt) ?? now;
@@ -225,12 +232,28 @@ export function recordRecentActivity(
     description: projected.description,
     timestamp,
   };
-  const coalesce = projected.category === "activity" &&
-    entries[0]?.sessionId === session.id &&
-    entries[0]?.category === "activity" &&
-    timestamp - entries[0].timestamp < 5_000;
-  if (coalesce && entries[0].description === next.description) return entries;
-  return [next, ...(coalesce ? entries.slice(1) : entries)].slice(0, MAX_RECENT_ACTIVITY);
+  const previousActivity = entries.findIndex((entry) =>
+    entry.sessionId === session.id && entry.category === "activity"
+  );
+  const previousState = entries.findIndex((entry) =>
+    entry.sessionId === session.id && entry.category !== "activity"
+  );
+  const replaceIndex = projected.category === "activity" &&
+    previousActivity >= 0 &&
+    (previousState < 0 || previousActivity < previousState)
+    ? previousActivity
+    : entries.findIndex((entry) =>
+      entry.sessionId === session.id &&
+      entry.category === projected.category &&
+      entry.description === projected.description &&
+      timestamp - entry.timestamp >= 0 &&
+      timestamp - entry.timestamp < 30_000
+    );
+  if (replaceIndex >= 0 && entries[replaceIndex].description === next.description) return entries;
+  const retained = replaceIndex >= 0
+    ? entries.filter((_, index) => index !== replaceIndex)
+    : entries;
+  return [next, ...retained].slice(0, MAX_RECENT_ACTIVITY);
 }
 
 function describeEvent(event: SessionEvent): Pick<RecentActivityEntry, "category" | "description"> | null {
@@ -243,17 +266,12 @@ function describeEvent(event: SessionEvent): Pick<RecentActivityEntry, "category
     if (event.status === "interrupted") return { category: "terminal", description: "Turn interrupted" };
   }
   if (event.kind === "activity" && event.label) return { category: "activity", description: event.label };
-  if (event.kind === "item" && event.phase === "started") {
-    if (event.item?.kind === "command") return { category: "activity", description: "Running command" };
-    const description = event.item?.description ?? "Using tool";
-    return { category: "activity", description: description.slice(0, 100) };
-  }
   return null;
 }
 
 export function formatElapsed(startedAt?: number | null, now = Date.now()): string {
   const started = timestampMilliseconds(startedAt);
-  if (started === null) return "—";
+  if (started === null) return "Start time unavailable";
   return formatDuration(Math.max(0, now - started));
 }
 

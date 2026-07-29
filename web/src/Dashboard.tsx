@@ -190,11 +190,12 @@ const MonitoringCard = memo(function MonitoringCard({ session, attention, now, d
   return <article className={`monitor-card ${attention ? "needs-attention" : ""}`}>
     <button className="monitor-card-main" onClick={() => onOpen(session.id)} aria-label={`Open ${session.title}`}>
       <div className="monitor-title-row"><StatusIcon status={status} /><span><strong>{session.title}</strong><small title={session.repository}>{shortRepository(session.repository)}</small></span><StatusLabel status={status} /></div>
-      <div className="monitor-activity"><strong>{activity}</strong><p>{session.failureSummary || session.waitDescription || session.activityText || "Monitoring live Codex activity"}</p></div>
-      <div className="route-details">{routeDetails(session)}</div>
+      {attention
+        ? <><div className="monitor-activity"><strong>{activity}</strong><p>{session.failureSummary || session.waitDescription || session.activityText || "Monitoring live Codex activity"}</p></div><div className="route-details">{routeDetails(session)}</div></>
+        : <div className="monitor-compact-line"><strong>{activity}</strong><span>{routeDetails(session)}</span></div>}
       <dl className="monitor-metadata">
         <div><dt>{attention ? "In state" : "Elapsed"}</dt><dd>{attention && stateSince ? formatElapsed(stateSince, now) : formatElapsed(session.activeTurnStartedAt, now)}</dd></div>
-        <div><dt>Last event</dt><dd>{formatAge(session.lastActivity, now)}</dd></div>
+        <div><dt>Session event</dt><dd>{formatAge(session.lastActivity, now)}</dd></div>
       </dl>
     </button>
     {(attention?.type === "approval" || attention?.type === "input") && <p className="unsupported-wait">Foreman can show this wait, but approval and structured input must currently be handled in another compatible Codex client.</p>}
@@ -214,16 +215,17 @@ function HealthPanel({ status, connection, now, clients, disabled, onRevokeClien
   const mode = !status || !runtimeConnected ? "Codex unavailable" : status.codex.mode === "shared" ? "Shared Desktop runtime" : "Foreman-owned fallback runtime";
   const eventTimestamp = status?.codex.lastEvent ? Date.parse(status.codex.lastEvent) : null;
   const eventRecent = eventTimestamp !== null && now - eventTimestamp <= 30_000;
-  const eventLabel = !runtimeConnected ? "Runtime disconnected" : eventTimestamp === null ? "Runtime connected · no events observed" : eventRecent ? `Last Codex event: ${formatAge(eventTimestamp, now)}` : `No Codex events for ${formatDuration(now - eventTimestamp)}`;
+  const eventLabel = !runtimeConnected ? "Runtime disconnected" : eventTimestamp === null ? "Runtime connected · no events observed" : eventRecent ? `Last runtime event: ${formatAge(eventTimestamp, now)}` : `No runtime events for ${formatDuration(now - eventTimestamp)}`;
+  const eventAge = !runtimeConnected ? "Disconnected" : eventTimestamp === null ? "No events observed" : eventRecent ? formatAge(eventTimestamp, now) : `No events for ${formatDuration(now - eventTimestamp)}`;
   return <article className="health-panel">
     <div className="health-title"><div><span className="eyebrow">Host status</span><h2>{connected ? "Foreman online" : connection === "reconnecting" ? "Reconnecting to Foreman" : "Foreman disconnected"}</h2></div><span className={`health-state ${connected ? "healthy" : "offline"}`}><i />{connected ? "Connected" : connection}</span></div>
     <div className="health-runtime"><StatusIcon status={runtimeConnected ? "working" : "disconnected"} /><span><strong>{mode}</strong><small>{status?.codex.mode === "fallback" ? "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" : !runtimeConnected ? "Runtime needs attention" : eventLabel}</small></span></div>
     <dl className="health-details">
       <div><dt>Foreman</dt><dd>{status?.foremanVersion ?? "—"}</dd></div><div><dt>Codex</dt><dd>{status?.codex.version ?? "—"}</dd></div><div><dt>Uptime</dt><dd>{status ? formatDuration(status.uptimeSeconds * 1000 + Math.max(0, now - (status.receivedAt ?? now))) : "—"}</dd></div><div><dt>Clients</dt><dd>{status ? `${status.activeBrowserConnections ?? 0} browser · ${status.activeTcpConnections ?? 0} Android` : "—"}</dd></div>
-      <div><dt>Last event</dt><dd className={!eventRecent && runtimeConnected ? "quiet" : ""}>{eventLabel}</dd></div><div><dt>Last request</dt><dd>{formatAge(status?.codex.lastSuccessfulRequest, now)}</dd></div><div><dt>Attached</dt><dd>{formatAge(status?.codex.attachedAt, now)}</dd></div><div><dt>Threads</dt><dd>{status ? `${status.codex.loadedThreadCount ?? 0} loaded · ${status.codex.subscribedThreadCount ?? 0} subscribed` : "—"}</dd></div>
+      <div><dt>Runtime event</dt><dd className={!eventRecent && runtimeConnected ? "quiet" : ""}>{eventAge}</dd></div><div><dt>Successful request</dt><dd>{formatAge(status?.codex.lastSuccessfulRequest, now)}</dd></div><div><dt>Attached</dt><dd>{formatAge(status?.codex.attachedAt, now)}</dd></div><div><dt>Threads</dt><dd>{status ? `${status.codex.loadedThreadCount ?? 0} loaded · ${status.codex.subscribedThreadCount ?? 0} subscribed` : "—"}</dd></div>
       <div className="health-root"><dt>Repository root</dt><dd title={status?.repositoryRoot}>{status?.repositoryRoot ?? "—"}</dd></div><div><dt>Listeners</dt><dd>{status ? `web :${status.listeners.webPort ?? "—"} · TCP :${status.listeners.tcpPort}` : "—"}</dd></div>
     </dl>
-    {clients.length > 0 && <details className="client-diagnostics"><summary>Connected clients and paired tokens <span>{clients.filter((client) => client.connected).length} connected</span></summary><div className="client-list">{clients.map((client) => <div className="client-row" key={client.id}><span className={`client-presence ${client.connected ? "online" : "offline"}`} aria-hidden="true">{client.connected ? "●" : "○"}</span><span className="client-identity"><strong>{client.name}</strong><small>{clientTypeLabel(client.type)} · {client.connected ? `${client.connectionCount} connection${client.connectionCount === 1 ? "" : "s"}` : "Not connected"}{client.current ? " · This browser" : ""}</small></span><time>{client.pairedAt ? `Paired ${formatAge(client.pairedAt, now)}` : "Pairing date unavailable"}</time><button className="revoke-client" disabled={disabled || revoking !== null} onClick={() => {
+    {clients.length > 0 && <details className="client-diagnostics"><summary>Clients and access <span>{clients.filter((client) => client.connected).length} connected</span></summary><div className="client-list">{clients.map((client) => <div className="client-row" key={client.id}><span className={`client-presence ${client.connected ? "online" : "offline"}`} aria-hidden="true">{client.connected ? "●" : "○"}</span><span className="client-identity"><strong>{client.name}</strong><small>{clientTypeLabel(client.type)} · {client.connected ? `${client.connectionCount} connection${client.connectionCount === 1 ? "" : "s"}` : "Not connected"}{client.current ? " · This browser" : ""}</small></span><time>{client.pairedAt ? `Paired ${formatAge(client.pairedAt, now)}` : "Pairing date unavailable"}</time><button className="revoke-client" disabled={disabled || revoking !== null} onClick={() => {
       const warning = client.current
         ? `Revoke ${client.name}? This will sign out this browser immediately.`
         : `Revoke ${client.name}? Every live connection using this token will be disconnected.`;
@@ -241,15 +243,17 @@ function clientTypeLabel(type: PairedClient["type"]): string {
 
 function RepositorySection({ title, groups, now, onOpen }: { title: string; groups: RepositoryGroup[]; now: number; onOpen: (id: string) => void }) {
   if (!groups.length) return null;
-  return <DashboardSection title={title} count={groups.length}><div className="repository-grid">{groups.map((repository) => <details className="repository-card" key={repository.id}><summary><span className="repository-identity"><strong>{repository.name}</strong><small title={repository.id}>{repository.id}</small></span><span className="repository-counts">{!!repository.active && <span>▶ {repository.active} active</span>}{!!repository.waiting && <span>◷ {repository.waiting} waiting</span>}{!!repository.failed && <span>! {repository.failed} failed</span>}{!!repository.recent && <span>✓ {repository.recent} recent</span>}</span><span className="repository-latest">{latestRepositoryLine(repository, now)}</span></summary><div className="repository-sessions">{repository.sessions.map((session) => <button key={session.id} onClick={() => onOpen(session.id)}><span>{session.title}</span><StatusLabel status={session.status} /></button>)}</div></details>)}</div></DashboardSection>;
+  return <DashboardSection title={title} count={groups.length}><div className="repository-grid">{groups.map((repository) => <details className="repository-card" key={repository.id}><summary><span className="repository-identity"><strong>{repository.name}</strong><small title={repository.id}>{repository.id}</small></span><span className="repository-counts">{!!repository.active && <span>▶ {repository.active} active</span>}{!!repository.waiting && <span>◷ {repository.waiting} waiting</span>}{!!repository.failed && <span>! {repository.failed} failed</span>}{!!repository.recent && <span>✓ {repository.recent} completed recently</span>}</span><RepositoryActivity repository={repository} now={now} /></summary><div className="repository-sessions">{repository.sessions.map((session) => <button key={session.id} onClick={() => onOpen(session.id)}><span>{session.title}</span><StatusLabel status={session.status} /></button>)}</div></details>)}</div></DashboardSection>;
 }
 
-function latestRepositoryLine(repository: RepositoryGroup, now: number): string {
-  const activity = repository.sessions.find((session) => session.lastActivity === Math.max(...repository.sessions.map((entry) => entry.lastActivity ?? 0)))?.activityLabel || "No recent activity";
-  const details = [activity];
-  if (repository.longestActiveDurationMs != null) details.push(`oldest turn ${formatDuration(repository.longestActiveDurationMs)}`);
-  if (repository.latestCompletionAt != null) details.push(`completed ${formatAge(repository.latestCompletionAt, now)}`);
-  return details.join(" · ");
+function RepositoryActivity({ repository, now }: { repository: RepositoryGroup; now: number }) {
+  if (repository.currentActivity || repository.longestActiveDurationMs != null) {
+    return <span className="repository-latest">
+      <span>Current: {repository.currentActivity || "Active"}{repository.longestActiveDurationMs != null ? ` · oldest turn ${formatDuration(repository.longestActiveDurationMs)}` : ""}</span>
+      {repository.latestCompletionAt != null && <span>Last completion: {formatAge(repository.latestCompletionAt, now)}</span>}
+    </span>;
+  }
+  return <span className="repository-latest">{repository.latestCompletionAt != null ? `Last completion: ${formatAge(repository.latestCompletionAt, now)}` : "No recent activity"}</span>;
 }
 
 function routeDetails(session: SessionSummary): string {
