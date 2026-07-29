@@ -28,6 +28,14 @@ data class UiPreferences(
     val accessLevel: String? = null,
     val model: String? = null,
     val reasoningEffort: String? = null,
+    val searchQuery: String = "",
+    val searchRepository: String = "",
+    val searchStatus: SessionSearchStatus = SessionSearchStatus.All,
+    val searchDateRange: SessionDateRange = SessionDateRange.All,
+    val searchDateFrom: String = "",
+    val searchDateTo: String = "",
+    val pinnedSessionIds: Set<String> = emptySet(),
+    val hiddenSessionIds: Set<String> = emptySet(),
 )
 
 class PreferenceStore(context: Context) {
@@ -49,6 +57,14 @@ class PreferenceStore(context: Context) {
             accessLevel = preferences.getString("accessLevel", null),
             model = preferences.getString("model", null),
             reasoningEffort = preferences.getString("reasoningEffort", null),
+            searchQuery = preferences.getString("sessionSearchQuery", "").orEmpty().take(500),
+            searchRepository = preferences.getString("sessionSearchRepository", "").orEmpty(),
+            searchStatus = enumPreference("sessionSearchStatus", SessionSearchStatus.All),
+            searchDateRange = enumPreference("sessionSearchDateRange", SessionDateRange.All),
+            searchDateFrom = preferences.getString("sessionSearchDateFrom", "").orEmpty(),
+            searchDateTo = preferences.getString("sessionSearchDateTo", "").orEmpty(),
+            pinnedSessionIds = sessionIds("pinnedSessionIds"),
+            hiddenSessionIds = sessionIds("hiddenSessionIds"),
         )
 
     fun setThemeMode(mode: ThemeMode) {
@@ -81,6 +97,38 @@ class PreferenceStore(context: Context) {
     fun setAccessLevel(accessLevel: String?) {
         preferences.edit().putString("accessLevel", accessLevel).apply()
     }
+
+    fun setSessionSearch(filters: SessionSearchFilters) {
+        preferences.edit()
+            .putString("sessionSearchQuery", filters.query.take(500))
+            .putString("sessionSearchRepository", filters.repository)
+            .putString("sessionSearchStatus", filters.status.name)
+            .putString("sessionSearchDateRange", filters.dateRange.name)
+            .putString("sessionSearchDateFrom", filters.dateFrom)
+            .putString("sessionSearchDateTo", filters.dateTo)
+            .apply()
+    }
+
+    fun setPinnedSessionIds(ids: Set<String>) {
+        preferences.edit().putStringSet("pinnedSessionIds", ids.toList().takeLast(1000).toSet()).apply()
+    }
+
+    fun setHiddenSessionIds(ids: Set<String>) {
+        preferences.edit().putStringSet("hiddenSessionIds", ids.toList().takeLast(1000).toSet()).apply()
+    }
+
+    fun retainSessionIds(ids: Set<String>) {
+        setPinnedSessionIds(sessionIds("pinnedSessionIds").intersect(ids))
+        setHiddenSessionIds(sessionIds("hiddenSessionIds").intersect(ids))
+    }
+
+    private inline fun <reified T : Enum<T>> enumPreference(key: String, fallback: T): T =
+        runCatching { enumValueOf<T>(preferences.getString(key, fallback.name)!!) }
+            .getOrDefault(fallback)
+
+    private fun sessionIds(key: String): Set<String> =
+        preferences.getStringSet(key, emptySet()).orEmpty()
+            .filterTo(linkedSetOf()) { it.length <= 100 }
 }
 
 class TokenStore(context: Context) {

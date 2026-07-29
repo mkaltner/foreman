@@ -330,6 +330,10 @@ class ForemanConnectionTest {
         assertEquals("Fix the Foreman header", sessionDisplayTitle(session))
         assertEquals("Untitled session", sessionDisplayTitle(session.copy(title = "")))
         assertEquals("Session", sessionDisplayTitle(null))
+        assertEquals(
+            "Build Foreman monitoring dashboard",
+            sessionDisplayTitle(session.copy(title = "Build Foreman monitoring dashboard")),
+        )
     }
 
     @Test
@@ -653,5 +657,124 @@ class ForemanConnectionTest {
         )
         lifecycle.resetReconnectDelay()
         assertEquals(2_000L, lifecycle.nextReconnectDelay())
+    }
+
+    @Test
+    fun sessionSearchCombinesTranscriptRepositoryStatusAndDateFilters() {
+        val repositories = listOf(
+            RepositoryInfo("foreman", "foreman", "foreman", "main", false),
+        )
+        val active = SessionSummary(
+            id = "active",
+            repository = "/projects/foreman/src",
+            title = "Build socket support",
+            status = "working",
+            lastActivity = 1_700_000_300,
+        )
+        val waiting = SessionSummary(
+            id = "waiting",
+            repository = "/home/operator",
+            title = "Review release",
+            status = "waiting",
+            lastActivity = 1_700_000_200,
+        )
+        val filters = SessionSearchFilters(
+            query = "websocket",
+            repository = "/projects/foreman",
+            status = SessionSearchStatus.Active,
+            dateRange = SessionDateRange.Custom,
+            dateFrom = "2023-11-14",
+            dateTo = "2023-11-15",
+            pinnedOnly = true,
+        )
+        val visible = filterSessions(
+            sessions = listOf(active, waiting),
+            filters = filters,
+            pinnedIds = setOf("active"),
+            hiddenIds = emptySet(),
+            results = listOf(
+                SessionSearchResult(
+                    active,
+                    listOf(SessionSearchMatch("user", "Add a WebSocket endpoint")),
+                ),
+            ),
+            repositories = repositories,
+            repositoryRoot = "/projects",
+            nowMillis = 1_700_000_400_000,
+        )
+        assertEquals(listOf("active"), visible.map { it.session.id })
+        assertEquals("Add a WebSocket endpoint", visible.single().matches.single().snippet)
+    }
+
+    @Test
+    fun sessionSearchKeepsPinsFirstAndHiddenSessionsRestorable() {
+        val sessions = listOf(
+            SessionSummary("active", "/repo", "Active", "working", 300),
+            SessionSummary("waiting", "/repo", "Waiting", "waiting", 200),
+            SessionSummary("done", "/repo", "Done", "idle", 100),
+        )
+        val visible = filterSessions(
+            sessions,
+            SessionSearchFilters(),
+            setOf("done"),
+            setOf("waiting"),
+            emptyList(),
+            emptyList(),
+            "",
+        )
+        assertEquals(listOf("done", "active"), visible.map { it.session.id })
+        val hidden = filterSessions(
+            sessions,
+            SessionSearchFilters(hiddenOnly = true),
+            emptySet(),
+            setOf("waiting"),
+            emptyList(),
+            emptyList(),
+            "",
+        )
+        assertEquals(listOf("waiting"), hidden.map { it.session.id })
+    }
+
+    @Test
+    fun liveStatusChangesEnterAndLeaveAndroidFilters() {
+        val session = SessionSummary("one", "/repo", "Live", "working", 100)
+        val filters = SessionSearchFilters(status = SessionSearchStatus.Waiting)
+        assertTrue(filterSessions(listOf(session), filters, emptySet(), emptySet(), emptyList(), emptyList(), "").isEmpty())
+        val waiting = session.copy(status = "waiting", attention = true)
+        assertEquals(
+            listOf("one"),
+            filterSessions(listOf(waiting), filters, emptySet(), emptySet(), emptyList(), emptyList(), "")
+                .map { it.session.id },
+        )
+    }
+
+    @Test
+    fun completedFilterIncludesCanonicalIdleSummaries() {
+        val completed = SessionSummary("done", "/repo", "Done", "idle", 100)
+        assertEquals(
+            listOf("done"),
+            filterSessions(
+                listOf(completed),
+                SessionSearchFilters(status = SessionSearchStatus.Completed),
+                emptySet(),
+                emptySet(),
+                emptyList(),
+                emptyList(),
+                "",
+            ).map { it.session.id },
+        )
+    }
+
+    @Test
+    fun clientOnlyOrganizationFiltersDoNotChangeTranscriptRequest() {
+        val base = SessionSearchFilters(query = "Socket", repository = "/repo")
+        assertEquals(
+            sessionSearchRequestKey(base),
+            sessionSearchRequestKey(base.copy(pinnedOnly = true, hiddenOnly = true)),
+        )
+        assertFalse(
+            sessionSearchRequestKey(base) ==
+                sessionSearchRequestKey(base.copy(status = SessionSearchStatus.Active)),
+        )
     }
 }

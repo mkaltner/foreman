@@ -145,6 +145,20 @@ data class SessionSummary(
 )
 
 @Serializable
+data class SessionSearchMatch(
+    val kind: String,
+    val snippet: String,
+    val turnId: String? = null,
+    val itemId: String? = null,
+)
+
+@Serializable
+data class SessionSearchResult(
+    val session: SessionSummary,
+    val matches: List<SessionSearchMatch> = emptyList(),
+)
+
+@Serializable
 data class AccessLevelInfo(
     val id: String,
     val displayName: String,
@@ -279,7 +293,8 @@ class ForemanClient(
                     val frame = FrameCodec.read(input) ?: break
                     val message = json.decodeFromString<WireMessage>(frame)
                     val id = message.id
-                    if (id != null && pending.remove(id)?.let { it.complete(message) } == true) {
+                    if (id != null) {
+                        pending.remove(id)?.complete(message)
                         continue
                     }
                     if (message.type == "error") {

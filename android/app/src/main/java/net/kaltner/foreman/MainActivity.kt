@@ -59,6 +59,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
@@ -112,8 +117,10 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -135,6 +142,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -600,6 +608,16 @@ internal data class UiState(
     val models: List<ModelInfo> = emptyList(),
     val composerModel: String? = null,
     val composerEffort: String? = null,
+    val repositoryRoot: String = "",
+    val searchFilters: SessionSearchFilters = SessionSearchFilters(),
+    val searchResults: List<SessionSearchResult> = emptyList(),
+    val searchLoading: Boolean = false,
+    val searchError: String? = null,
+    val showSearch: Boolean = false,
+    val showSearchFilters: Boolean = false,
+    val pinnedSessionIds: Set<String> = emptySet(),
+    val hiddenSessionIds: Set<String> = emptySet(),
+    val highlightedItemId: String? = null,
 )
 
 internal fun UiState.withForgottenConnection(): UiState =
@@ -621,11 +639,23 @@ internal fun UiState.withForgottenConnection(): UiState =
         capabilities = emptySet(),
         accessLevels = emptyList(),
         models = emptyList(),
+        searchResults = emptyList(),
+        searchLoading = false,
+        searchError = null,
     )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = PreferenceStore(application)
     private val savedPreferences = preferences.load()
+    private val savedSearchFilters =
+        SessionSearchFilters(
+            query = savedPreferences.searchQuery,
+            repository = savedPreferences.searchRepository,
+            status = savedPreferences.searchStatus,
+            dateRange = savedPreferences.searchDateRange,
+            dateFrom = savedPreferences.searchDateFrom,
+            dateTo = savedPreferences.searchDateTo,
+        )
     val state =
         MutableStateFlow(
             UiState(
@@ -637,6 +667,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 composerAccessLevel = savedPreferences.accessLevel,
                 composerModel = savedPreferences.model,
                 composerEffort = savedPreferences.reasoningEffort,
+                searchFilters = savedSearchFilters,
+                showSearch = sessionSearchActive(savedSearchFilters),
+                pinnedSessionIds = savedPreferences.pinnedSessionIds,
+                hiddenSessionIds = savedPreferences.hiddenSessionIds,
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
@@ -646,6 +680,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
     private var notificationSessionId: String? = null
+    private var searchJob: Job? = null
+    private var lastSearchRequestKey = ""
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
@@ -684,6 +720,97 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+
+    fun setSearchOpen(open: Boolean) {
+        state.update { it.copy(showSearch = open, showSearchFilters = false) }
+    }
+
+    fun setSearchFilters(filters: SessionSearchFilters, immediate: Boolean = false) {
+        val requestChanged = sessionSearchRequestKey(state.value.searchFilters) != sessionSearchRequestKey(filters)
+        preferences.setSessionSearch(filters)
+        state.update { it.copy(searchFilters = filters, searchError = null) }
+        if (requestChanged) scheduleSearch(if (immediate) 0 else 300)
+    }
+
+    fun searchNow() = scheduleSearch(0)
+
+    fun setSearchFiltersOpen(open: Boolean) {
+        state.update { it.copy(showSearchFilters = open) }
+    }
+
+    fun togglePinnedSession(id: String) {
+        state.update { current ->
+            val ids = current.pinnedSessionIds.toMutableSet().apply {
+                if (!add(id)) remove(id)
+            }
+            preferences.setPinnedSessionIds(ids)
+            current.copy(pinnedSessionIds = ids)
+        }
+    }
+
+    fun toggleHiddenSession(id: String) {
+        state.update { current ->
+            val ids = current.hiddenSessionIds.toMutableSet().apply {
+                if (!add(id)) remove(id)
+            }
+            preferences.setHiddenSessionIds(ids)
+            current.copy(hiddenSessionIds = ids)
+        }
+    }
+
+    private fun scheduleSearch(delayMillis: Long) {
+        searchJob?.cancel()
+        val filters = state.value.searchFilters
+        val query = filters.query.trim()
+        if (query.isBlank()) {
+            lastSearchRequestKey = ""
+            state.update { it.copy(searchResults = emptyList(), searchLoading = false, searchError = null) }
+            return
+        }
+        val requestKey = sessionSearchRequestKey(filters)
+        val changed = requestKey != lastSearchRequestKey
+        lastSearchRequestKey = requestKey
+        if (!state.value.connected || "search" !in state.value.capabilities) {
+            if (changed) state.update { it.copy(searchResults = emptyList(), searchLoading = false) }
+            return
+        }
+        state.update {
+            it.copy(
+                searchResults = if (changed) emptyList() else it.searchResults,
+                searchLoading = true,
+                searchError = null,
+            )
+        }
+        searchJob = viewModelScope.launch {
+            delay(delayMillis)
+            val bounds = sessionDateBounds(filters)
+            runCatching {
+                client.request(
+                    "session.search",
+                    buildJsonObject {
+                        put("query", filters.query.trim())
+                        if (filters.repository.isBlank()) put("repository", JsonNull)
+                        else put("repository", filters.repository)
+                        put("statuses", buildJsonArray { searchStatusProtocol(filters.status).forEach { add(JsonPrimitive(it)) } })
+                        bounds.first?.let { put("dateFrom", it) } ?: put("dateFrom", JsonNull)
+                        bounds.second?.let { put("dateTo", it) } ?: put("dateTo", JsonNull)
+                        put("limit", 100)
+                    },
+                ).payload.getValue("results").jsonArray
+                    .map { json.decodeFromJsonElement<SessionSearchResult>(it) }
+            }.onSuccess { results ->
+                state.update { it.copy(searchResults = results, searchLoading = false) }
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) return@onFailure
+                state.update {
+                    it.copy(
+                        searchLoading = false,
+                        searchError = error.message ?: "Search failed",
+                    )
+                }
+            }
+        }
+    }
 
     fun setComposerModel(id: String) {
         state.update { current ->
@@ -862,9 +989,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun openSession(id: String) {
+    fun openSession(id: String, highlightedItemId: String? = null) {
         viewModelScope.launch {
-            state.update { it.copy(screen = Screen.Detail, loading = true, error = null) }
+            state.update { it.copy(screen = Screen.Detail, loading = true, error = null, highlightedItemId = highlightedItemId) }
             runCatching {
                 val selected = readSession(id)
                 state.update {
@@ -879,10 +1006,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private suspend fun synchronizeSessions(selectedSessionId: String? = null) {
         state.update { it.copy(loading = true, error = null) }
-        val (sessions, repositories, catalogs) =
+        val (sessions, repositoryContext, catalogs) =
             coroutineScope {
                 val sessionsRequest = async { listSessions() }
                 val repositoriesRequest = async { client.request("repository.list") }
+                val serviceStatusRequest = async { client.request("service.status") }
                 val modelsRequest =
                     async {
                         if ("models" in client.capabilities) {
@@ -903,6 +1031,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
+                val repositoryRoot =
+                    serviceStatusRequest.await().payload["repositoryRoot"]
+                        ?.jsonPrimitive?.content.orEmpty()
                 val models =
                     modelsRequest.await()?.payload?.get("models")?.jsonArray
                         ?.map { json.decodeFromJsonElement<ModelInfo>(it) }
@@ -912,8 +1043,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     accessRequest.await()?.payload?.get("levels")?.jsonArray
                         ?.map { json.decodeFromJsonElement<AccessLevelInfo>(it) }
                         ?: emptyList()
-                Triple(sessions, repositories, models to accessLevels)
+                Triple(sessions, repositories to repositoryRoot, models to accessLevels)
             }
+        val (repositories, repositoryRoot) = repositoryContext
         val (models, accessLevels) = catalogs
         val selected = selectedSessionId?.let { readSession(it) }
         state.update {
@@ -923,9 +1055,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     selectedSessionId = selectedSessionId,
                     selectedSession = selected,
                 )
+                .copy(repositoryRoot = repositoryRoot)
                 .withModelsAndSessionRoute(models, selected)
                 .withAccessLevelsAndSessionAccess(accessLevels, selected)
         }
+        val validIds = sessions.mapTo(mutableSetOf()) { it.id }
+        preferences.retainSessionIds(validIds)
+        state.update {
+            it.copy(
+                pinnedSessionIds = it.pinnedSessionIds.intersect(validIds),
+                hiddenSessionIds = it.hiddenSessionIds.intersect(validIds),
+            )
+        }
+        scheduleSearch(0)
         selected?.let(::monitorIfActive)
     }
 
@@ -986,7 +1128,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun backToSessions() {
-        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
+        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null) }
         refresh()
     }
 
@@ -1053,12 +1195,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runCatching { TurnMonitorService.cancel(getApplication(), pending.sessionId) }
                 state.update { current ->
                     val wasSelected = current.selected?.id == pending.sessionId
+                    val pinned = current.pinnedSessionIds - pending.sessionId
+                    val hidden = current.hiddenSessionIds - pending.sessionId
+                    preferences.setPinnedSessionIds(pinned)
+                    preferences.setHiddenSessionIds(hidden)
                     current.copy(
                         submitting = false,
                         pendingSessionAction = null,
                         sessions = current.sessions.filterNot { it.id == pending.sessionId },
                         selected = if (wasSelected) null else current.selected,
                         screen = if (wasSelected) Screen.Sessions else current.screen,
+                        pinnedSessionIds = pinned,
+                        hiddenSessionIds = hidden,
                     )
                 }
             }.onFailure(::fail)
@@ -1180,6 +1328,34 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
+        if (kind == "lifecycle") {
+            val action = event["action"]?.jsonPrimitive?.content
+            if (action == "removed") {
+                state.update { current ->
+                    val pinned = current.pinnedSessionIds - sessionId
+                    val hidden = current.hiddenSessionIds - sessionId
+                    preferences.setPinnedSessionIds(pinned)
+                    preferences.setHiddenSessionIds(hidden)
+                    current.copy(
+                        sessions = current.sessions.filterNot { it.id == sessionId },
+                        searchResults = current.searchResults.filterNot { it.session.id == sessionId },
+                        pinnedSessionIds = pinned,
+                        hiddenSessionIds = hidden,
+                    )
+                }
+                return
+            }
+            val projected = event["session"]?.let {
+                runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+            }
+            if (projected != null) {
+                state.update { current ->
+                    current.copy(sessions = listOf(projected) + current.sessions.filterNot { it.id == projected.id })
+                }
+                scheduleSearch(0)
+                return
+            }
+        }
         if (state.value.shouldDiscoverSession(sessionId, kind)) {
             discoverSession(sessionId)
         }
@@ -1362,6 +1538,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
                 else -> current
             }
+        }
+        if (kind == "status" && state.value.searchFilters.query.isNotBlank()) {
+            scheduleSearch(0)
         }
     }
 
@@ -1553,6 +1732,12 @@ private fun SessionsScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.setSearchOpen(!state.showSearch) }) {
+                        Icon(
+                            if (state.showSearch) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = if (state.showSearch) "Close search" else "Search sessions",
+                        )
+                    }
                     IconButton(
                         onClick = viewModel::refresh,
                         enabled = state.connected && !state.loading,
@@ -1579,14 +1764,50 @@ private fun SessionsScreen(
             } else {
                 ErrorText(state.error, Modifier.padding(horizontal = 16.dp))
             }
+            if (state.showSearch) {
+                Row(
+                    Modifier.fillMaxWidth().imePadding().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    OutlinedTextField(
+                        value = state.searchFilters.query,
+                        onValueChange = { viewModel.setSearchFilters(state.searchFilters.copy(query = it)) },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Search titles and transcripts") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (state.searchLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else if (state.searchFilters.query.isNotEmpty()) IconButton(onClick = { viewModel.setSearchFilters(state.searchFilters.copy(query = ""), true) }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { viewModel.searchNow() }),
+                    )
+                    IconButton(onClick = { viewModel.setSearchFiltersOpen(true) }) {
+                        Icon(Icons.Default.FilterList, contentDescription = "Session filters")
+                    }
+                }
+            }
             if (state.loading && state.sessions.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else {
-                val active = state.sessions.filter { it.status == "working" }
-                val waiting = state.sessions.filter { it.status == "waiting" || it.attention }
-                val recent = state.sessions.filterNot { it in active || it in waiting }
+                val visible = filterSessions(
+                    state.sessions,
+                    state.searchFilters,
+                    state.pinnedSessionIds,
+                    state.hiddenSessionIds,
+                    state.searchResults,
+                    state.repositories,
+                    state.repositoryRoot,
+                )
+                val pinned = visible.filter { it.pinned }
+                val remaining = visible.filterNot { it.pinned }
+                val waiting = remaining.filter { it.session.status == "waiting" || it.session.attention }
+                val active = remaining.filter { it.session.status == "working" && !it.session.attention }
+                val recent = remaining.filterNot { it in active || it in waiting }
                 PullToRefreshBox(
                     isRefreshing = state.loading,
                     onRefresh = viewModel::refresh,
@@ -1597,26 +1818,60 @@ private fun SessionsScreen(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        if (state.searchError != null) item { ErrorText(state.searchError, Modifier.fillMaxWidth()) }
+                        if (visible.isEmpty() && !state.searchLoading) item {
+                            Column(
+                                Modifier.fillParentMaxSize().padding(32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text(if (sessionSearchActive(state.searchFilters)) "No matching sessions" else "No sessions yet", fontWeight = FontWeight.Bold)
+                                Text("Try clearing a filter or using a shorter substring.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                         sessionSection(
-                            "Active",
-                            active,
+                            "Pinned",
+                            pinned,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            viewModel::togglePinnedSession,
+                            viewModel::toggleHiddenSession,
                             state.capabilities,
+                            state.repositories,
+                            state.repositoryRoot,
                         )
                         sessionSection(
                             "Waiting",
                             waiting,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            viewModel::togglePinnedSession,
+                            viewModel::toggleHiddenSession,
                             state.capabilities,
+                            state.repositories,
+                            state.repositoryRoot,
+                        )
+                        sessionSection(
+                            "Active",
+                            active,
+                            viewModel::openSession,
+                            viewModel::requestSessionAction,
+                            viewModel::togglePinnedSession,
+                            viewModel::toggleHiddenSession,
+                            state.capabilities,
+                            state.repositories,
+                            state.repositoryRoot,
                         )
                         sessionSection(
                             "Recent",
                             recent,
                             viewModel::openSession,
                             viewModel::requestSessionAction,
+                            viewModel::togglePinnedSession,
+                            viewModel::toggleHiddenSession,
                             state.capabilities,
+                            state.repositories,
+                            state.repositoryRoot,
                         )
                     }
                 }
@@ -1630,14 +1885,26 @@ private fun SessionsScreen(
             onSelect = viewModel::startSession,
         )
     }
+    if (state.showSearchFilters) {
+        SessionFilterDialog(
+            filters = state.searchFilters,
+            repositories = sessionRepositoryOptions(state.sessions, state.repositories, state.repositoryRoot),
+            onChange = { viewModel.setSearchFilters(it, true) },
+            onDismiss = { viewModel.setSearchFiltersOpen(false) },
+        )
+    }
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     title: String,
-    sessions: List<SessionSummary>,
-    open: (String) -> Unit,
+    sessions: List<VisibleSession>,
+    open: (String, String?) -> Unit,
     action: (SessionSummary, SessionAction) -> Unit,
+    pin: (String) -> Unit,
+    hide: (String) -> Unit,
     capabilities: Set<String>,
+    repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
 ) {
     if (sessions.isEmpty()) return
     item {
@@ -1649,11 +1916,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
-    items(sessions, key = { it.id }) { session ->
+    items(sessions, key = { it.session.id }) { visible ->
+        val session = visible.session
         SessionCard(
             session = session,
-            onClick = { open(session.id) },
+            matches = visible.matches,
+            pinned = visible.pinned,
+            hidden = visible.hidden,
+            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot).label,
+            onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId) },
             onAction = { action(session, it) },
+            onPin = { pin(session.id) },
+            onHide = { hide(session.id) },
             capabilities = capabilities,
         )
     }
@@ -1662,8 +1936,14 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
 @Composable
 private fun SessionCard(
     session: SessionSummary,
+    matches: List<SessionSearchMatch>,
+    pinned: Boolean,
+    hidden: Boolean,
+    repositoryLabel: String,
     onClick: () -> Unit,
     onAction: (SessionAction) -> Unit,
+    onPin: () -> Unit,
+    onHide: () -> Unit,
     capabilities: Set<String>,
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
@@ -1678,6 +1958,16 @@ private fun SessionCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 StatusPill(session.status)
+                IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        if (pinned) Icons.Default.Star else Icons.Default.StarBorder,
+                        contentDescription = if (pinned) "Unpin session" else "Pin session",
+                        tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onHide, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.VisibilityOff, contentDescription = if (hidden) "Restore session" else "Hide session")
+                }
                 SessionActionsMenu(
                     enabled = sessionCanBeManaged(session.status),
                     archiveSupported = sessionActionSupported(capabilities, SessionAction.Archive),
@@ -1686,16 +1976,138 @@ private fun SessionCard(
                 )
             }
             Text(
-                session.repository.substringAfterLast('/'),
+                repositoryLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            matches.take(3).forEach { match ->
+                Text(
+                    "${match.kind.replaceFirstChar { it.uppercase() }} · ${match.snippet}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             session.lastActivity?.let {
                 Text(
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(it * 1000)),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionFilterDialog(
+    filters: SessionSearchFilters,
+    repositories: List<SessionRepositoryOption>,
+    onChange: (SessionSearchFilters) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Session filters") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SessionFilterMenu(
+                    label = "Repository or workspace",
+                    selected = repositories.firstOrNull { it.id == filters.repository }?.label ?: "All repositories and workspaces",
+                    options = listOf("" to "All repositories and workspaces") + repositories.map { it.id to it.label },
+                    onSelect = { onChange(filters.copy(repository = it)) },
+                )
+                SessionFilterMenu(
+                    label = "Status",
+                    selected = filters.status.name.replace("All", "All statuses"),
+                    options = SessionSearchStatus.values().map { it.name to if (it == SessionSearchStatus.All) "All statuses" else it.name },
+                    onSelect = { onChange(filters.copy(status = SessionSearchStatus.valueOf(it))) },
+                )
+                SessionFilterMenu(
+                    label = "Date",
+                    selected = when (filters.dateRange) {
+                        SessionDateRange.All -> "Any time"
+                        SessionDateRange.Today -> "Today"
+                        SessionDateRange.Last7Days -> "Last 7 days"
+                        SessionDateRange.Last30Days -> "Last 30 days"
+                        SessionDateRange.Custom -> "Custom"
+                    },
+                    options = listOf(
+                        SessionDateRange.All.name to "Any time",
+                        SessionDateRange.Today.name to "Today",
+                        SessionDateRange.Last7Days.name to "Last 7 days",
+                        SessionDateRange.Last30Days.name to "Last 30 days",
+                        SessionDateRange.Custom.name to "Custom",
+                    ),
+                    onSelect = { onChange(filters.copy(dateRange = SessionDateRange.valueOf(it))) },
+                )
+                if (filters.dateRange == SessionDateRange.Custom) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = filters.dateFrom,
+                            onValueChange = { onChange(filters.copy(dateFrom = it.take(10))) },
+                            label = { Text("From") },
+                            placeholder = { Text("YYYY-MM-DD") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = filters.dateTo,
+                            onValueChange = { onChange(filters.copy(dateTo = it.take(10))) },
+                            label = { Text("To") },
+                            placeholder = { Text("YYYY-MM-DD") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = filters.pinnedOnly, onCheckedChange = { onChange(filters.copy(pinnedOnly = it)) })
+                    Text("Pinned only")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = filters.hiddenOnly, onCheckedChange = { onChange(filters.copy(hiddenOnly = it)) })
+                    Text("Hidden sessions")
+                }
+                Text(
+                    "All active criteria are combined. Pins change ordering; hidden sessions appear only here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {
+            TextButton(onClick = { onChange(SessionSearchFilters()); onDismiss() }) { Text("Clear") }
+        },
+    )
+}
+
+@Composable
+private fun SessionFilterMenu(
+    label: String,
+    selected: String,
+    options: List<Pair<String, String>>,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilledTonalButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth()) {
+                Text(label, style = MaterialTheme.typography.labelSmall)
+                Text(selected, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (id, title) ->
+                DropdownMenuItem(
+                    text = { Text(title) },
+                    onClick = { expanded = false; onSelect(id) },
                 )
             }
         }
@@ -1734,20 +2146,23 @@ private fun SessionDetailScreen(
 
     LaunchedEffect(selected?.id) {
         selected?.let {
+            val matchedIndex = it.messages.indexOfFirst { item -> item.id == state.highlightedItemId }
             listState.scrollToItem(
-                it.messages.size + if (it.status == "working") 1 else 0,
+                if (matchedIndex >= 0) matchedIndex + 1
+                else it.messages.size + if (it.status == "working") 1 else 0,
             )
         }
     }
     LaunchedEffect(
         state.followNewMessages,
+        state.highlightedItemId,
         selected?.messages?.size,
         lastMessage?.text,
         selected?.status,
         selected?.activityLabel,
         selected?.activityText,
     ) {
-        if (state.followNewMessages) {
+        if (state.followNewMessages && state.highlightedItemId == null) {
             selected?.let {
                 listState.scrollToItem(
                     it.messages.size + if (it.status == "working") 1 else 0,
