@@ -123,41 +123,55 @@ foreman pair
 ```
 
 Open the printed URL—normally `http://HOST:8766`—from a current Chrome, Firefox,
-or Edge release on a trusted network. Enter the host and six-digit code. The
-browser connects back through the same port that served the page, so there is
-no separate port field. Run `foreman pair` again for every additional browser
-profile or device.
+or Edge release on a trusted network. Enter the host and six-digit pairing code.
+The browser reconnects through the port that served the page, so there is no
+separate port field. Run `foreman pair` again for each additional browser profile
+or device.
 
 `foreman web` only prints the configured URL; `foreman start`, `stop`, and
 `restart` control both the web listener on `8766` and Android protocol listener
-on `8765`. If a firewall is enabled, allow only the listener needed by each
+on `8765`. If a firewall is enabled, expose only the listener needed by each
 trusted client or secure overlay.
 
-The SPA opens on a responsive operational dashboard with host/runtime and event
-freshness, connected-client counts, compact active-session cards, an
-oldest-active-turn callout, a calm attention queue, repository/workspace groups,
-and a bounded recent-activity feed. Dashboard typography is sized for quick
-scanning across desktop and mobile. It also
-supports the existing session list and real history; detailed live thinking,
-planning, command, and tool activity; new sessions; prompt, steer, and interrupt;
-descriptive model/reasoning/access menus; file-picker and clipboard images;
-archive/delete; opt-in browser notifications for background tabs; bounded
-reconnect without request replay; durable session URLs with browser Back,
-Forward, and refresh restoration; and responsive theme and accent controls.
-Dashboard data is live while the browser is connected. “No recent activity” is
-a conservative browser-only heuristic for active turns with no event for ten
-minutes; it never interrupts or changes Codex state. Recent completion and feed
-data come from current Codex state and events observed by this browser and are
-not a permanent audit history. **Other workspaces** contains session roots that
-do not map to a discovered Git repository. Approval and structured-input waits
-are identified, but must still be handled in another compatible Codex client.
-Host Status can disclose connected and offline paired clients. Revoking a client
-removes only that authentication token and immediately disconnects every live
-connection using it; sessions and repositories are untouched.
+The responsive dashboard provides:
+
+- host, runtime, connection, and event freshness;
+- connected-client counts and paired-client management;
+- compact active-session cards and the oldest active turn;
+- a calm attention queue for waiting, failed, disconnected, or stale work;
+- repository and non-Git workspace groups;
+- a bounded recent-activity feed.
+
+The full web client also supports:
+
+- the session list, conversation history, and live assistant/tool activity;
+- starting sessions and sending prompts, steers, or interrupts;
+- model, reasoning-effort, and access selection;
+- file-picker and clipboard image attachments;
+- archive and delete actions;
+- opt-in browser notifications for background tabs;
+- bounded reconnect without request replay;
+- durable session URLs with Back, Forward, and refresh restoration;
+- responsive dark/light/system themes and configurable accents.
+
+Dashboard behavior and limits:
+
+- Data remains live while the browser is connected.
+- **No recent activity** is a conservative ten-minute browser heuristic. It
+  never interrupts a turn or changes Codex state.
+- Recent completion and feed data are not a permanent audit history.
+- **Other workspaces** contains session roots that do not map to a discovered
+  Git repository.
+- Approval and structured-input waits must still be handled in another
+  compatible Codex client.
+- Host Status can show connected and offline paired clients. Revoking one removes
+  only that authentication token, disconnecting its live connections without
+  affecting sessions or repositories.
+
 Browser notifications require HTTPS or localhost and work while Foreman remains
-open in a background tab. For another device on the LAN, put the web listener
-behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
-Foreman host can terminate TLS and proxy both HTTP and WebSocket traffic:
+open in a background tab. For another LAN device, put the web listener behind a
+trusted same-origin HTTPS reverse proxy. For example, Caddy can terminate TLS
+and proxy both HTTP and WebSocket traffic:
 
 ```caddyfile
 foreman.example.com {
