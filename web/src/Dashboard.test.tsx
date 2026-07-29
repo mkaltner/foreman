@@ -113,13 +113,26 @@ describe("monitoring dashboard", () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     render(<Dashboard sessions={[sessions[0]]} repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} serviceStatus={{ ...status, activeTcpConnections: 1, codex: { ...status.codex, mode: "shared", lastEvent: new Date(now - 3000).toISOString(), lastSuccessfulRequest: new Date(now - 8000).toISOString(), attachedAt: new Date(now - 60_000).toISOString(), loadedThreadCount: 4, subscribedThreadCount: 2, ownedByForeman: false, appServerPid: 123 } }} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
-    expect(screen.getAllByText("Last Codex event: 3s ago")).toHaveLength(2);
+    expect(screen.getByText("Last runtime event: 3s ago")).toBeInTheDocument();
+    expect(screen.getByText("3s ago")).toBeInTheDocument();
     expect(screen.getByText("2 browser · 1 Android")).toBeInTheDocument();
     expect(screen.getByText("4 loaded · 2 subscribed")).toBeInTheDocument();
     expect(screen.getAllByText("gpt-5.6 · High · auto")).toHaveLength(2);
     fireEvent.click(screen.getByText("Runtime details"));
     expect(screen.getByText("123")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Repositories" })).toBeInTheDocument();
+  });
+
+  it("labels session freshness separately and separates current repository work from completion age", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    render(<Dashboard sessions={[
+      sessions[0],
+      { ...sessions[0], id: "completed", status: "completed", activeTurnId: null, activeTurnStartedAt: null, terminalAt: now / 1000 - 60 },
+    ]} repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} serviceStatus={status} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getByText("Session event")).toBeInTheDocument();
+    expect(screen.getByText(/Current: Running tests/)).toBeInTheDocument();
+    expect(screen.getByText("Last completion: 1m 00s ago")).toBeInTheDocument();
   });
 
   it("lists paired clients and confirms token revocation", async () => {
@@ -130,7 +143,7 @@ describe("monitoring dashboard", () => {
       { id: "phone", name: "Pixel", type: "android", pairedAt: new Date(now - 120_000).toISOString(), connected: false, connectionCount: 0, current: false },
     ]} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} onRevokeClient={revoke} />);
 
-    fireEvent.click(screen.getByText(/Connected clients and paired tokens/));
+    fireEvent.click(screen.getByText(/Clients and access/));
     expect(screen.getByText("Office browser")).toBeInTheDocument();
     expect(screen.getByText("Pixel")).toBeInTheDocument();
     expect(screen.getByText(/Browser · 1 connection · This browser/)).toBeInTheDocument();

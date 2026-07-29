@@ -24,6 +24,7 @@ from codex import (  # noqa: E402
     access_level,
     access_params,
     bound_message_images,
+    compact_session_title,
     display_user_text,
     model,
     normalize_event,
@@ -358,6 +359,25 @@ class PairingLimiterTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
+    def test_compacts_prompt_previews_into_scan_friendly_titles(self) -> None:
+        prompt = (
+            "Build Foreman’s monitoring dashboard. Repository: "
+            "/home/operator/projects/foreman GitHub: https://example.test/foreman"
+        )
+        self.assertEqual(
+            compact_session_title(prompt),
+            "Build Foreman’s monitoring dashboard.",
+        )
+        self.assertEqual(
+            compact_session_title("# Fix reconnect behavior\n\nDetails"),
+            "Fix reconnect behavior",
+        )
+        self.assertEqual(
+            compact_session_title("Fix api.example.com error handling"),
+            "Fix api.example.com error handling",
+        )
+        self.assertLessEqual(len(compact_session_title("x" * 100)), 72)
+
     def test_strips_the_desktop_attachment_envelope_from_android_text(self) -> None:
         wrapped = """# Files mentioned by the user:
 
@@ -506,6 +526,34 @@ Tighten up this layout, please.
         )
         self.assertEqual(safe_failure_summary("request token=secret"), "Turn failed")
         self.assertEqual(safe_failure_summary("failed at /home/user/private"), "Turn failed")
+
+    def test_live_turn_start_uses_notification_time_when_codex_omits_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "foreman_service.time.time", return_value=1_700_000_123
+        ):
+            foreman = Foreman(
+                "127.0.0.1",
+                8765,
+                Path(directory),
+                State(Path(directory) / "state.json"),
+                "codex",
+                FakeCodex,
+            )
+            asyncio.run(
+                foreman.codex_event(
+                    {
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-live"},
+                        },
+                    }
+                )
+            )
+        self.assertEqual(
+            foreman.session_overlays["thread-1"]["activeTurnStartedAt"],
+            1_700_000_123,
+        )
 
     def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
         thread_id, event = normalize_event(

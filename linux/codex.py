@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -795,7 +796,9 @@ def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str,
     value: dict[str, Any] = {
         "id": thread["id"],
         "repository": thread.get("cwd", ""),
-        "title": thread.get("name") or thread.get("preview") or "Untitled session",
+        "title": compact_session_title(
+            thread.get("name") or thread.get("preview") or "Untitled session"
+        ),
         "status": projected_status,
         "lastActivity": thread.get("recencyAt") or thread.get("updatedAt"),
         "attention": projected_status == "waiting",
@@ -829,6 +832,27 @@ def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str,
         bound_message_images(messages)
         value["messages"] = messages
     return value
+
+
+def compact_session_title(raw: Any, limit: int = 72) -> str:
+    """Project a scan-friendly title without exposing the full initial prompt."""
+    if not isinstance(raw, str):
+        return "Untitled session"
+    title = next((line.strip() for line in raw.splitlines() if line.strip()), "")
+    title = " ".join(title.split()).strip()
+    title = re.sub(r"^(?:#{1,6}|[-*+] |\d+[.)] )\s*", "", title)
+    title = re.split(
+        r"\s+(?=(?:Repository|GitHub|GitLab|Goal|Requirements|Acceptance criteria):)",
+        title,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    first_sentence = re.split(r"(?<=[.!?])\s+(?=[A-Z])", title, maxsplit=1)[0]
+    if first_sentence and len(first_sentence) <= limit:
+        title = first_sentence
+    if len(title) > limit:
+        title = f"{title[:limit - 1].rstrip()}…"
+    return title or "Untitled session"
 
 
 def safe_failure_summary(raw: Any) -> str | None:

@@ -43,14 +43,14 @@ describe("dashboard projections", () => {
 
   it("groups repositories by canonical path without merging equal display names", () => {
     const groups = repositoryGroups([
-      { ...base, id: "a", repository: "/work/foreman", status: "working", lastActivity: 10 },
+      { ...base, id: "a", repository: "/work/foreman", status: "working", lastActivity: 10, activityLabel: "Running tests" },
       { ...base, id: "b", repository: "/archive/foreman", status: "waiting", lastActivity: 20 },
       { ...base, id: "c", repository: "/work/foreman", status: "failed", terminalAt: now / 1000 },
     ], now);
     expect(groups).toHaveLength(2);
     expect(groups.map((group) => group.id)).toContain("/work/foreman");
     expect(groups.find((group) => group.id === "/work/foreman"))
-      .toEqual(expect.objectContaining({ active: 1, failed: 1 }));
+      .toEqual(expect.objectContaining({ active: 1, failed: 1, currentActivity: "Running tests" }));
   });
 
   it("sorts attention before active work and then by latest activity", () => {
@@ -67,6 +67,7 @@ describe("dashboard projections", () => {
     expect(formatElapsed(now / 1000 - 134, now)).toBe("2m 14s");
     expect(formatElapsed(now / 1000 - 3780, now)).toBe("1h 03m");
     expect(formatDuration(12_345)).toBe("12s");
+    expect(formatElapsed(null, now)).toBe("Start time unavailable");
   });
 
   it("updates only monitoring fields and never stores transcript deltas", () => {
@@ -195,6 +196,19 @@ describe("dashboard projections", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].description).toBe("Running tests");
     expect(JSON.stringify(entries)).not.toContain("private prompt");
+    entries = recordRecentActivity(entries, base, {
+      kind: "item",
+      phase: "started",
+      item: { id: "command", kind: "command", description: "private command" },
+      observedAt: now / 1000 + 2,
+    }, now + 2000);
+    expect(entries).toHaveLength(1);
+    expect(JSON.stringify(entries)).not.toContain("private command");
+    entries = recordRecentActivity(entries, base, { kind: "activity", label: "Editing files", observedAt: now / 1000 + 600 }, now + 600_000);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].description).toBe("Editing files");
+    entries = recordRecentActivity(entries, { ...base, status: "working" }, { kind: "status", status: "working", observedAt: now / 1000 + 601 }, now + 601_000);
+    expect(entries).toHaveLength(1);
     for (let index = 0; index < 25; index += 1) {
       entries = recordRecentActivity(entries, { ...base, id: `session-${index}` }, { kind: "status", status: "completed", observedAt: now / 1000 + index + 10 }, now + index * 1000);
     }

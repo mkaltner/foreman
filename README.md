@@ -137,10 +137,10 @@ The responsive dashboard provides:
 
 - host, runtime, connection, and event freshness;
 - connected-client counts and paired-client management;
-- compact active-session cards and the oldest active turn;
+- compact active-session cards with scan-friendly titles and the oldest active turn;
 - a calm attention queue for waiting, failed, disconnected, or stale work;
 - repository and non-Git workspace groups;
-- a bounded recent-activity feed.
+- a bounded, coalesced recent-activity feed.
 
 The full web client also supports:
 

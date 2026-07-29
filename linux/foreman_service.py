@@ -180,6 +180,15 @@ class Foreman:
         if not thread_id:
             return
         event["observedAt"] = int(time.time())
+        if (
+            event.get("type") == "turn/started"
+            and event.get("kind") == "status"
+            and event.get("status") == "working"
+            and not event.get("startedAt")
+        ):
+            # The notification itself is the authoritative start signal even
+            # when this app-server version omits the optional timestamp.
+            event["startedAt"] = event["observedAt"]
         self.remember_session_event(thread_id, event)
         outgoing = {
             "version": VERSION,
