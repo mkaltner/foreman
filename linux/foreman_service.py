@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime, timezone
 from http import HTTPStatus
 import json
+import math
 import mimetypes
 import os
 import signal
@@ -21,7 +22,17 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
-from codex import FOREMAN_VERSION, Codex, CodexError, normalize_event, session
+from codex import (
+    FOREMAN_VERSION,
+    SEARCH_SNIPPET_LIMIT,
+    SEARCH_SNIPPETS_PER_SESSION,
+    Codex,
+    CodexError,
+    matching_snippet,
+    normalize_event,
+    search_matches,
+    session,
+)
 from protocol import (
     MAX_FRAME_BYTES,
     VERSION,
@@ -41,6 +52,18 @@ from websockets.http11 import Request, Response
 MAX_IMAGES = 4
 MAX_IMAGE_PAYLOAD_BYTES = 8 * 1024 * 1024
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_SEARCH_RESULTS = 100
+MAX_SEARCH_QUERY_BYTES = 500
+MAX_TRANSCRIPT_SEARCH_CANDIDATES = 100
+SEARCH_STATUSES = {
+    "active",
+    "working",
+    "waiting",
+    "completed",
+    "idle",
+    "failed",
+    "interrupted",
+}
 
 
 def load_env(path: Path) -> None:
@@ -63,6 +86,8 @@ class Client:
     device_id: str | None = None
     subscriptions: set[str] = field(default_factory=set)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    requests: set[asyncio.Task[Any]] = field(default_factory=set)
+    search_task: asyncio.Task[dict[str, Any]] | None = None
 
     async def send(self, message: dict[str, Any]) -> None:
         async with self.write_lock:
@@ -74,6 +99,15 @@ class Client:
                 await self.writer.drain()
             else:
                 raise ConnectionError("client transport is closed")
+
+    def track(self, task: asyncio.Task[Any]) -> None:
+        self.requests.add(task)
+        task.add_done_callback(self.request_finished)
+
+    def request_finished(self, task: asyncio.Task[Any]) -> None:
+        self.requests.discard(task)
+        if not task.cancelled():
+            task.exception()
 
 
 class PairingLimiter:
@@ -336,10 +370,8 @@ class Foreman:
         request: dict[str, Any] | None = None
         try:
             while request := await read(reader):
-                try:
-                    await self.handle_request(client, request)
-                except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
-                    break
+                task = asyncio.create_task(self.handle_request(client, request))
+                client.track(task)
         except ProtocolError as exc:
             try:
                 await client.send(error(request, "protocolError", str(exc)))
@@ -354,6 +386,10 @@ class Foreman:
         except asyncio.CancelledError:
             pass
         finally:
+            for task in list(client.requests):
+                task.cancel()
+            if client.requests:
+                await asyncio.gather(*client.requests, return_exceptions=True)
             self.clients.discard(client)
             if client.authenticated:
                 await self.broadcast_service_status()
@@ -384,12 +420,17 @@ class Foreman:
                 except ProtocolError as exc:
                     await client.send(error(None, "protocolError", str(exc)))
                     continue
-                await self.handle_request(client, request)
+                task = asyncio.create_task(self.handle_request(client, request))
+                client.track(task)
         except ConnectionClosed:
             pass
         except asyncio.CancelledError:
             pass
         finally:
+            for task in list(client.requests):
+                task.cancel()
+            if client.requests:
+                await asyncio.gather(*client.requests, return_exceptions=True)
             self.clients.discard(client)
             if client.authenticated:
                 await self.broadcast_service_status()
@@ -410,6 +451,11 @@ class Foreman:
             await client.send(error(request, "requestFailed", str(exc)))
         except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
             raise
+        except asyncio.CancelledError:
+            try:
+                await client.send(error(request, "cancelled", "request cancelled"))
+            except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
+                pass
         except Exception as exc:
             print(f"request error: {exc}", flush=True)
             await client.send(error(request, "internalError", "request failed"))
@@ -668,6 +714,7 @@ class Foreman:
                     "models": self.codex.supports("model/list"),
                     "access": self.codex.supports("permissionProfile/list"),
                     "images": True,
+                    "search": True,
                 },
             }
         if message_type == "pair":
@@ -727,6 +774,17 @@ class Foreman:
                     for item in await self.codex.list_threads()
                 ]
             }
+        if message_type == "session.search":
+            previous = client.search_task
+            if previous and not previous.done():
+                previous.cancel()
+            task = asyncio.create_task(self.search_sessions(payload))
+            client.search_task = task
+            try:
+                return await task
+            finally:
+                if client.search_task is task:
+                    client.search_task = None
         if message_type == "session.read":
             thread_id = required_text(payload, "sessionId", 100)
             return {
@@ -734,6 +792,7 @@ class Foreman:
                     await self.codex.read_thread(thread_id), True
                 )
             }
+
         if message_type == "session.start":
             repository_id = required_text(payload, "repositoryId", 500)
             repository = self.resolve_repository(repository_id)
@@ -815,6 +874,179 @@ class Foreman:
                 await self.codex.interrupt(thread_id, turn_id)
             return {"accepted": True}
         raise ValueError(f"unknown message type: {message_type}")
+
+    async def search_sessions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        query = payload.get("query", "")
+        if not isinstance(query, str):
+            raise ValueError("query must be text")
+        query = query.strip()
+        if len(query.encode()) > MAX_SEARCH_QUERY_BYTES:
+            raise ValueError("query is too large")
+        repository = payload.get("repository")
+        if repository is not None:
+            if not isinstance(repository, str) or not repository.strip():
+                raise ValueError("repository must be non-empty text or null")
+            repository = os.path.normpath(repository.strip())
+        raw_statuses = payload.get("statuses", [])
+        if not isinstance(raw_statuses, list) or len(raw_statuses) > 6:
+            raise ValueError("statuses must be a list of at most 6 values")
+        statuses = set()
+        for value in raw_statuses:
+            if not isinstance(value, str) or value not in SEARCH_STATUSES:
+                raise ValueError("status is unavailable")
+            statuses.add("working" if value == "active" else value)
+        date_from = optional_number(payload, "dateFrom")
+        date_to = optional_number(payload, "dateTo")
+        if date_from is not None and date_to is not None and date_from > date_to:
+            raise ValueError("dateFrom must not be after dateTo")
+        raw_limit = payload.get("limit", MAX_SEARCH_RESULTS)
+        if not isinstance(raw_limit, int) or isinstance(raw_limit, bool) or raw_limit < 1:
+            raise ValueError("limit must be a positive integer")
+        limit = min(raw_limit, MAX_SEARCH_RESULTS)
+
+        threads = await self.codex.list_threads()
+        repository_roots = await asyncio.to_thread(self.search_repository_roots)
+        candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+        for thread in threads:
+            summary = self.projected_session(thread)
+            identity = self.search_repository_identity(
+                summary.get("repository", ""), repository_roots
+            )
+            if repository and identity != repository:
+                continue
+            projected_status = summary.get("status", "idle")
+            if statuses and projected_status not in statuses and not (
+                projected_status == "idle" and "completed" in statuses
+            ):
+                continue
+            activity = summary.get("lastActivity")
+            if date_from is not None and (
+                not isinstance(activity, (int, float)) or activity < date_from
+            ):
+                continue
+            if date_to is not None and (
+                not isinstance(activity, (int, float)) or activity > date_to
+            ):
+                continue
+            candidates.append((thread, summary, identity))
+
+        if not query:
+            return {
+                "results": [
+                    {"session": summary, "matches": []}
+                    for _, summary, _ in candidates[:limit]
+                ],
+                "limit": limit,
+                "truncated": len(candidates) > limit,
+                "transcriptsScanned": 0,
+            }
+
+        needle = query.casefold()
+        summary_results: list[tuple[int, float, dict[str, Any]]] = []
+        transcript_pool: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for thread, summary, identity in candidates:
+            title = str(summary.get("title", ""))
+            path = str(summary.get("repository", ""))
+            title_folded = title.casefold()
+            activity = summary.get("lastActivity")
+            recency = float(activity) if isinstance(activity, (int, float)) else 0
+            if needle in title_folded:
+                rank = 0 if title_folded == needle else 1
+                summary_results.append(
+                    (
+                        rank,
+                        -recency,
+                        {
+                            "session": summary,
+                            "matches": [self.summary_match("title", title, query)],
+                        },
+                    )
+                )
+            elif needle in path.casefold() or needle in identity.casefold():
+                summary_results.append(
+                    (
+                        2,
+                        -recency,
+                        {
+                            "session": summary,
+                            "matches": [self.summary_match("workspace", path, query)],
+                        },
+                    )
+                )
+            else:
+                transcript_pool.append((thread, summary))
+
+        summary_results.sort(key=lambda item: (item[0], item[1], item[2]["session"]["id"]))
+        results = [item[2] for item in summary_results[:limit]]
+        transcript_candidates = 0
+        for index, (_, summary) in enumerate(
+            transcript_pool[:MAX_TRANSCRIPT_SEARCH_CANDIDATES]
+        ):
+            if len(results) >= limit:
+                break
+            transcript_candidates += 1
+            try:
+                full_thread = await self.codex.search_thread(summary["id"])
+            except CodexError:
+                continue
+            matches = search_matches(
+                full_thread,
+                query,
+                SEARCH_SNIPPETS_PER_SESSION,
+                SEARCH_SNIPPET_LIMIT,
+            )
+            if matches:
+                results.append({"session": summary, "matches": matches})
+            if index % 10 == 0:
+                await asyncio.sleep(0)
+        truncated = len(summary_results) > limit or (
+            len(transcript_pool) > transcript_candidates
+            and (
+                transcript_candidates >= MAX_TRANSCRIPT_SEARCH_CANDIDATES
+                or len(results) >= limit
+            )
+        )
+        return {
+            "results": results,
+            "limit": limit,
+            "truncated": truncated,
+            "transcriptsScanned": transcript_candidates,
+        }
+
+    @staticmethod
+    def summary_match(kind: str, text: str, query: str) -> dict[str, Any]:
+        return {
+            "kind": kind,
+            "snippet": matching_snippet(text, query),
+            "turnId": None,
+            "itemId": None,
+        }
+
+    def search_repository_roots(self) -> list[str]:
+        return sorted(
+            (
+                os.path.normpath(
+                    item["path"]
+                    if os.path.isabs(item["path"])
+                    else str(self.repository_root / item["path"])
+                )
+                for item in self.repositories()
+            ),
+            key=len,
+            reverse=True,
+        )
+
+    @staticmethod
+    def search_repository_identity(path: Any, roots: list[str]) -> str:
+        normalized = os.path.normpath(path) if isinstance(path, str) and path else ""
+        return next(
+            (
+                root
+                for root in roots
+                if normalized == root or normalized.startswith(f"{root}{os.sep}")
+            ),
+            normalized,
+        )
 
     async def route(
         self, payload: dict[str, Any]
@@ -910,6 +1142,20 @@ def optional_text(
     if len(value.encode()) > maximum:
         raise ValueError(f"{key} is too large")
     return value.strip()
+
+
+def optional_number(payload: dict[str, Any], key: str) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{key} must be a non-negative timestamp or null")
+    return float(value)
 
 
 def message_text(
