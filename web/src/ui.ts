@@ -61,3 +61,88 @@ export function reasoningLabel(effort: string): string {
 export function reasoningDescription(effort: string): string | undefined {
   return effort.toLowerCase() === "ultra" ? "Consumes usage limits faster" : undefined;
 }
+
+export interface AppDirective {
+  name: string;
+  attributes: Record<string, string>;
+}
+
+export type AssistantContentSegment =
+  | { kind: "markdown"; text: string }
+  | { kind: "directive"; directive: AppDirective };
+
+const DISPLAYED_DIRECTIVES = new Set([
+  "created-thread",
+  "git-stage",
+  "git-commit",
+  "git-create-branch",
+  "git-push",
+  "git-create-pr",
+]);
+
+export function parseAssistantContent(text: string): AssistantContentSegment[] {
+  const segments: AssistantContentSegment[] = [];
+  let markdown: string[] = [];
+  const flushMarkdown = () => {
+    if (!markdown.length) return;
+    segments.push({ kind: "markdown", text: markdown.join("\n") });
+    markdown = [];
+  };
+
+  for (const line of text.split("\n")) {
+    const directives = parseDirectiveLine(line);
+    if (!directives?.length || directives.some(({ name }) => !DISPLAYED_DIRECTIVES.has(name))) {
+      markdown.push(line);
+      continue;
+    }
+    flushMarkdown();
+    segments.push(...directives.map((directive) => ({ kind: "directive" as const, directive })));
+  }
+  flushMarkdown();
+  return segments;
+}
+
+function parseDirectiveLine(line: string): AppDirective[] | null {
+  const directives: AppDirective[] = [];
+  let cursor = 0;
+  while (cursor < line.length && /\s/.test(line[cursor])) cursor += 1;
+  if (!line.startsWith("::", cursor)) return null;
+
+  while (cursor < line.length) {
+    if (!line.startsWith("::", cursor)) return null;
+    cursor += 2;
+    const nameStart = cursor;
+    while (cursor < line.length && /[a-z0-9-]/i.test(line[cursor])) cursor += 1;
+    const name = line.slice(nameStart, cursor);
+    if (!name || line[cursor] !== "{") return null;
+    cursor += 1;
+
+    const bodyStart = cursor;
+    let quoted = false;
+    let escaped = false;
+    while (cursor < line.length) {
+      const character = line[cursor];
+      if (escaped) escaped = false;
+      else if (character === "\\" && quoted) escaped = true;
+      else if (character === "\"") quoted = !quoted;
+      else if (character === "}" && !quoted) break;
+      cursor += 1;
+    }
+    if (cursor >= line.length) return null;
+    directives.push({ name, attributes: parseDirectiveAttributes(line.slice(bodyStart, cursor)) });
+    cursor += 1;
+    while (cursor < line.length && /\s/.test(line[cursor])) cursor += 1;
+  }
+  return directives;
+}
+
+function parseDirectiveAttributes(source: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  const pattern = /([A-Za-z][\w-]*)=(?:"((?:\\.|[^"\\])*)"|([^\s]+))/g;
+  for (const match of source.matchAll(pattern)) {
+    attributes[match[1]] = match[2] == null
+      ? match[3]
+      : match[2].replace(/\\(["\\])/g, "$1");
+  }
+  return attributes;
+}

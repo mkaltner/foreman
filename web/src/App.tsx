@@ -47,8 +47,10 @@ import {
   createSubmissionGuard,
   formatActivity,
   isNearBottom,
+  parseAssistantContent,
   reasoningDescription,
   reasoningLabel,
+  type AppDirective,
 } from "./ui";
 
 type View = "sessions" | "detail" | "settings";
@@ -735,16 +737,41 @@ function ConversationItemView({ item }: { item: NonNullable<SessionSummary["mess
 function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown
-        components={{
-          a: ({ href, children }) => {
-            const safe = safeLink(href);
-            return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
-          },
-        }}
-      >{text}</ReactMarkdown>
+      {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
+        ? <AppDirectiveCard key={`${segment.directive.name}-${index}`} directive={segment.directive} />
+        : <ReactMarkdown
+            key={`markdown-${index}`}
+            components={{
+              a: ({ href, children }) => {
+                const safe = safeLink(href);
+                return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
+              },
+            }}
+          >{segment.text}</ReactMarkdown>)}
     </div>
   );
+}
+
+function AppDirectiveCard({ directive }: { directive: AppDirective }) {
+  const labels: Record<string, string> = {
+    "created-thread": "Task created",
+    "git-stage": "Changes staged",
+    "git-commit": "Changes committed",
+    "git-create-branch": "Branch created",
+    "git-push": "Branch pushed",
+    "git-create-pr": directive.attributes.isDraft === "true" ? "Draft PR opened" : "Pull request opened",
+  };
+  const detail = directive.attributes.branch || shortPath(directive.attributes.cwd);
+  const url = directive.name === "git-create-pr" ? safeLink(directive.attributes.url) : null;
+  const content = <><span aria-hidden="true">✓</span><div><strong>{labels[directive.name] ?? "Action completed"}</strong>{detail && <small>{detail}</small>}</div></>;
+  return url
+    ? <a className="app-directive" href={url} target="_blank" rel="noreferrer noopener">{content}<i aria-hidden="true">↗</i></a>
+    : <div className="app-directive">{content}</div>;
+}
+
+function shortPath(path?: string): string | null {
+  if (!path) return null;
+  return path.replace(/\/+$/, "").split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: RepositoryInfo[]; onClose: () => void; onCreate: (id: string) => Promise<void> }) {

@@ -10,6 +10,7 @@ import {
   confirmSessionAction,
   createSubmissionGuard,
   isNearBottom,
+  parseAssistantContent,
   reasoningDescription,
   reasoningLabel,
 } from "./ui";
@@ -60,5 +61,26 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(reasoningLabel("xhigh")).toBe("Extra High");
     expect(reasoningDescription("high")).toBeUndefined();
     expect(reasoningDescription("ultra")).toBe("Consumes usage limits faster");
+  });
+
+  it("separates app directives from assistant Markdown", () => {
+    const content = parseAssistantContent([
+      "Validation passed.",
+      "",
+      '::git-commit{cwd="/home/mkaltner/projects/foreman"}',
+      '::git-push{cwd="/home/mkaltner/projects/foreman" branch="codex/web"}',
+    ].join("\n"));
+
+    expect(content).toEqual([
+      { kind: "markdown", text: "Validation passed.\n" },
+      { kind: "directive", directive: { name: "git-commit", attributes: { cwd: "/home/mkaltner/projects/foreman" } } },
+      { kind: "directive", directive: { name: "git-push", attributes: { cwd: "/home/mkaltner/projects/foreman", branch: "codex/web" } } },
+    ]);
+  });
+
+  it("preserves unsupported directives as ordinary Markdown", () => {
+    expect(parseAssistantContent('::unknown{value="safe"}')).toEqual([
+      { kind: "markdown", text: '::unknown{value="safe"}' },
+    ]);
   });
 });
