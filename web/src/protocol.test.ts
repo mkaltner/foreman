@@ -70,7 +70,7 @@ describe("session mapping and live events", () => {
     );
     current = applySessionEvent(current, { kind: "status", status: "completed", turnId: "turn-1" });
     expect(current.activeTurnId).toBeNull();
-    expect(current.activityText).toBe("");
+    expect(current.activityText).toBe("Step one");
   });
 
   it("presents the latest meaningful live activity like Android", () => {

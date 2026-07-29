@@ -8,6 +8,7 @@ import asyncio
 import base64
 import binascii
 from collections import deque
+from datetime import datetime, timezone
 from http import HTTPStatus
 import json
 import mimetypes
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
-from codex import Codex, CodexError, normalize_event, session
+from codex import FOREMAN_VERSION, Codex, CodexError, normalize_event, session
 from protocol import (
     MAX_FRAME_BYTES,
     VERSION,
@@ -132,6 +133,8 @@ class Foreman:
         self.web_root = (web_root or Path(__file__).resolve().parent / "web").resolve()
         self.web_origins = web_origins
         self.web_server: Server | None = None
+        self.started_monotonic = time.monotonic()
+        self.session_overlays: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         await self.codex.start()
@@ -175,6 +178,8 @@ class Foreman:
         thread_id, event = normalize_event(message)
         if not thread_id:
             return
+        event["observedAt"] = int(time.time())
+        self.remember_session_event(thread_id, event)
         outgoing = {
             "version": VERSION,
             "type": "session.event",
@@ -191,6 +196,107 @@ class Foreman:
         ]
         await asyncio.gather(
             *(client.send(outgoing) for client in targets), return_exceptions=True
+        )
+
+    def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
+        overlay = self.session_overlays.setdefault(thread_id, {})
+        observed_at = event.get("observedAt")
+        if isinstance(observed_at, (int, float)):
+            overlay["lastActivity"] = observed_at
+        kind = event.get("kind")
+        if kind == "status":
+            projected_status = event.get("status")
+            if isinstance(projected_status, str):
+                overlay["status"] = projected_status
+                overlay["attention"] = projected_status == "waiting"
+            if projected_status in ("working", "waiting"):
+                overlay["activeTurnId"] = event.get("turnId") or overlay.get("activeTurnId")
+                overlay["activeTurnStartedAt"] = event.get("startedAt") or overlay.get("activeTurnStartedAt")
+                overlay["terminalAt"] = None
+                overlay["turnDurationMs"] = None
+                overlay["failureSummary"] = None
+            else:
+                overlay["activeTurnId"] = None
+                overlay["activeTurnStartedAt"] = None
+            if projected_status in ("completed", "failed", "interrupted"):
+                overlay["terminalAt"] = event.get("completedAt") or observed_at
+                overlay["turnDurationMs"] = event.get("durationMs")
+                overlay["failureSummary"] = event.get("failureSummary")
+            if event.get("waitType") in ("approval", "input"):
+                overlay["waitType"] = event["waitType"]
+                overlay["waitDescription"] = event.get("waitDescription")
+                overlay["activityLabel"] = (
+                    "Waiting for approval"
+                    if event["waitType"] == "approval"
+                    else "Waiting for input"
+                )
+            elif projected_status != "waiting":
+                overlay["waitType"] = None
+                overlay["waitDescription"] = None
+        elif kind == "activity":
+            label = event.get("label")
+            text = event.get("text")
+            if isinstance(label, str) and label:
+                overlay["activityLabel"] = label
+            if isinstance(text, str) and text:
+                overlay["activityText"] = (
+                    f"{overlay.get('activityText', '')}{text}"
+                    if event.get("append")
+                    else text
+                )[-2000:]
+        elif kind == "assistant.delta":
+            overlay["activityLabel"] = "Responding"
+            overlay["activityText"] = ""
+        elif kind == "item" and event.get("phase") == "started":
+            item = event.get("item") or {}
+            item_kind = item.get("kind")
+            description = item.get("description")
+            if item_kind == "command":
+                overlay["activityLabel"] = "Running command"
+                overlay["activityText"] = ""
+            elif isinstance(description, str) and description.lower().startswith("web search"):
+                overlay["activityLabel"] = "Searching the web"
+            elif isinstance(description, str) and description.startswith("Editing "):
+                overlay["activityLabel"] = description
+            else:
+                overlay["activityLabel"] = "Using tool"
+            if item_kind != "command" and isinstance(description, str):
+                overlay["activityText"] = description
+        elif kind == "item" and event.get("phase") == "completed":
+            overlay["activityLabel"] = "Thinking"
+        elif kind == "route":
+            for key in ("model", "reasoningEffort", "accessLevel"):
+                if isinstance(event.get(key), str):
+                    overlay[key] = event[key]
+
+    def projected_session(
+        self, thread: dict[str, Any], include_messages: bool = False
+    ) -> dict[str, Any]:
+        projected = session(thread, include_messages)
+        return {**projected, **self.session_overlays.get(projected["id"], {})}
+
+    async def broadcast_lifecycle(
+        self, thread_id: str, action: str, projected: dict[str, Any] | None = None
+    ) -> None:
+        event: dict[str, Any] = {
+            "kind": "lifecycle",
+            "action": action,
+            "observedAt": int(time.time()),
+        }
+        if projected is not None:
+            event["session"] = projected
+        outgoing = {
+            "version": VERSION,
+            "type": "session.event",
+            "payload": {"sessionId": thread_id, "event": event},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
         )
 
     async def client_connected(
@@ -313,7 +419,7 @@ class Foreman:
 
     def static_asset(self, path: str) -> tuple[bytes, str, bool] | None:
         relative = unquote(path).lstrip("/")
-        if not relative or relative in ("sessions", "settings") or relative.startswith("sessions/"):
+        if not relative or relative in ("dashboard", "sessions", "settings") or relative.startswith("sessions/"):
             relative = "index.html"
         if not relative or not (
             relative in ("index.html", "sw.js") or relative.startswith("assets/")
@@ -371,6 +477,46 @@ class Foreman:
             "codexRuntime": runtime,
         }
 
+    def service_status(self) -> dict[str, Any]:
+        codex_connected = getattr(self.codex, "is_connected", True)
+        runtime = self.codex.runtime_status
+        if not codex_connected:
+            mode = "unavailable"
+        elif runtime == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE":
+            mode = "shared"
+        else:
+            mode = "fallback"
+        last_communication = getattr(self.codex, "last_communication", None)
+        tcp_port = self.port
+        if self.server and self.server.sockets:
+            tcp_port = self.server.sockets[0].getsockname()[1]
+        web_port = self.web_port
+        if self.web_server and self.web_server.sockets:
+            web_port = self.web_server.sockets[0].getsockname()[1]
+        return {
+            "foremanVersion": FOREMAN_VERSION,
+            "connected": True,
+            "uptimeSeconds": max(0, int(time.monotonic() - self.started_monotonic)),
+            "codex": {
+                "connected": codex_connected,
+                "mode": mode,
+                "runtimeStatus": runtime,
+                "version": getattr(self.codex, "version", None),
+                "lastCommunication": (
+                    datetime.fromtimestamp(last_communication, timezone.utc).isoformat()
+                    if isinstance(last_communication, (int, float))
+                    else None
+                ),
+            },
+            "listeners": {"tcpPort": tcp_port, "webPort": web_port},
+            "repositoryRoot": str(self.repository_root),
+            "activeBrowserConnections": sum(
+                1
+                for connected in self.clients
+                if connected.authenticated and connected.websocket is not None
+            ),
+        }
+
     async def dispatch(
         self, client: Client, request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -422,6 +568,8 @@ class Foreman:
 
         if message_type == "repository.list":
             return {"repositories": await asyncio.to_thread(self.repositories)}
+        if message_type == "service.status":
+            return self.service_status()
         if message_type == "model.list":
             return {
                 "models": await self.codex.list_models(
@@ -436,17 +584,26 @@ class Foreman:
             }
         if message_type == "session.list":
             return {
-                "sessions": [session(item) for item in await self.codex.list_threads()]
+                "sessions": [
+                    self.projected_session(item)
+                    for item in await self.codex.list_threads()
+                ]
             }
         if message_type == "session.read":
             thread_id = required_text(payload, "sessionId", 100)
-            return {"session": session(await self.codex.read_thread(thread_id), True)}
+            return {
+                "session": self.projected_session(
+                    await self.codex.read_thread(thread_id), True
+                )
+            }
         if message_type == "session.start":
             repository_id = required_text(payload, "repositoryId", 500)
             repository = self.resolve_repository(repository_id)
             thread = await self.codex.start_thread(str(repository))
             client.subscriptions.add(thread["id"])
-            return {"session": session(thread, True)}
+            projected = self.projected_session(thread, True)
+            await self.broadcast_lifecycle(thread["id"], "created", projected)
+            return {"session": projected}
         if message_type == "session.resume":
             thread_id = required_text(payload, "sessionId", 100)
             thread = await self.codex.resume_thread(thread_id)
@@ -456,12 +613,18 @@ class Foreman:
             client.subscriptions.add(thread_id)
             await self.codex.subscribe_thread(thread_id)
             return {"subscribed": True}
+        if message_type == "session.unsubscribe":
+            thread_id = required_text(payload, "sessionId", 100)
+            client.subscriptions.discard(thread_id)
+            return {"subscribed": False}
         if message_type == "session.archive":
             thread_id = required_text(payload, "sessionId", 100)
             async with self.thread_lock(thread_id):
                 await self.require_inactive_session(thread_id)
                 await self.codex.archive_thread(thread_id)
             self.discard_subscriptions(thread_id)
+            self.session_overlays.pop(thread_id, None)
+            await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
             thread_id = required_text(payload, "sessionId", 100)
@@ -471,6 +634,8 @@ class Foreman:
                 await self.require_inactive_session(thread_id)
                 await self.codex.delete_thread(thread_id)
             self.discard_subscriptions(thread_id)
+            self.session_overlays.pop(thread_id, None)
+            await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)

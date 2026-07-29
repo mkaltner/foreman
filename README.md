@@ -77,6 +77,8 @@ as an alternative.
 
 - Pair clients with a short-lived, six-digit, one-time code.
 - Reconnect with persistent token authentication and fresh authoritative state.
+- Supervise active, waiting, failed, and recently terminal work from a live
+  multi-session dashboard grouped by repository.
 - Discover Git repositories and browse active and recent Codex sessions.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
@@ -130,12 +132,19 @@ profile or device.
 on `8765`. If a firewall is enabled, allow only the listener needed by each
 trusted client or secure overlay.
 
-The SPA supports sessions and real history; detailed live thinking, planning,
-command, and tool activity; new sessions; prompt, steer, and interrupt;
+The SPA opens on a responsive operational dashboard with host/runtime health,
+live summary counts, compact active-session cards, elapsed turn time, a calm
+attention queue, repository groups, and recently terminal work. It also
+supports the existing session list and real history; detailed live thinking,
+planning, command, and tool activity; new sessions; prompt, steer, and interrupt;
 descriptive model/reasoning/access menus; file-picker and clipboard images;
 archive/delete; opt-in browser notifications for background tabs; bounded
 reconnect without request replay; durable session URLs with browser Back,
 Forward, and refresh restoration; and responsive theme and accent controls.
+Dashboard data is live while the browser is connected. Recent completion data
+comes from current Codex state and events observed by this browser; it is not a
+permanent audit history. Approval and structured-input waits are identified,
+but must still be handled in another compatible Codex client.
 Browser notifications require HTTPS or localhost and work while Foreman remains
 open in a background tab. For another device on the LAN, put the web listener
 behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
@@ -177,13 +186,19 @@ rebuild the committed assets with the pinned Node version as documented in the
 
 ### Web
 
+<p align="center">
+  <img src="docs/screenshots/web-dashboard.png" alt="Foreman monitoring dashboard with multiple active sessions, an approval wait, repository groups, and host health" width="860">
+  <br>
+  <em>Live multi-session supervision and host health</em>
+</p>
+
 <table>
   <tr>
-    <td align="center"><img src="docs/screenshots/web-sessions.png" alt="Foreman web session dashboard" width="430"></td>
+    <td align="center"><img src="docs/screenshots/web-sessions.png" alt="Foreman web session list" width="430"></td>
     <td align="center"><img src="docs/screenshots/web-conversation.png" alt="Foreman web conversation and composer" width="430"></td>
   </tr>
   <tr>
-    <td align="center">Session dashboard</td>
+    <td align="center">Session list</td>
     <td align="center">Conversation and compact composer</td>
   </tr>
   <tr>
@@ -250,6 +265,7 @@ does not stop Desktop's Codex runtime.
 - Desktop live co-presence requires successful shared-socket attachment.
 - Android distribution is currently sideloaded.
 - Multi-host aggregation is not implemented.
+- Recent dashboard activity is not a persistent audit history.
 - Web support remains experimental during the alpha.
 
 ## Alpha status

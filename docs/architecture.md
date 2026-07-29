@@ -39,6 +39,13 @@ resubscribes to the open session, and never replays prompt, steer, interrupt,
 archive, or delete requests. Its committed `web/dist` output is copied into the
 installed data directory so Node isn't part of the runtime.
 
+The dashboard uses the same session-summary projection rather than a parallel
+session model. It subscribes only to working and waiting sessions, coalesces
+high-frequency public activity updates, and keeps transcripts out of monitoring
+state. One shared browser clock updates active-turn elapsed times. Terminal
+events observed during the browser session provide a bounded recent list; no
+dashboard metrics or activity journal are persisted by the service.
+
 Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed token store. Its cache is in memory and
 disposable. When the user enables active-turn notifications, an on-demand

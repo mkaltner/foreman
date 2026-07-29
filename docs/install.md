@@ -84,6 +84,15 @@ To install specifically for browser use, no additional build or package is
 needed. Run `./install.sh`, verify `foreman status`, open the URL from
 `foreman web`, and enter a fresh code from `foreman pair`. The installed,
 prebuilt SPA uses the page's own port for its authenticated WebSocket connection.
+After authentication it opens on the live dashboard. **Sessions** retains the
+conversation list and full interaction view; **Settings** contains appearance,
+notification, and connection preferences.
+
+The dashboard shows current session summaries, repository groups, attention
+states, recently observed terminal work, and Foreman/Codex health while the
+browser is connected. Approval and structured-input waits must be resolved in
+another compatible Codex client. Recent activity is intentionally not a
+persistent audit history.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.
 Browsers require HTTPS or localhost for system notifications; plain LAN HTTP
