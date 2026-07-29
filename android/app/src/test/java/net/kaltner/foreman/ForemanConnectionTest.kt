@@ -325,6 +325,40 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun parsesSupportedAppDirectivesWithoutLeakingThemIntoMarkdown() {
+        val blocks =
+            parseMarkdown(
+                """
+                Validation passed.
+
+                ::git-commit{cwd="/home/user/projects/foreman"}
+                ::git-push{cwd="/home/user/projects/foreman" branch="agent/android"}
+                """.trimIndent(),
+            )
+
+        assertEquals(MarkdownBlock.Paragraph("Validation passed."), blocks[0])
+        assertEquals(
+            MarkdownBlock.AppDirective("git-commit", mapOf("cwd" to "/home/user/projects/foreman")),
+            blocks[1],
+        )
+        assertEquals(
+            MarkdownBlock.AppDirective(
+                "git-push",
+                mapOf("cwd" to "/home/user/projects/foreman", "branch" to "agent/android"),
+            ),
+            blocks[2],
+        )
+    }
+
+    @Test
+    fun preservesUnsupportedAppDirectivesAsMarkdown() {
+        assertEquals(
+            listOf(MarkdownBlock.Paragraph("::unknown{value=\"safe\"}")),
+            parseMarkdown("::unknown{value=\"safe\"}"),
+        )
+    }
+
+    @Test
     fun stylesInlineMarkdownForCompactLiveStatus() {
         val rendered =
             styledInlineMarkdown(
