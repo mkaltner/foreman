@@ -124,12 +124,15 @@ export function Dashboard({
 
       <section className="dashboard-overview" aria-label="Foreman overview">
         <HealthPanel status={serviceStatus} connection={connection} now={now} clients={pairedClients} disabled={disabled} onRevokeClient={onRevokeClient} />
-        <div className="summary-strip">
-          <SummaryMetric label="Active" value={counts.active} icon="▶" onClick={() => updatePreferences({ ...preferences, filter: "active" })} />
-          <SummaryMetric label="Waiting" value={counts.waiting} icon="◷" onClick={() => updatePreferences({ ...preferences, filter: "waiting" })} />
-          <SummaryMetric label="Failed" value={counts.failed} icon="!" onClick={() => updatePreferences({ ...preferences, filter: "failed" })} />
-          <SummaryMetric label="Completed recently" value={counts.recent} icon="✓" onClick={() => updatePreferences({ ...preferences, filter: "recent" })} />
-        </div>
+        <aside className="summary-strip" aria-label="Operational summary">
+          <header><div><span className="eyebrow">Operational summary</span><strong>Work at a glance</strong></div><small>Live</small></header>
+          <div className="summary-grid">
+            <SummaryMetric label="Active" value={counts.active} icon="▶" onClick={() => updatePreferences({ ...preferences, filter: "active" })} />
+            <SummaryMetric label="Waiting" value={counts.waiting} icon="◷" onClick={() => updatePreferences({ ...preferences, filter: "waiting" })} />
+            <SummaryMetric label="Failed" value={counts.failed} icon="!" onClick={() => updatePreferences({ ...preferences, filter: "failed" })} />
+            <SummaryMetric label="Completed recently" value={counts.recent} icon="✓" onClick={() => updatePreferences({ ...preferences, filter: "recent" })} />
+          </div>
+        </aside>
       </section>
 
       <section className="dashboard-controls" aria-label="Dashboard filters">

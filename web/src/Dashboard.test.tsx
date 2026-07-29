@@ -66,6 +66,7 @@ describe("monitoring dashboard", () => {
     vi.setSystemTime(now);
     render(<Dashboard sessions={sessions} serviceStatus={status} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Operational summary" })).toHaveTextContent("Work at a glance");
     expect(screen.getByText("Foreman-owned fallback runtime")).toBeInTheDocument();
     expect(screen.getByText("SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();

@@ -200,7 +200,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .dashboard-heading{max-width:1440px;justify-content:space-between;align-items:center;margin:0 auto 20px;display:flex}
 .dashboard-heading h1{letter-spacing:-.8px;margin:3px 0 4px;font-size:30px}
 .dashboard-heading p{color:var(--muted);margin:0;font-size:13px}
-.dashboard-overview{max-width:1440px;grid-template-columns:minmax(470px,1.35fr) minmax(430px,1fr);gap:14px;margin:0 auto 14px;display:grid}
+.dashboard-overview{max-width:1440px;grid-template-columns:minmax(470px,1.35fr) minmax(430px,1fr);align-items:start;gap:14px;margin:0 auto 14px;display:grid}
 .health-panel,.summary-strip,.dashboard-controls,.dashboard-section{border:1px solid var(--border);background:var(--surface);border-radius:15px}
 .health-panel{padding:18px 20px}
 .health-title{justify-content:space-between;align-items:start;gap:12px;display:flex}
@@ -229,9 +229,13 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .client-identity{min-width:0;display:grid}.client-identity strong{white-space:nowrap;text-overflow:ellipsis;font-size:13px;overflow:hidden}.client-identity small,.client-row time,.client-note{color:var(--muted);font-size:11px}.client-row time{white-space:nowrap}
 .revoke-client{border:1px solid color-mix(in srgb,var(--danger) 28%,var(--border));background:var(--surface);color:var(--danger);border-radius:7px;padding:5px 8px;font-size:11px;font-weight:750}
 .client-note{margin:5px 0 0;line-height:1.45}
-.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;padding:1px;display:grid;overflow:hidden}
-.summary-metric{background:var(--surface);border:0;border-radius:11px;grid-template-columns:30px auto;grid-template-rows:auto auto;text-align:left;align-content:center;padding:15px;display:grid}
-.summary-metric:hover{background:var(--surface-alt)}
+.summary-strip{align-self:start;padding:17px;overflow:hidden}
+.summary-strip>header{justify-content:space-between;align-items:center;gap:12px;margin-bottom:13px;display:flex}
+.summary-strip>header>div{min-width:0;display:grid}.summary-strip>header strong{margin-top:3px;font-size:16px}.summary-strip>header>small{background:color-mix(in srgb,#17b26a 12%,var(--surface-alt));color:#067647;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:800}
+:root[data-theme=dark] .summary-strip>header>small{color:#6ce9a6}
+.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;display:grid}
+.summary-metric{border:1px solid var(--border);background:var(--surface-alt);border-radius:11px;grid-template-columns:30px auto;grid-template-rows:auto auto;text-align:left;align-content:center;min-height:72px;padding:12px;display:grid}
+.summary-metric:hover{border-color:color-mix(in srgb,var(--accent) 28%,var(--border));background:color-mix(in srgb,var(--accent-soft) 22%,var(--surface-alt))}
 .summary-metric>span{background:var(--surface-alt);color:var(--accent);border-radius:9px;grid-row:span 2;place-self:center start;place-items:center;width:27px;height:27px;margin-right:9px;font-size:11px;font-weight:900;display:grid}
 .summary-metric strong{font-size:20px;line-height:1}
 .summary-metric small{color:var(--muted);margin-top:3px;font-size:12px}
@@ -357,6 +361,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .dashboard-overview{grid-template-columns:1fr}
 .oldest-turn{grid-template-columns:minmax(0,1fr) auto}.oldest-activity{grid-column:1}.oldest-turn time{grid-column:2;grid-row:1}.oldest-turn>button{grid-column:2;grid-row:2}
 .health-panel{padding:15px}
+.summary-strip{padding:13px}
 .health-details{grid-template-columns:repeat(2,minmax(0,1fr))}
 .health-details .health-root{grid-column:span 2}
 .dashboard-controls{align-items:stretch;display:grid}
