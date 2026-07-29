@@ -312,6 +312,24 @@ class StateTests(unittest.TestCase):
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
 
+    def test_lists_and_revokes_devices_without_exposing_token_digests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            key, _ = state.create_pairing()
+            token = state.pair(key, "Work browser", "browser")
+            self.assertIsNotNone(token)
+
+            devices = state.list_devices()
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0]["name"], "Work browser")
+            self.assertEqual(devices[0]["type"], "browser")
+            self.assertNotIn("digest", devices[0])
+            self.assertNotIn(token or "", str(devices))
+            self.assertTrue(state.revoke_device(devices[0]["id"]))
+            self.assertFalse(state.authenticate(token or ""))
+            self.assertEqual(state.list_devices(), [])
+            self.assertFalse(state.revoke_device(devices[0]["id"]))
+
     def test_pairing_expires_at_its_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
@@ -779,6 +797,14 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
         )
         self.assertTrue(paired["deviceToken"].startswith("fmt_"))
+        paired_clients = await self.request("client.list")
+        self.assertEqual(len(paired_clients["clients"]), 1)
+        self.assertEqual(paired_clients["clients"][0]["name"], "Test phone")
+        self.assertEqual(paired_clients["clients"][0]["type"], "android")
+        self.assertTrue(paired_clients["clients"][0]["connected"])
+        self.assertTrue(paired_clients["clients"][0]["current"])
+        self.assertNotIn("digest", str(paired_clients))
+        self.assertNotIn(paired["deviceToken"], str(paired_clients))
         self.app.started_monotonic -= 12
         service_status = await self.request("service.status")
         self.assertEqual(service_status["foremanVersion"], "0.1.0-alpha.3")
@@ -1266,9 +1292,52 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 any(item.get("type") == "session.event" for item in tcp_events)
             )
             self.assertEqual(self.app.codex.prompts[-1]["text"], "From browser")
+            listed = await self.web_exchange("client.list")
+            browser_client = next(
+                item for item in listed["payload"]["clients"] if item["name"] == "Test browser"
+            )
+            phone_client = next(
+                item for item in listed["payload"]["clients"] if item["name"] == "Test phone"
+            )
+            self.assertTrue(browser_client["current"])
+            self.assertEqual(browser_client["type"], "browser")
+            self.assertFalse(phone_client["current"])
+            self.assertEqual(phone_client["type"], "android")
+            self.assertTrue(phone_client["connected"])
+            revoked = await self.web_exchange(
+                "client.revoke", {"clientId": phone_client["id"]}
+            )
+            self.assertTrue(revoked["payload"]["revoked"])
+            self.assertEqual(await reader.read(), b"")
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def test_revoke_invalidates_token_and_disconnects_its_live_browser(self) -> None:
+        paired = await self.web_exchange(
+            "pair",
+            {"pairingKey": self.web_pairing_key, "deviceName": "Revoked browser"},
+        )
+        token = paired["payload"]["deviceToken"]
+        listed = await self.web_exchange("client.list")
+        client = listed["payload"]["clients"][0]
+        self.assertTrue(client["current"])
+        self.assertTrue(client["connected"])
+        self.assertNotIn("digest", str(listed))
+        self.assertNotIn(token, str(listed))
+
+        revoked = await self.web_exchange("client.revoke", {"clientId": client["id"]})
+        self.assertTrue(revoked["payload"]["revoked"])
+        with self.assertRaises(ConnectionClosedError) as closed:
+            await self.websocket.recv()
+        self.assertIsNotNone(closed.exception.rcvd)
+        self.assertEqual(closed.exception.rcvd.code, 4003)
+        self.assertFalse(self.state.authenticate(token))
+
+        self.websocket = await connect(self.ws_url, proxy=None)
+        rejected = await self.web_exchange("authenticate", {"deviceToken": token})
+        self.assertEqual(rejected["type"], "error")
+        self.assertEqual(rejected["payload"]["code"], "unauthorized")
 
     async def test_rejects_malformed_binary_and_oversize_frames_and_cleans_up(self) -> None:
         await self.websocket.send("not json")

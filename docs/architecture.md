@@ -30,7 +30,7 @@ Linux files:
 - `foreman_service.py`: listener, request switch, repository discovery;
 - `codex.py`: app-server lifecycle, calls, and event normalization;
 - `protocol.py`: bounded JSONL frames;
-- `state.py`: one-time pairing and hashed device tokens;
+- `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 
 The React/TypeScript SPA under `web/` uses native WebSocket and local component
@@ -56,6 +56,8 @@ to turns the user opens or starts. The service stops after every subscribed turn
 is terminal or needs attention; it is not an always-running poller or push
 client.
 
-Only pairing keys, device-token SHA-256 digests, and device labels are persisted
-by Linux. Codex stores transcripts; Git supplies repository state. Foreman never
-offers arbitrary commands or Git writes.
+Only pairing keys and safe client authentication metadata (opaque IDs, token
+SHA-256 digests, labels, client types, and pairing times) are persisted by Linux.
+The authenticated client projection never returns a token or digest. Codex stores
+transcripts; Git supplies repository state. Foreman never offers arbitrary
+commands or Git writes.
