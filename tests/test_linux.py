@@ -14,8 +14,11 @@ from typing import Any
 
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "linux"))
+sys.path.insert(0, str(ROOT / "linux" / "vendor"))
 
 import protocol  # noqa: E402
+from websockets.asyncio.client import connect  # noqa: E402
+from websockets.exceptions import ConnectionClosedError, InvalidStatus  # noqa: E402
 from codex import (  # noqa: E402
     Codex,
     access_level,
@@ -934,6 +937,221 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.01)
         self.assertEqual(len(self.app.clients), 1)
+
+
+class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        repository_root = base / "projects"
+        repository = repository_root / "example"
+        repository.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        self.web_root = base / "web"
+        (self.web_root / "assets").mkdir(parents=True)
+        (self.web_root / "index.html").write_text("<main>Foreman</main>", encoding="utf-8")
+        (self.web_root / "assets" / "app.js").write_text("export {};", encoding="utf-8")
+        self.state = State(base / "state")
+        self.web_pairing_key, _ = self.state.create_pairing()
+        self.app = Foreman(
+            "127.0.0.1",
+            0,
+            repository_root,
+            self.state,
+            "fake-codex",
+            codex_factory=FakeCodex,
+            web_host="127.0.0.1",
+            web_port=0,
+            web_root=self.web_root,
+        )
+        await self.app.start()
+        assert self.app.web_server is not None
+        self.web_port = self.app.web_server.sockets[0].getsockname()[1]
+        self.ws_url = f"ws://127.0.0.1:{self.web_port}/ws"
+        self.websocket = await connect(
+            self.ws_url,
+            origin=f"http://127.0.0.1:{self.web_port}",
+            max_size=protocol.MAX_FRAME_BYTES,
+            proxy=None,
+        )
+        self.next_id = 0
+        self.web_events: list[dict[str, Any]] = []
+
+    async def asyncTearDown(self) -> None:
+        if self.websocket.protocol.state.name != "CLOSED":
+            await self.websocket.close()
+        await self.app.stop()
+        self.temporary.cleanup()
+
+    async def web_exchange(
+        self, message_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        self.next_id += 1
+        request_id = f"web-{self.next_id}"
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "version": 1,
+                    "id": request_id,
+                    "type": message_type,
+                    "payload": payload or {},
+                }
+            )
+        )
+        while True:
+            message = json.loads(await self.websocket.recv())
+            if message.get("id") == request_id:
+                return message
+            self.web_events.append(message)
+
+    async def http_get(self, path: str) -> tuple[str, dict[str, str], bytes]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.web_port)
+        writer.write(
+            f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.web_port}\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        head, body = raw.split(b"\r\n\r\n", 1)
+        lines = head.decode("iso-8859-1").split("\r\n")
+        headers = {
+            key.lower(): value.strip()
+            for line in lines[1:]
+            for key, value in [line.split(":", 1)]
+        }
+        return lines[0], headers, body
+
+    async def test_serves_static_assets_health_and_validates_origin(self) -> None:
+        status, headers, body = await self.http_get("/")
+        self.assertIn("200", status)
+        self.assertEqual(body, b"<main>Foreman</main>")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("default-src 'self'", headers["content-security-policy"])
+
+        status, headers, body = await self.http_get("/assets/app.js")
+        self.assertIn("200", status)
+        self.assertIn("immutable", headers["cache-control"])
+        self.assertEqual(body, b"export {};")
+
+        status, _, body = await self.http_get("/health")
+        self.assertIn("200", status)
+        health = json.loads(body)
+        self.assertTrue(health["foremanConnected"])
+        self.assertTrue(health["fallbackRuntimeActive"])
+        self.assertEqual(
+            health["codexRuntime"], "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
+        )
+
+        with self.assertRaises(InvalidStatus):
+            await connect(
+                self.ws_url,
+                origin="https://attacker.example",
+                proxy=None,
+            )
+
+    async def test_pair_authenticate_forward_events_and_coexist_with_tcp(self) -> None:
+        hello = await self.web_exchange("hello")
+        self.assertEqual(hello["type"], "hello.result")
+        paired = await self.web_exchange(
+            "pair",
+            {"pairingKey": self.web_pairing_key, "deviceName": "Test browser"},
+        )
+        token = paired["payload"]["deviceToken"]
+        await self.websocket.close()
+        self.websocket = await connect(self.ws_url, proxy=None)
+        authenticated = await self.web_exchange(
+            "authenticate", {"deviceToken": token}
+        )
+        self.assertTrue(authenticated["payload"]["authenticated"])
+
+        tcp_key, _ = self.state.create_pairing()
+        tcp_socket = self.app.server.sockets[0]
+        reader, writer = await asyncio.open_connection(*tcp_socket.getsockname()[:2])
+        tcp_id = 0
+        tcp_events: list[dict[str, Any]] = []
+
+        async def tcp_exchange(
+            message_type: str, payload: dict[str, Any] | None = None
+        ) -> dict[str, Any]:
+            nonlocal tcp_id
+            tcp_id += 1
+            request_id = f"tcp-web-{tcp_id}"
+            writer.write(
+                protocol.encode(
+                    {
+                        "version": 1,
+                        "id": request_id,
+                        "type": message_type,
+                        "payload": payload or {},
+                    }
+                )
+            )
+            await writer.drain()
+            while True:
+                message = protocol.decode(await reader.readline())
+                if message.get("id") == request_id:
+                    return message
+                tcp_events.append(message)
+
+        try:
+            self.assertEqual(
+                (await tcp_exchange(
+                    "pair", {"pairingKey": tcp_key, "deviceName": "Test phone"}
+                ))["type"],
+                "pair.result",
+            )
+            await tcp_exchange("session.subscribe", {"sessionId": "thread-new"})
+            started = await self.web_exchange(
+                "session.start", {"repositoryId": "example"}
+            )
+            self.assertEqual(started["payload"]["session"]["messages"], [])
+            prompted = await self.web_exchange(
+                "turn.prompt",
+                {"sessionId": "thread-new", "text": "From browser"},
+            )
+            self.assertTrue(prompted["payload"]["accepted"])
+            await tcp_exchange("ping")
+            self.assertTrue(
+                any(item.get("type") == "session.event" for item in self.web_events)
+            )
+            self.assertTrue(
+                any(item.get("type") == "session.event" for item in tcp_events)
+            )
+            self.assertEqual(self.app.codex.prompts[-1]["text"], "From browser")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def test_rejects_malformed_binary_and_oversize_frames_and_cleans_up(self) -> None:
+        await self.websocket.send("not json")
+        malformed = json.loads(await self.websocket.recv())
+        self.assertEqual(malformed["payload"]["code"], "protocolError")
+        self.assertEqual(malformed["payload"]["message"], "invalid JSON")
+
+        await self.websocket.send(b"binary")
+        binary = json.loads(await self.websocket.recv())
+        self.assertIn("binary", binary["payload"]["message"])
+        with self.assertRaises(ConnectionClosedError) as closed:
+            await self.websocket.recv()
+        self.assertIsNotNone(closed.exception.rcvd)
+        self.assertEqual(closed.exception.rcvd.code, 1003)
+
+        self.websocket = await connect(
+            self.ws_url,
+            max_size=protocol.MAX_FRAME_BYTES,
+            proxy=None,
+        )
+        await self.websocket.send("x" * (protocol.MAX_FRAME_BYTES + 1))
+        with self.assertRaises(ConnectionClosedError) as oversized:
+            await self.websocket.recv()
+        self.assertIsNotNone(oversized.exception.rcvd)
+        self.assertEqual(oversized.exception.rcvd.code, 1009)
+        for _ in range(50):
+            if not self.app.clients:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(len(self.app.clients), 0)
 
 
 if __name__ == "__main__":

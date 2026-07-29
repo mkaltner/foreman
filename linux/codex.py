@@ -98,6 +98,10 @@ class Codex:
         self._supported_methods: set[str] = set()
         self._model_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._access_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._websocket is not None
         self._stopping = False
 
     async def start(self) -> None:
