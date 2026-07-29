@@ -448,7 +448,8 @@ class Foreman:
         if not relative or relative in ("dashboard", "sessions", "settings") or relative.startswith("sessions/"):
             relative = "index.html"
         if not relative or not (
-            relative in ("index.html", "sw.js") or relative.startswith("assets/")
+            relative in ("index.html", "sw.js", "favicon.svg")
+            or relative.startswith("assets/")
         ):
             return None
         candidate = (self.web_root / relative).resolve()

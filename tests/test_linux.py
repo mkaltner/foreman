@@ -1094,6 +1094,9 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
             'self.addEventListener("notificationclick", () => {});',
             encoding="utf-8",
         )
+        (self.web_root / "favicon.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg"/>', encoding="utf-8"
+        )
         self.state = State(base / "state")
         self.web_pairing_key, _ = self.state.create_pairing()
         self.app = Foreman(
@@ -1195,6 +1198,12 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertIn("javascript", headers["content-type"])
         self.assertIn(b"notificationclick", body)
+
+        status, headers, body = await self.http_get("/favicon.svg")
+        self.assertIn("200", status)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("image/svg+xml", headers["content-type"])
+        self.assertIn(b"<svg", body)
 
         status, _, body = await self.http_get("/health")
         self.assertIn("200", status)
