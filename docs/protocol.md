@@ -44,9 +44,12 @@ Implemented types:
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
 `deviceToken`. `service.status` returns authenticated, user-facing host health:
 Foreman and Codex versions, uptime, runtime mode, listener ports, repository
-root, browser-connection count, and last successful Codex communication. It
-never includes pairing material, device tokens, environment variables, logs,
-or process details.
+root, aggregate browser/TCP client counts, last Codex event and successful
+request times, attach time, loaded/subscribed thread counts, and narrow runtime
+ownership diagnostics. Authenticated browsers receive `service.event` when safe
+aggregate client counts change; raw-TCP behavior is unchanged. Status never
+includes pairing material, device tokens, environment variables, logs, source
+addresses, or unrestricted process details.
 
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.

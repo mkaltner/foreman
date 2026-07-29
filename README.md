@@ -77,8 +77,8 @@ as an alternative.
 
 - Pair clients with a short-lived, six-digit, one-time code.
 - Reconnect with persistent token authentication and fresh authoritative state.
-- Supervise active, waiting, failed, and recently terminal work from a live
-  multi-session dashboard grouped by repository.
+- Supervise active, waiting, failed, stale, and recently terminal work from a
+  live dashboard with an attention queue, oldest-turn callout, and activity feed.
 - Discover Git repositories and browse active and recent Codex sessions.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
@@ -132,19 +132,24 @@ profile or device.
 on `8765`. If a firewall is enabled, allow only the listener needed by each
 trusted client or secure overlay.
 
-The SPA opens on a responsive operational dashboard with host/runtime health,
-live summary counts, compact active-session cards, elapsed turn time, a calm
-attention queue, repository groups, and recently terminal work. It also
+The SPA opens on a responsive operational dashboard with host/runtime and event
+freshness, connected-client counts, compact active-session cards, an
+oldest-active-turn callout, a calm attention queue, repository/workspace groups,
+and a bounded recent-activity feed. Dashboard typography is sized for quick
+scanning across desktop and mobile. It also
 supports the existing session list and real history; detailed live thinking,
 planning, command, and tool activity; new sessions; prompt, steer, and interrupt;
 descriptive model/reasoning/access menus; file-picker and clipboard images;
 archive/delete; opt-in browser notifications for background tabs; bounded
 reconnect without request replay; durable session URLs with browser Back,
 Forward, and refresh restoration; and responsive theme and accent controls.
-Dashboard data is live while the browser is connected. Recent completion data
-comes from current Codex state and events observed by this browser; it is not a
-permanent audit history. Approval and structured-input waits are identified,
-but must still be handled in another compatible Codex client.
+Dashboard data is live while the browser is connected. “No recent activity” is
+a conservative browser-only heuristic for active turns with no event for ten
+minutes; it never interrupts or changes Codex state. Recent completion and feed
+data come from current Codex state and events observed by this browser and are
+not a permanent audit history. **Other workspaces** contains session roots that
+do not map to a discovered Git repository. Approval and structured-input waits
+are identified, but must still be handled in another compatible Codex client.
 Browser notifications require HTTPS or localhost and work while Foreman remains
 open in a background tab. For another device on the LAN, put the web listener
 behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
@@ -266,6 +271,7 @@ does not stop Desktop's Codex runtime.
 - Android distribution is currently sideloaded.
 - Multi-host aggregation is not implemented.
 - Recent dashboard activity is not a persistent audit history.
+- Dashboard stale activity is an observation, not a failure or automatic action.
 - Web support remains experimental during the alpha.
 
 ## Alpha status

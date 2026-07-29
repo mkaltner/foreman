@@ -42,9 +42,11 @@ installed data directory so Node isn't part of the runtime.
 The dashboard uses the same session-summary projection rather than a parallel
 session model. It subscribes only to working and waiting sessions, coalesces
 high-frequency public activity updates, and keeps transcripts out of monitoring
-state. One shared browser clock updates active-turn elapsed times. Terminal
-events observed during the browser session provide a bounded recent list; no
-dashboard metrics or activity journal are persisted by the service.
+state. One shared browser clock updates active-turn, wait, freshness, and uptime
+labels. Discovered repository metadata separates Git repositories from other
+session workspaces. Lifecycle events observed during the browser session feed a
+coalesced 20-entry recent list; stale-turn observation and feed entries are not
+persisted by the service.
 
 Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed token store. Its cache is in memory and
