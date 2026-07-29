@@ -3,16 +3,34 @@
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/foreman_logo.png" alt="Foreman logo" width="128">
   <br>
-  <strong>Monitor. Orchestrate. Command.</strong>
+  <strong>A fast, self-hosted control plane for Codex.</strong>
 </p>
 
-Foreman is an early-alpha Linux user service and Android companion app for
-viewing and controlling local Codex sessions over an authenticated TCP
-connection.
+Foreman provides lightweight Android and web interfaces for monitoring and
+controlling Codex sessions running on Linux hosts. It connects directly to the
+local Codex app-server and is designed for fast, LAN-first operation.
+
+## Why Foreman?
+
+Foreman is for people who want a dedicated Codex monitoring interface, fast
+local interaction, and direct control of an always-on Linux host. It provides
+self-hosted Android and browser access, visibility across active and recent
+sessions, and controls for prompting, steering, interrupting, model, reasoning
+effort, and access level.
+
+## Foreman and Codex Remote
+
+OpenAI's [Codex Remote](https://learn.chatgpt.com/docs/remote-connections) is the
+first-party option for controlling Codex from the ChatGPT mobile app. It is a
+good fit for people who want remote control integrated with the broader ChatGPT
+experience.
+
+Foreman is aimed at users who prefer a dedicated, self-hosted, LAN-first
+interface and want direct access to their own Linux Codex host. It is designed
+for low-latency local use and does not attempt to replace every first-party
+Remote capability.
 
 ## Install
-
-Clone Foreman and run the rootless, offline installer from the repository:
 
 ```sh
 git clone https://github.com/mkaltner/foreman.git
@@ -20,14 +38,14 @@ cd foreman
 ./install.sh
 ```
 
-Then confirm the service and create a short-lived pairing code:
+Then verify the user service and create a short-lived pairing code:
 
 ```sh
 foreman status
 foreman pair
 ```
 
-To update an existing installation:
+To update:
 
 ```sh
 cd foreman
@@ -35,38 +53,47 @@ git pull
 ./install.sh
 ```
 
-Tagged Linux archives are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
-as an alternative when a Git checkout is not convenient. Android is currently
-installed by sideloading the signed release APK from the same release.
+Foreman requires Linux with user systemd, Python 3.10+, Git, and an authenticated
+`codex` CLI. Its pinned Python dependency is included, so installation does not
+require pip, a Python virtual environment, root access, or network access.
+Tagged Linux archives and signed Android APKs are available from
+[GitHub releases](https://github.com/mkaltner/foreman/releases) as an alternative.
 
-## Alpha status
+## Features
 
-Foreman is intentionally small and is ready for limited testing on trusted
-networks. Breaking behavior and incompatible Codex changes may occur during the
-alpha. Approval and structured-input requests must still be answered through
-another Codex client.
+- Pair clients with a short-lived, six-digit, one-time code.
+- Reconnect with persistent token authentication.
+- Discover Git repositories and browse active and recent Codex sessions.
+- List, read, start, resume, archive, and delete sessions.
+- Prompt, steer, and interrupt active work.
+- Stream live status, assistant deltas, tool activity, and progress updates.
+- Select installed models, supported reasoning efforts, and Codex access levels.
+- Attach up to four JPEG, PNG, or WebP images to a prompt or steer.
+- Notify Android devices when monitored turns finish or need attention.
+- Follow light, dark, or system themes with a configurable accent color.
+- Use dedicated Android and responsive web clients.
+- Install as a rootless user-level systemd service without pip or a Python venv.
 
-The current alpha can:
+## Android
 
-- pair multiple Android devices, each with a short-lived six-digit one-time
-  code;
-- list Git repositories below one configured root;
-- list and read real local Codex threads, grouped by active and recent status;
-- show user/assistant messages and compact command/tool activity;
-- render common Markdown, including headings, lists, emphasis, links, and code;
-- start or resume a thread, prompt it, steer an active turn, and interrupt it;
-- choose Codex access, installed model, and supported reasoning effort per turn;
-- attach up to four processed images to a prompt or steer;
-- refresh the session list with a pull gesture, and archive or permanently delete
-  inactive sessions with confirmation;
-- share Codex's Desktop app-server when available so work and live status remain
-  visible across clients;
-- stream assistant deltas, tool activity, progress messages, and terminal status;
-- optionally monitor active turns in an Android foreground service and notify
-  when they finish or need attention;
-- reconnect and refresh foregrounded sessions from Codex-authoritative state;
-- follow the Android system theme by default, with explicit light and dark
-  options and a purple Foreman palette.
+Download and sideload the signed APK from the matching tagged
+[GitHub release](https://github.com/mkaltner/foreman/releases). Run `foreman pair`
+on the Linux host, then enter the host name or IP address, pairing code, and a
+device name in the app. Port `8765` is used when no port is given. Run
+`foreman pair` again for each additional device.
+
+For development builds, open [`android`](android) in a current Android Studio.
+Android protects the persistent device token with Android Keystore.
+
+## Web
+
+Open `http://HOST:8766` on a trusted network. Run `foreman pair`, enter the
+six-digit code in the browser, and Foreman stores the resulting device token in
+that browser profile for future connections. Current Chrome, Firefox, and Edge
+releases are the target browsers.
+
+Browser storage does not provide Android Keystore protection. Use a dedicated,
+trusted browser profile and clear the Foreman site data to remove its token.
 
 ## Screenshots
 
@@ -83,81 +110,66 @@ The current alpha can:
   </tr>
 </table>
 
-Foreman does not provide standalone shell, HTTP, Git-operation, approval, or
-structured-input endpoints. Codex may still run tools and modify files according
-to the access level selected for a turn. The TCP connection is authenticated
-but not encrypted; use it only on a trusted private LAN or through a secure
-tunnel.
+## Architecture
 
-> [!CAUTION]
-> Do not expose Foreman's TCP port (`8765`) directly to the public internet.
-> Prefer a private overlay such as Tailscale or WireGuard, or a trusted LAN with
-> firewall rules limited to your devices. Pairing uses a six-digit, one-time
-> code that expires after ten minutes and throttles failed guesses per source
-> address. Have the phone ready, run `foreman pair` only when needed, and finish
-> pairing promptly—especially if the service is reachable beyond your LAN.
-
-> [!NOTE]
-> Foreman is alpha software built against Codex's evolving app-server interface.
-> The current integration is verified with `codex-cli 0.145.0`; a future Codex
-> update may require a matching Foreman update. Approval and structured-input
-> requests are detected as waiting states but must still be answered in another
-> Codex client.
-
-## Linux
-
-Requirements: Linux with user systemd, Python 3.10+, Git, and an authenticated
-`codex` CLI. The payload includes its pinned `websockets` dependency, so the
-installer doesn't need pip or Python venv support.
-
-The service listens on `0.0.0.0:8765`. Edit
-`~/.config/foreman/foreman.env`, then run `foreman restart`, if the repository
-root or listener should change.
-
-## Android
-
-Install the signed release APK from a tagged [GitHub release](https://github.com/mkaltner/foreman/releases).
-For development, open [`android`](android) in a current Android Studio and build
-the debug app. In Foreman enter the Linux host/IP, the output of `foreman pair`,
-and a device name. A host without a port uses `8765`; run `foreman pair` again
-for each additional device.
-
-Enable **Notify for active turns** in the app settings to monitor turns that you
-open or start. Android will ask for notification permission. While at least one
-turn is active, Foreman shows a low-priority foreground-service notification and
-keeps a separate authenticated connection to the Linux host. It posts an alert
-when a turn completes, fails, is interrupted, or needs attention, then stops
-monitoring that turn. This is on-demand rather than an always-running push
-service, so it cannot discover turns started elsewhere after Foreman is fully
-closed. Notification text intentionally omits session titles and transcript
-content so private prompts do not appear on the lock screen.
-
-Foreman attaches to Codex's shared Unix-socket app-server at
-`$CODEX_HOME/app-server-control/app-server-control.sock`. That Desktop socket is
-strictly attach-only: Foreman never removes, replaces, or launches a process on
-it. If attachment is unavailable, Foreman launches an independent owned runtime
-at `~/.local/state/foreman/codex-app-server.sock` and reports
-`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`. Set `FOREMAN_CODEX_SOCKET` to override
-the attach target. Android still connects only to Foreman's authenticated TCP
-service.
-
-The compact row above the composer selects access level, model, and reasoning
-effort. Access choices use Codex's installed permission profiles: ask the user,
-use automatic approval review, or grant full access. Photo Picker images are
-resized to a maximum 2048-pixel edge; each message accepts four images and at
-most 8 MiB of encoded image data. Foreman detects approval/input waits but
-cannot answer them yet; manual approvals remain available through another
-client on the shared thread.
-
-For local development, the installed-Codex proof is:
-
-```sh
-python3 scripts/codex_poc.py
-python3 -m unittest discover -s tests -v
+```text
+Android ─┐
+         ├─ Foreman service ── Codex app-server
+Browser ─┘
 ```
 
-See [installation](docs/install.md), [architecture](docs/architecture.md), and
-the [wire protocol](docs/protocol.md).
+- Android uses authenticated JSONL over TCP.
+- Browser clients use HTTP for static assets and WebSocket for control.
+- Foreman connects to Codex over a Unix-socket WebSocket.
 
-Version tags publish signed Android and Linux artifacts as described in the
-[release guide](docs/releasing.md).
+## Security
+
+> [!CAUTION]
+> Foreman transport is authenticated but not necessarily encrypted. Use a
+> trusted LAN, Tailscale, WireGuard, or a trusted reverse proxy that provides
+> encryption. Do not expose Foreman ports directly to the public internet.
+
+Pairing codes expire after ten minutes and are valid for one use. Failed guesses
+are throttled per source address. The service stores only device-token hashes;
+Android protects its token with Android Keystore, while browser tokens remain in
+the local browser profile without equivalent Keystore protection.
+
+A paired client can control Codex with the access level selected for a turn, so
+treat its token and network access as sensitive. Foreman does not expose a
+standalone shell, Git-write, approval, or structured-input endpoint, but Codex
+can still run tools and modify files according to its selected access profile.
+
+## Codex Desktop runtime
+
+Codex Desktop's default control socket is attach-only. Foreman never removes or
+replaces that socket and never launches a process on it. When shared attachment
+is unavailable, Foreman uses its own fallback socket and reports
+`SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE`.
+
+Fallback mode does not provide live co-presence with Codex Desktop. Stopping
+Foreman closes its attachment or stops only the fallback process it owns; it
+does not stop Desktop's Codex runtime.
+
+## Known limitations
+
+- Approval requests cannot yet be answered through Foreman.
+- Structured user-input requests are not yet supported.
+- Direct TCP and HTTP transport is not encrypted.
+- Desktop live co-presence requires successful shared-socket attachment.
+- Android distribution is currently sideloaded.
+- Multi-host aggregation is not implemented.
+- Web support remains experimental during the alpha.
+
+## Alpha status
+
+Foreman is usable but still evolving. Breaking protocol or configuration
+changes may occur, Android is currently distributed by sideloading, and web
+support remains experimental. Foreman is not production-ready. Issues and
+feedback are welcome in the [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
+
+## Documentation
+
+- [Installation guide](docs/install.md)
+- [Architecture](docs/architecture.md)
+- [Protocol](docs/protocol.md)
+- [Release guide](docs/releasing.md)
