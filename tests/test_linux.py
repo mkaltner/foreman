@@ -78,6 +78,13 @@ class FakeCodex:
         self.is_connected = True
         self.version = "0.145.0"
         self.last_communication = 1_720_000_000
+        self.last_event = 1_720_000_001
+        self.last_successful_request = 1_720_000_002
+        self.attached_at = 1_720_000_003
+        self._loaded = {"thread-1", "thread-2"}
+        self._subscribed = {"thread-1"}
+        self.socket_path = Path("/run/user/1000/codex.sock")
+        self.process = None
         self.active: set[str] = set()
         self.archived: list[str] = []
         self.deleted: list[str] = []
@@ -779,10 +786,30 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service_status["codex"]["mode"], "fallback")
         self.assertEqual(service_status["codex"]["version"], "0.145.0")
         self.assertTrue(service_status["codex"]["lastCommunication"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["lastEvent"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["lastSuccessfulRequest"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["attachedAt"].endswith("+00:00"))
+        self.assertEqual(service_status["codex"]["loadedThreadCount"], 2)
+        self.assertEqual(service_status["codex"]["subscribedThreadCount"], 1)
+        self.assertFalse(service_status["codex"]["ownedByForeman"])
+        self.assertIsNone(service_status["codex"]["appServerPid"])
+        self.assertEqual(service_status["activeTcpConnections"], 1)
+        self.assertEqual(service_status["activeBrowserConnections"], 0)
         self.assertEqual(service_status["listeners"]["tcpPort"], self.app.server.sockets[0].getsockname()[1])
         self.assertEqual(service_status["repositoryRoot"], str(self.repository_root.resolve()))
         self.assertNotIn("deviceToken", str(service_status))
         self.assertNotIn(self.pairing_key, str(service_status))
+        owned = type("OwnedProcess", (), {"pid": 321, "returncode": None})()
+        self.app.codex.process = owned
+        owned_status = await self.request("service.status")
+        self.assertTrue(owned_status["codex"]["ownedByForeman"])
+        self.assertEqual(owned_status["codex"]["appServerPid"], 321)
+        self.app.codex.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
+        shared_status = await self.request("service.status")
+        self.assertFalse(shared_status["codex"]["ownedByForeman"])
+        self.assertIsNone(shared_status["codex"]["appServerPid"])
+        self.app.codex.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
+        self.app.codex.process = None
         repositories = (await self.request("repository.list"))["repositories"]
         self.assertEqual(repositories[0]["path"], "example")
         self.assertTrue(repositories[0]["dirty"])
@@ -1176,6 +1203,7 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         service_status = await self.web_exchange("service.status")
         self.assertEqual(service_status["payload"]["listeners"]["webPort"], self.web_port)
         self.assertEqual(service_status["payload"]["activeBrowserConnections"], 1)
+        self.assertEqual(service_status["payload"]["activeTcpConnections"], 0)
 
         tcp_key, _ = self.state.create_pairing()
         tcp_socket = self.app.server.sockets[0]
@@ -1213,6 +1241,13 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ))["type"],
                 "pair.result",
             )
+            client_status = await self.web_exchange("service.status")
+            self.assertEqual(client_status["payload"]["activeTcpConnections"], 1)
+            self.assertTrue(any(
+                event.get("type") == "service.event"
+                and event.get("payload", {}).get("activeTcpConnections") == 1
+                for event in self.web_events
+            ))
             await tcp_exchange("session.subscribe", {"sessionId": "thread-new"})
             started = await self.web_exchange(
                 "session.start", {"repositoryId": "example"}

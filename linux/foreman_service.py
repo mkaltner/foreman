@@ -198,6 +198,21 @@ class Foreman:
             *(client.send(outgoing) for client in targets), return_exceptions=True
         )
 
+    async def broadcast_service_status(self) -> None:
+        outgoing = {
+            "version": VERSION,
+            "type": "service.event",
+            "payload": self.service_status(),
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated and client.websocket is not None
+            ),
+            return_exceptions=True,
+        )
+
     def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
         observed_at = event.get("observedAt")
@@ -207,6 +222,8 @@ class Foreman:
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
+                if projected_status != overlay.get("status"):
+                    overlay["statusChangedAt"] = observed_at
                 overlay["status"] = projected_status
                 overlay["attention"] = projected_status == "waiting"
             if projected_status in ("working", "waiting"):
@@ -328,6 +345,8 @@ class Foreman:
             pass
         finally:
             self.clients.discard(client)
+            if client.authenticated:
+                await self.broadcast_service_status()
             try:
                 if client.writer is not None:
                     client.writer.close()
@@ -362,6 +381,8 @@ class Foreman:
             pass
         finally:
             self.clients.discard(client)
+            if client.authenticated:
+                await self.broadcast_service_status()
 
     async def handle_request(
         self, client: Client, request: dict[str, Any]
@@ -369,6 +390,8 @@ class Foreman:
         try:
             result = await self.dispatch(client, request)
             await client.send(response(request, result))
+            if request["type"] in ("pair", "authenticate") and client.authenticated:
+                await self.broadcast_service_status()
         except PermissionError as exc:
             await client.send(error(request, "unauthorized", str(exc)))
         except (ValueError, CodexError) as exc:
@@ -487,6 +510,17 @@ class Foreman:
         else:
             mode = "fallback"
         last_communication = getattr(self.codex, "last_communication", None)
+        last_event = getattr(self.codex, "last_event", None)
+        last_successful_request = getattr(
+            self.codex, "last_successful_request", None
+        )
+        attached_at = getattr(self.codex, "attached_at", None)
+        owned_process = getattr(self.codex, "process", None)
+        owns_current_runtime = (
+            mode == "fallback"
+            and owned_process is not None
+            and getattr(owned_process, "returncode", None) is None
+        )
         tcp_port = self.port
         if self.server and self.server.sockets:
             tcp_port = self.server.sockets[0].getsockname()[1]
@@ -507,6 +541,20 @@ class Foreman:
                     if isinstance(last_communication, (int, float))
                     else None
                 ),
+                "lastEvent": self.iso_timestamp(last_event),
+                "lastSuccessfulRequest": self.iso_timestamp(last_successful_request),
+                "attachedAt": self.iso_timestamp(attached_at),
+                "loadedThreadCount": len(getattr(self.codex, "_loaded", set())),
+                "subscribedThreadCount": len(
+                    getattr(self.codex, "_subscribed", set())
+                ),
+                "ownedByForeman": owns_current_runtime,
+                "appServerPid": (
+                    getattr(owned_process, "pid", None)
+                    if owns_current_runtime
+                    else None
+                ),
+                "socketPath": str(getattr(self.codex, "socket_path", "")) or None,
             },
             "listeners": {"tcpPort": tcp_port, "webPort": web_port},
             "repositoryRoot": str(self.repository_root),
@@ -515,7 +563,20 @@ class Foreman:
                 for connected in self.clients
                 if connected.authenticated and connected.websocket is not None
             ),
+            "activeTcpConnections": sum(
+                1
+                for connected in self.clients
+                if connected.authenticated and connected.writer is not None
+            ),
         }
+
+    @staticmethod
+    def iso_timestamp(value: Any) -> str | None:
+        return (
+            datetime.fromtimestamp(value, timezone.utc).isoformat()
+            if isinstance(value, (int, float))
+            else None
+        )
 
     async def dispatch(
         self, client: Client, request: dict[str, Any]
