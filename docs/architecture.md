@@ -30,7 +30,7 @@ Linux files:
 - `foreman_service.py`: listener, request switch, repository discovery;
 - `codex.py`: app-server lifecycle, calls, and event normalization;
 - `protocol.py`: bounded JSONL frames;
-- `state.py`: one-time pairing and hashed device tokens;
+- `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 
 The React/TypeScript SPA under `web/` uses native WebSocket and local component
@@ -42,9 +42,11 @@ installed data directory so Node isn't part of the runtime.
 The dashboard uses the same session-summary projection rather than a parallel
 session model. It subscribes only to working and waiting sessions, coalesces
 high-frequency public activity updates, and keeps transcripts out of monitoring
-state. One shared browser clock updates active-turn elapsed times. Terminal
-events observed during the browser session provide a bounded recent list; no
-dashboard metrics or activity journal are persisted by the service.
+state. One shared browser clock updates active-turn, wait, freshness, and uptime
+labels. Discovered repository metadata separates Git repositories from other
+session workspaces. Lifecycle events observed during the browser session feed a
+coalesced 20-entry recent list; stale-turn observation and feed entries are not
+persisted by the service.
 
 Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed token store. Its cache is in memory and
@@ -54,6 +56,8 @@ to turns the user opens or starts. The service stops after every subscribed turn
 is terminal or needs attention; it is not an always-running poller or push
 client.
 
-Only pairing keys, device-token SHA-256 digests, and device labels are persisted
-by Linux. Codex stores transcripts; Git supplies repository state. Foreman never
-offers arbitrary commands or Git writes.
+Only pairing keys and safe client authentication metadata (opaque IDs, token
+SHA-256 digests, labels, client types, and pairing times) are persisted by Linux.
+The authenticated client projection never returns a token or digest. Codex stores
+transcripts; Git supplies repository state. Foreman never offers arbitrary
+commands or Git writes.

@@ -9,6 +9,7 @@ const listeners = new Set<Listener>();
 function subscribe(listener: Listener): () => void {
   listeners.add(listener);
   if (interval === null) {
+    current = Date.now();
     interval = window.setInterval(() => {
       current = Date.now();
       listeners.forEach((notify) => notify());
@@ -24,7 +25,7 @@ function subscribe(listener: Listener): () => void {
 }
 
 function snapshot(): number {
-  return current;
+  return interval === null ? Date.now() : current;
 }
 
 export function useSharedClock(): number {

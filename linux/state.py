@@ -72,7 +72,9 @@ class State:
         key = self._locked(update)
         return key, expires_at
 
-    def pair(self, key: str, device_name: str) -> str | None:
+    def pair(
+        self, key: str, device_name: str, device_type: str = "unknown"
+    ) -> str | None:
         key_digest = _digest(key)
         device_token = _token("fmt_", 32)
 
@@ -97,8 +99,10 @@ class State:
                 return None
             data.setdefault("devices", []).append(
                 {
+                    "id": _token("fmc_", 12),
                     "digest": _digest(device_token),
                     "name": device_name[:80],
+                    "type": device_type if device_type in ("browser", "android") else "unknown",
                     "createdAt": now,
                 }
             )
@@ -107,12 +111,57 @@ class State:
         return self._locked(update)
 
     def authenticate(self, token: str) -> bool:
+        return self.authenticate_device(token) is not None
+
+    def authenticate_device(self, token: str) -> dict[str, Any] | None:
         candidate = _digest(token)
 
-        def update(data: dict[str, Any]) -> bool:
-            return any(
-                hmac.compare_digest(item.get("digest", ""), candidate)
-                for item in data.get("devices", [])
+        def update(data: dict[str, Any]) -> dict[str, Any] | None:
+            item = next(
+                (
+                    device
+                    for device in data.get("devices", [])
+                    if hmac.compare_digest(device.get("digest", ""), candidate)
+                ),
+                None,
             )
+            if item is None:
+                return None
+            self._ensure_device_id(item)
+            return self._public_device(item)
+
+        return self._locked(update)
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        def update(data: dict[str, Any]) -> list[dict[str, Any]]:
+            devices = data.get("devices", [])
+            for item in devices:
+                self._ensure_device_id(item)
+            return [self._public_device(item) for item in devices]
+
+        return self._locked(update)
+
+    def revoke_device(self, device_id: str) -> bool:
+        def update(data: dict[str, Any]) -> bool:
+            devices = data.get("devices", [])
+            for item in devices:
+                self._ensure_device_id(item)
+            remaining = [item for item in devices if item.get("id") != device_id]
+            data["devices"] = remaining
+            return len(remaining) != len(devices)
 
         return bool(self._locked(update))
+
+    @staticmethod
+    def _ensure_device_id(item: dict[str, Any]) -> None:
+        if not isinstance(item.get("id"), str) or not item["id"]:
+            item["id"] = _token("fmc_", 12)
+
+    @staticmethod
+    def _public_device(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item["id"],
+            "name": item.get("name") if isinstance(item.get("name"), str) else "Foreman client",
+            "type": item.get("type") if item.get("type") in ("browser", "android") else "unknown",
+            "createdAt": item.get("createdAt") if isinstance(item.get("createdAt"), int) else None,
+        }

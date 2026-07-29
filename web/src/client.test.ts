@@ -46,6 +46,11 @@ class MockSocket {
     this.readyState = WebSocket.CLOSED;
     this.onclose?.(new CloseEvent("close", { code: 1006 }));
   }
+
+  revoke() {
+    this.readyState = WebSocket.CLOSED;
+    this.onclose?.(new CloseEvent("close", { code: 4003, reason: "Device token revoked" }));
+  }
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -128,5 +133,31 @@ describe("web client pairing, authentication, and reconnect", () => {
     expect(sentTypes.filter((type) => type === "turn.prompt")).toHaveLength(1);
     expect(sentTypes.filter((type) => type === "authenticate")).toHaveLength(2);
     client.disconnect();
+  });
+
+  it("stops reconnecting and requests fresh pairing when its token is revoked", async () => {
+    const sockets: MockSocket[] = [];
+    const timers: Array<() => void> = [];
+    const rejected = vi.fn();
+    const onState = vi.fn();
+    const client = new ForemanWebClient(
+      { onEvent: vi.fn(), onState, onAuthenticationRejected: rejected },
+      () => {
+        const socket = new MockSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      (callback) => {
+        timers.push(callback);
+        return timers.length;
+      },
+    );
+    await client.start(parseEndpoint("codex.local", 8766, "http:"), "fmt_browser", async () => undefined);
+
+    sockets[0].revoke();
+
+    expect(rejected).toHaveBeenCalledWith(expect.stringContaining("token was revoked"));
+    expect(onState).toHaveBeenLastCalledWith("disconnected", expect.stringContaining("token was revoked"));
+    expect(timers).toHaveLength(0);
   });
 });

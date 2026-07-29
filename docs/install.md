@@ -88,11 +88,14 @@ After authentication it opens on the live dashboard. **Sessions** retains the
 conversation list and full interaction view; **Settings** contains appearance,
 notification, and connection preferences.
 
-The dashboard shows current session summaries, repository groups, attention
-states, recently observed terminal work, and Foreman/Codex health while the
-browser is connected. Approval and structured-input waits must be resolved in
-another compatible Codex client. Recent activity is intentionally not a
-persistent audit history.
+The dashboard shows current session summaries, repository and non-Git workspace
+groups, attention states, oldest active work, event freshness, connected-client
+counts, a disclosure for paired-client token revocation, and a bounded recent
+feed while the browser is connected. Revocation disconnects that client but
+does not delete its sessions. “No recent
+activity” is a ten-minute browser heuristic and never changes a turn. Approval
+and structured-input waits must be resolved in another compatible Codex client.
+Recent activity is intentionally not a persistent audit history.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.
 Browsers require HTTPS or localhost for system notifications; plain LAN HTTP

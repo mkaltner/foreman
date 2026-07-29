@@ -95,6 +95,7 @@ export interface ClientHooks {
   onEvent: (message: WireMessage) => void;
   onState: (state: ConnectionState, detail?: string) => void;
   onHello?: (hello: HelloPayload) => void;
+  onAuthenticationRejected?: (detail: string) => void;
 }
 
 export class ForemanWebClient {
@@ -241,9 +242,17 @@ export class ForemanWebClient {
           reject(new ForemanError("Cannot connect to Foreman", "unavailable"));
         }
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (generation !== this.generation) return;
         this.socket = null;
+        if (event.code === 4003) {
+          const detail = "This client token was revoked. Pair this browser again to reconnect.";
+          this.reconnectEnabled = false;
+          this.rejectPending(new ForemanError(detail, "unauthorized"));
+          this.hooks.onState("disconnected", detail);
+          this.hooks.onAuthenticationRejected?.(detail);
+          return;
+        }
         const detail = settled ? "Connection lost" : "Cannot connect to Foreman";
         if (!settled) {
           settled = true;

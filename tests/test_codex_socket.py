@@ -362,12 +362,18 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapter.subscribe_thread("thread-shared")
         await adapter.prompt("thread-shared", "once")
         await adapter.interrupt("thread-shared", "turn-one")
+        shared_attached_at = adapter.attached_at
         self.assertEqual(server.methods.count("turn/start"), 1)
         self.assertEqual(server.methods.count("turn/interrupt"), 1)
 
         await server.stop()
         for _ in range(100):
-            if adapter.process is not None and adapter._websocket is not None:
+            if (
+                adapter.process is not None
+                and adapter._websocket is not None
+                and adapter.attached_at is not None
+                and adapter.attached_at != shared_attached_at
+            ):
                 break
             await asyncio.sleep(0.05)
         self.assertIsNotNone(adapter.process)

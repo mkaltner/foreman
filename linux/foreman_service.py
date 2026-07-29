@@ -60,6 +60,7 @@ class Client:
     peer: str
     websocket: ServerConnection | None = None
     authenticated: bool = False
+    device_id: str | None = None
     subscriptions: set[str] = field(default_factory=set)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -198,6 +199,21 @@ class Foreman:
             *(client.send(outgoing) for client in targets), return_exceptions=True
         )
 
+    async def broadcast_service_status(self) -> None:
+        outgoing = {
+            "version": VERSION,
+            "type": "service.event",
+            "payload": self.service_status(),
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated and client.websocket is not None
+            ),
+            return_exceptions=True,
+        )
+
     def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
         observed_at = event.get("observedAt")
@@ -207,6 +223,8 @@ class Foreman:
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
+                if projected_status != overlay.get("status"):
+                    overlay["statusChangedAt"] = observed_at
                 overlay["status"] = projected_status
                 overlay["attention"] = projected_status == "waiting"
             if projected_status in ("working", "waiting"):
@@ -328,6 +346,8 @@ class Foreman:
             pass
         finally:
             self.clients.discard(client)
+            if client.authenticated:
+                await self.broadcast_service_status()
             try:
                 if client.writer is not None:
                     client.writer.close()
@@ -362,6 +382,8 @@ class Foreman:
             pass
         finally:
             self.clients.discard(client)
+            if client.authenticated:
+                await self.broadcast_service_status()
 
     async def handle_request(
         self, client: Client, request: dict[str, Any]
@@ -369,6 +391,10 @@ class Foreman:
         try:
             result = await self.dispatch(client, request)
             await client.send(response(request, result))
+            if request["type"] in ("pair", "authenticate") and client.authenticated:
+                await self.broadcast_service_status()
+            elif request["type"] == "client.revoke":
+                await self.disconnect_device(result["clientId"])
         except PermissionError as exc:
             await client.send(error(request, "unauthorized", str(exc)))
         except (ValueError, CodexError) as exc:
@@ -422,7 +448,8 @@ class Foreman:
         if not relative or relative in ("dashboard", "sessions", "settings") or relative.startswith("sessions/"):
             relative = "index.html"
         if not relative or not (
-            relative in ("index.html", "sw.js") or relative.startswith("assets/")
+            relative in ("index.html", "sw.js", "favicon.svg")
+            or relative.startswith("assets/")
         ):
             return None
         candidate = (self.web_root / relative).resolve()
@@ -487,6 +514,17 @@ class Foreman:
         else:
             mode = "fallback"
         last_communication = getattr(self.codex, "last_communication", None)
+        last_event = getattr(self.codex, "last_event", None)
+        last_successful_request = getattr(
+            self.codex, "last_successful_request", None
+        )
+        attached_at = getattr(self.codex, "attached_at", None)
+        owned_process = getattr(self.codex, "process", None)
+        owns_current_runtime = (
+            mode == "fallback"
+            and owned_process is not None
+            and getattr(owned_process, "returncode", None) is None
+        )
         tcp_port = self.port
         if self.server and self.server.sockets:
             tcp_port = self.server.sockets[0].getsockname()[1]
@@ -507,6 +545,20 @@ class Foreman:
                     if isinstance(last_communication, (int, float))
                     else None
                 ),
+                "lastEvent": self.iso_timestamp(last_event),
+                "lastSuccessfulRequest": self.iso_timestamp(last_successful_request),
+                "attachedAt": self.iso_timestamp(attached_at),
+                "loadedThreadCount": len(getattr(self.codex, "_loaded", set())),
+                "subscribedThreadCount": len(
+                    getattr(self.codex, "_subscribed", set())
+                ),
+                "ownedByForeman": owns_current_runtime,
+                "appServerPid": (
+                    getattr(owned_process, "pid", None)
+                    if owns_current_runtime
+                    else None
+                ),
+                "socketPath": str(getattr(self.codex, "socket_path", "")) or None,
             },
             "listeners": {"tcpPort": tcp_port, "webPort": web_port},
             "repositoryRoot": str(self.repository_root),
@@ -515,7 +567,73 @@ class Foreman:
                 for connected in self.clients
                 if connected.authenticated and connected.websocket is not None
             ),
+            "activeTcpConnections": sum(
+                1
+                for connected in self.clients
+                if connected.authenticated and connected.writer is not None
+            ),
         }
+
+    def paired_clients(self, requester: Client) -> list[dict[str, Any]]:
+        projected = []
+        for device in self.state.list_devices():
+            connections = [
+                connected
+                for connected in self.clients
+                if connected.authenticated and connected.device_id == device["id"]
+            ]
+            transport_types = {
+                "browser" if connected.websocket is not None else "android"
+                for connected in connections
+            }
+            stored_type = device.get("type", "unknown")
+            client_type = (
+                next(iter(transport_types))
+                if len(transport_types) == 1
+                else "mixed" if transport_types
+                else stored_type
+            )
+            projected.append(
+                {
+                    "id": device["id"],
+                    "name": device["name"],
+                    "type": client_type,
+                    "pairedAt": self.iso_timestamp(device.get("createdAt")),
+                    "connected": bool(connections),
+                    "connectionCount": len(connections),
+                    "current": requester.device_id == device["id"],
+                }
+            )
+        return sorted(
+            projected,
+            key=lambda item: (not item["connected"], not item["current"], item["name"].lower()),
+        )
+
+    async def disconnect_device(self, device_id: str) -> None:
+        targets = [client for client in self.clients if client.device_id == device_id]
+        for target in targets:
+            target.authenticated = False
+            target.device_id = None
+        await asyncio.gather(
+            *(self.close_client(target) for target in targets), return_exceptions=True
+        )
+        await self.broadcast_service_status()
+
+    @staticmethod
+    async def close_client(client: Client) -> None:
+        if client.websocket is not None:
+            await client.websocket.close(4003, "Device token revoked")
+        elif client.writer is not None:
+            client.writer.close()
+            await client.writer.wait_closed()
+
+    @staticmethod
+    def iso_timestamp(value: Any) -> str | None:
+        return (
+            datetime.fromtimestamp(value, timezone.utc).isoformat()
+            if isinstance(value, (int, float))
+            else None
+        )
 
     async def dispatch(
         self, client: Client, request: dict[str, Any]
@@ -548,17 +666,21 @@ class Foreman:
                 raise PermissionError("too many pairing attempts; try again later")
             key = required_text(payload, "pairingKey", 100)
             name = required_text(payload, "deviceName", 80)
-            token = self.state.pair(key, name)
+            device_type = "browser" if client.websocket is not None else "android"
+            token = self.state.pair(key, name, device_type)
             if not token:
                 self.pairing_limiter.failed(client.peer)
                 raise PermissionError("pairing key is invalid or expired")
             self.pairing_limiter.succeeded(client.peer)
             client.authenticated = True
+            client.device_id = self.state.authenticate_device(token)["id"]
             return {"deviceToken": token}
         if message_type == "authenticate":
             token = required_text(payload, "deviceToken", 200)
-            client.authenticated = self.state.authenticate(token)
-            if not client.authenticated:
+            device = self.state.authenticate_device(token)
+            client.authenticated = device is not None
+            client.device_id = device["id"] if device else None
+            if device is None:
                 raise PermissionError("device token is invalid")
             return {"authenticated": True}
         if message_type == "ping":
@@ -570,6 +692,13 @@ class Foreman:
             return {"repositories": await asyncio.to_thread(self.repositories)}
         if message_type == "service.status":
             return self.service_status()
+        if message_type == "client.list":
+            return {"clients": self.paired_clients(client)}
+        if message_type == "client.revoke":
+            client_id = required_text(payload, "clientId", 100)
+            if not self.state.revoke_device(client_id):
+                raise ValueError("client is no longer paired")
+            return {"revoked": True, "clientId": client_id}
         if message_type == "model.list":
             return {
                 "models": await self.codex.list_models(

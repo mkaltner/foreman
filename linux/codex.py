@@ -101,6 +101,9 @@ class Codex:
         self._access_cache: tuple[float, list[dict[str, Any]]] | None = None
         self.version: str | None = None
         self.last_communication: float | None = None
+        self.last_event: float | None = None
+        self.last_successful_request: float | None = None
+        self.attached_at: float | None = None
         self._stopping = False
 
     @property
@@ -235,6 +238,7 @@ class Codex:
         )
         await self.notify("initialized")
         await self._refresh_and_subscribe()
+        self.attached_at = time.time()
 
     async def _launch_fallback_app_server(self) -> None:
         if self.socket_path != self.fallback_socket_path:
@@ -432,6 +436,7 @@ class Codex:
                 future.cancel()
         if "error" in message:
             raise CodexError(message["error"].get("message", "Codex request failed"))
+        self.last_successful_request = time.time()
         return message["result"]
 
     async def _read(self, websocket: Any) -> None:
@@ -449,12 +454,14 @@ class Codex:
                     if future and not future.done():
                         future.set_result(message)
                     continue
+                self.last_event = time.time()
                 self._remember_settings_event(message)
                 await self.on_event(message)
         except Exception as error:
             failure = error
         if self._websocket is websocket:
             self._websocket = None
+            self.attached_at = None
             self._loaded.clear()
             reason = f"Codex app-server connection closed: {failure or 'closed'}"
             self._fail_pending(reason)

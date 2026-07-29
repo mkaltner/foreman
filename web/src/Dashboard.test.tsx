@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Dashboard, ElapsedTime } from "./Dashboard";
 import type { ServiceStatus, SessionSummary } from "./protocol";
@@ -66,6 +66,7 @@ describe("monitoring dashboard", () => {
     vi.setSystemTime(now);
     render(<Dashboard sessions={sessions} serviceStatus={status} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Operational summary" })).toHaveTextContent("Work at a glance");
     expect(screen.getByText("Foreman-owned fallback runtime")).toBeInTheDocument();
     expect(screen.getByText("SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
@@ -106,5 +107,46 @@ describe("monitoring dashboard", () => {
     rerender(<Dashboard {...props} serviceStatus={{ ...status, codex: { ...status.codex, connected: false, mode: "unavailable" } }} />);
     expect(screen.getByText("Codex unavailable")).toBeInTheDocument();
     expect(screen.getByText("Runtime needs attention")).toBeInTheDocument();
+  });
+
+  it("shows freshness, client counts, route details, and runtime disclosure", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    render(<Dashboard sessions={[sessions[0]]} repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} serviceStatus={{ ...status, activeTcpConnections: 1, codex: { ...status.codex, mode: "shared", lastEvent: new Date(now - 3000).toISOString(), lastSuccessfulRequest: new Date(now - 8000).toISOString(), attachedAt: new Date(now - 60_000).toISOString(), loadedThreadCount: 4, subscribedThreadCount: 2, ownedByForeman: false, appServerPid: 123 } }} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getAllByText("Last Codex event: 3s ago")).toHaveLength(2);
+    expect(screen.getByText("2 browser · 1 Android")).toBeInTheDocument();
+    expect(screen.getByText("4 loaded · 2 subscribed")).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-5.6 · High · auto")).toHaveLength(2);
+    fireEvent.click(screen.getByText("Runtime details"));
+    expect(screen.getByText("123")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Repositories" })).toBeInTheDocument();
+  });
+
+  it("lists paired clients and confirms token revocation", async () => {
+    const revoke = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Dashboard sessions={[]} serviceStatus={status} pairedClients={[
+      { id: "browser", name: "Office browser", type: "browser", pairedAt: new Date(now - 60_000).toISOString(), connected: true, connectionCount: 1, current: true },
+      { id: "phone", name: "Pixel", type: "android", pairedAt: new Date(now - 120_000).toISOString(), connected: false, connectionCount: 0, current: false },
+    ]} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} onRevokeClient={revoke} />);
+
+    fireEvent.click(screen.getByText(/Connected clients and paired tokens/));
+    expect(screen.getByText("Office browser")).toBeInTheDocument();
+    expect(screen.getByText("Pixel")).toBeInTheDocument();
+    expect(screen.getByText(/Browser · 1 connection · This browser/)).toBeInTheDocument();
+    expect(screen.getByText(/Android · Not connected/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke token for Office browser" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("sign out this browser immediately"));
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ id: "browser" })));
+  });
+
+  it("returns a dismissed attention item after a material status change", () => {
+    const waiting = sessions[1];
+    const props = { serviceStatus: status, connection: "connected" as const, disabled: false, onOpen: vi.fn(), onInterrupt: vi.fn(), onRefresh: vi.fn() };
+    const { rerender } = render(<Dashboard {...props} sessions={[waiting]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Deploy release")).not.toBeInTheDocument();
+    rerender(<Dashboard {...props} sessions={[{ ...waiting, status: "working", waitType: null, lastActivity: Date.now() / 1000 }]} />);
+    expect(screen.getAllByText("Deploy release").length).toBeGreaterThan(0);
   });
 });

@@ -78,6 +78,13 @@ class FakeCodex:
         self.is_connected = True
         self.version = "0.145.0"
         self.last_communication = 1_720_000_000
+        self.last_event = 1_720_000_001
+        self.last_successful_request = 1_720_000_002
+        self.attached_at = 1_720_000_003
+        self._loaded = {"thread-1", "thread-2"}
+        self._subscribed = {"thread-1"}
+        self.socket_path = Path("/run/user/1000/codex.sock")
+        self.process = None
         self.active: set[str] = set()
         self.archived: list[str] = []
         self.deleted: list[str] = []
@@ -304,6 +311,24 @@ class StateTests(unittest.TestCase):
             raw = Path(directory, "state.json").read_text(encoding="utf-8")
             self.assertNotIn(key, raw)
             self.assertNotIn(token or "", raw)
+
+    def test_lists_and_revokes_devices_without_exposing_token_digests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            key, _ = state.create_pairing()
+            token = state.pair(key, "Work browser", "browser")
+            self.assertIsNotNone(token)
+
+            devices = state.list_devices()
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0]["name"], "Work browser")
+            self.assertEqual(devices[0]["type"], "browser")
+            self.assertNotIn("digest", devices[0])
+            self.assertNotIn(token or "", str(devices))
+            self.assertTrue(state.revoke_device(devices[0]["id"]))
+            self.assertFalse(state.authenticate(token or ""))
+            self.assertEqual(state.list_devices(), [])
+            self.assertFalse(state.revoke_device(devices[0]["id"]))
 
     def test_pairing_expires_at_its_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -772,6 +797,14 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
         )
         self.assertTrue(paired["deviceToken"].startswith("fmt_"))
+        paired_clients = await self.request("client.list")
+        self.assertEqual(len(paired_clients["clients"]), 1)
+        self.assertEqual(paired_clients["clients"][0]["name"], "Test phone")
+        self.assertEqual(paired_clients["clients"][0]["type"], "android")
+        self.assertTrue(paired_clients["clients"][0]["connected"])
+        self.assertTrue(paired_clients["clients"][0]["current"])
+        self.assertNotIn("digest", str(paired_clients))
+        self.assertNotIn(paired["deviceToken"], str(paired_clients))
         self.app.started_monotonic -= 12
         service_status = await self.request("service.status")
         self.assertEqual(service_status["foremanVersion"], "0.1.0-alpha.3")
@@ -779,10 +812,30 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service_status["codex"]["mode"], "fallback")
         self.assertEqual(service_status["codex"]["version"], "0.145.0")
         self.assertTrue(service_status["codex"]["lastCommunication"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["lastEvent"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["lastSuccessfulRequest"].endswith("+00:00"))
+        self.assertTrue(service_status["codex"]["attachedAt"].endswith("+00:00"))
+        self.assertEqual(service_status["codex"]["loadedThreadCount"], 2)
+        self.assertEqual(service_status["codex"]["subscribedThreadCount"], 1)
+        self.assertFalse(service_status["codex"]["ownedByForeman"])
+        self.assertIsNone(service_status["codex"]["appServerPid"])
+        self.assertEqual(service_status["activeTcpConnections"], 1)
+        self.assertEqual(service_status["activeBrowserConnections"], 0)
         self.assertEqual(service_status["listeners"]["tcpPort"], self.app.server.sockets[0].getsockname()[1])
         self.assertEqual(service_status["repositoryRoot"], str(self.repository_root.resolve()))
         self.assertNotIn("deviceToken", str(service_status))
         self.assertNotIn(self.pairing_key, str(service_status))
+        owned = type("OwnedProcess", (), {"pid": 321, "returncode": None})()
+        self.app.codex.process = owned
+        owned_status = await self.request("service.status")
+        self.assertTrue(owned_status["codex"]["ownedByForeman"])
+        self.assertEqual(owned_status["codex"]["appServerPid"], 321)
+        self.app.codex.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
+        shared_status = await self.request("service.status")
+        self.assertFalse(shared_status["codex"]["ownedByForeman"])
+        self.assertIsNone(shared_status["codex"]["appServerPid"])
+        self.app.codex.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
+        self.app.codex.process = None
         repositories = (await self.request("repository.list"))["repositories"]
         self.assertEqual(repositories[0]["path"], "example")
         self.assertTrue(repositories[0]["dirty"])
@@ -1041,6 +1094,9 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
             'self.addEventListener("notificationclick", () => {});',
             encoding="utf-8",
         )
+        (self.web_root / "favicon.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg"/>', encoding="utf-8"
+        )
         self.state = State(base / "state")
         self.web_pairing_key, _ = self.state.create_pairing()
         self.app = Foreman(
@@ -1143,6 +1199,12 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("javascript", headers["content-type"])
         self.assertIn(b"notificationclick", body)
 
+        status, headers, body = await self.http_get("/favicon.svg")
+        self.assertIn("200", status)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("image/svg+xml", headers["content-type"])
+        self.assertIn(b"<svg", body)
+
         status, _, body = await self.http_get("/health")
         self.assertIn("200", status)
         health = json.loads(body)
@@ -1176,6 +1238,7 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         service_status = await self.web_exchange("service.status")
         self.assertEqual(service_status["payload"]["listeners"]["webPort"], self.web_port)
         self.assertEqual(service_status["payload"]["activeBrowserConnections"], 1)
+        self.assertEqual(service_status["payload"]["activeTcpConnections"], 0)
 
         tcp_key, _ = self.state.create_pairing()
         tcp_socket = self.app.server.sockets[0]
@@ -1213,6 +1276,13 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ))["type"],
                 "pair.result",
             )
+            client_status = await self.web_exchange("service.status")
+            self.assertEqual(client_status["payload"]["activeTcpConnections"], 1)
+            self.assertTrue(any(
+                event.get("type") == "service.event"
+                and event.get("payload", {}).get("activeTcpConnections") == 1
+                for event in self.web_events
+            ))
             await tcp_exchange("session.subscribe", {"sessionId": "thread-new"})
             started = await self.web_exchange(
                 "session.start", {"repositoryId": "example"}
@@ -1231,9 +1301,52 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 any(item.get("type") == "session.event" for item in tcp_events)
             )
             self.assertEqual(self.app.codex.prompts[-1]["text"], "From browser")
+            listed = await self.web_exchange("client.list")
+            browser_client = next(
+                item for item in listed["payload"]["clients"] if item["name"] == "Test browser"
+            )
+            phone_client = next(
+                item for item in listed["payload"]["clients"] if item["name"] == "Test phone"
+            )
+            self.assertTrue(browser_client["current"])
+            self.assertEqual(browser_client["type"], "browser")
+            self.assertFalse(phone_client["current"])
+            self.assertEqual(phone_client["type"], "android")
+            self.assertTrue(phone_client["connected"])
+            revoked = await self.web_exchange(
+                "client.revoke", {"clientId": phone_client["id"]}
+            )
+            self.assertTrue(revoked["payload"]["revoked"])
+            self.assertEqual(await reader.read(), b"")
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def test_revoke_invalidates_token_and_disconnects_its_live_browser(self) -> None:
+        paired = await self.web_exchange(
+            "pair",
+            {"pairingKey": self.web_pairing_key, "deviceName": "Revoked browser"},
+        )
+        token = paired["payload"]["deviceToken"]
+        listed = await self.web_exchange("client.list")
+        client = listed["payload"]["clients"][0]
+        self.assertTrue(client["current"])
+        self.assertTrue(client["connected"])
+        self.assertNotIn("digest", str(listed))
+        self.assertNotIn(token, str(listed))
+
+        revoked = await self.web_exchange("client.revoke", {"clientId": client["id"]})
+        self.assertTrue(revoked["payload"]["revoked"])
+        with self.assertRaises(ConnectionClosedError) as closed:
+            await self.websocket.recv()
+        self.assertIsNotNone(closed.exception.rcvd)
+        self.assertEqual(closed.exception.rcvd.code, 4003)
+        self.assertFalse(self.state.authenticate(token))
+
+        self.websocket = await connect(self.ws_url, proxy=None)
+        rejected = await self.web_exchange("authenticate", {"deviceToken": token})
+        self.assertEqual(rejected["type"], "error")
+        self.assertEqual(rejected["payload"]["code"], "unauthorized")
 
     async def test_rejects_malformed_binary_and_oversize_frames_and_cleans_up(self) -> None:
         await self.websocket.send("not json")

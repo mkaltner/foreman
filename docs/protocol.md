@@ -37,6 +37,7 @@ Implemented types:
 - `model.list`;
 - `access.list`;
 - `service.status`;
+- `client.list`, `client.revoke`;
 - `session.list`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
@@ -44,9 +45,19 @@ Implemented types:
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
 `deviceToken`. `service.status` returns authenticated, user-facing host health:
 Foreman and Codex versions, uptime, runtime mode, listener ports, repository
-root, browser-connection count, and last successful Codex communication. It
-never includes pairing material, device tokens, environment variables, logs,
-or process details.
+root, aggregate browser/TCP client counts, last Codex event and successful
+request times, attach time, loaded/subscribed thread counts, and narrow runtime
+ownership diagnostics. Authenticated browsers receive `service.event` when safe
+aggregate client counts change; raw-TCP behavior is unchanged. Status never
+includes pairing material, device tokens, environment variables, logs, source
+addresses, or unrestricted process details.
+
+`client.list` returns safe paired-client projections: opaque client ID, saved
+label, browser/Android type, pairing time, live connection count, and whether
+the caller uses that token. It includes offline paired tokens so they can be
+revoked. `client.revoke` accepts only the opaque `clientId`, deletes that token,
+and immediately disconnects all live connections authenticated with it. Neither
+request exposes a token or digest, and revocation does not alter Codex sessions.
 
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.
