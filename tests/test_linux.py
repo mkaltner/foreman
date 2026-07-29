@@ -28,6 +28,7 @@ from codex import (  # noqa: E402
     model,
     normalize_event,
     normalize_item,
+    safe_failure_summary,
     session,
     status,
     user_input,
@@ -74,6 +75,9 @@ class FakeCodex:
     def __init__(self, executable: str, on_event) -> None:
         self.on_event = on_event
         self.runtime_status = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
+        self.is_connected = True
+        self.version = "0.145.0"
+        self.last_communication = 1_720_000_000
         self.active: set[str] = set()
         self.archived: list[str] = []
         self.deleted: list[str] = []
@@ -415,6 +419,67 @@ Tighten up this layout, please.
         self.assertEqual(persisted_active["status"], "working")
         self.assertEqual(persisted_active["activeTurnId"], "turn-live")
 
+        lifecycle = session(
+            {
+                **THREAD,
+                "turns": [
+                    {
+                        "id": "turn-timed",
+                        "status": "failed",
+                        "startedAt": 1_700_000_000,
+                        "completedAt": 1_700_000_012,
+                        "durationMs": 12_345,
+                        "error": {"message": "Tests failed safely"},
+                        "items": [],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(lifecycle["terminalAt"], 1_700_000_012)
+        self.assertEqual(lifecycle["turnDurationMs"], 12_345)
+        self.assertEqual(lifecycle["failureSummary"], "Tests failed safely")
+
+    def test_maps_authoritative_turn_timestamps_wait_types_and_safe_failures(self) -> None:
+        _, started = normalize_event(
+            {
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {"id": "turn-1", "startedAt": 1_700_000_000},
+                },
+            }
+        )
+        self.assertEqual(started["startedAt"], 1_700_000_000)
+        _, completed = normalize_event(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "completedAt": 1_700_000_012,
+                        "durationMs": 12_345,
+                        "error": {"message": "Command failed"},
+                    },
+                },
+            }
+        )
+        self.assertEqual(completed["completedAt"], 1_700_000_012)
+        self.assertEqual(completed["durationMs"], 12_345)
+        self.assertEqual(completed["failureSummary"], "Command failed")
+        _, waiting = normalize_event(
+            {
+                "method": "item/tool/requestUserInput",
+                "params": {"threadId": "thread-1", "turnId": "turn-1"},
+            }
+        )
+        self.assertEqual(waiting["waitType"], "input")
+        self.assertIn("structured input", waiting["waitDescription"])
+        self.assertEqual(
+            safe_failure_summary("Traceback\nsecret-token-value"), "Turn failed"
+        )
+
     def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
         thread_id, event = normalize_event(
             {
@@ -705,6 +770,17 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
         )
         self.assertTrue(paired["deviceToken"].startswith("fmt_"))
+        self.app.started_monotonic -= 12
+        service_status = await self.request("service.status")
+        self.assertEqual(service_status["foremanVersion"], "0.1.0-alpha.3")
+        self.assertGreaterEqual(service_status["uptimeSeconds"], 12)
+        self.assertEqual(service_status["codex"]["mode"], "fallback")
+        self.assertEqual(service_status["codex"]["version"], "0.145.0")
+        self.assertTrue(service_status["codex"]["lastCommunication"].endswith("+00:00"))
+        self.assertEqual(service_status["listeners"]["tcpPort"], self.app.server.sockets[0].getsockname()[1])
+        self.assertEqual(service_status["repositoryRoot"], str(self.repository_root.resolve()))
+        self.assertNotIn("deviceToken", str(service_status))
+        self.assertNotIn(self.pairing_key, str(service_status))
         repositories = (await self.request("repository.list"))["repositories"]
         self.assertEqual(repositories[0]["path"], "example")
         self.assertTrue(repositories[0]["dirty"])
@@ -719,6 +795,13 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )["session"]
         self.assertEqual(started["messages"], [])
         self.assertNotIn(started["id"], self.app.codex.reads)
+        created = next(
+            message
+            for message in self.unsolicited
+            if message.get("type") == "session.event"
+            and message["payload"]["event"].get("action") == "created"
+        )
+        self.assertEqual(created["payload"]["sessionId"], started["id"])
         models = (await self.request("model.list"))["models"]
         self.assertEqual(models[0]["id"], "model-test")
         levels = (await self.request("access.list"))["levels"]

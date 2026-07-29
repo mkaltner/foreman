@@ -98,16 +98,38 @@ class Codex:
         self._supported_methods: set[str] = set()
         self._model_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._access_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self.version: str | None = None
+        self.last_communication: float | None = None
+        self._stopping = False
 
     @property
     def is_connected(self) -> bool:
         return self._websocket is not None
-        self._stopping = False
 
     async def start(self) -> None:
-        self._supported_methods = await asyncio.to_thread(self._discover_supported_methods)
+        self._supported_methods, self.version = await asyncio.gather(
+            asyncio.to_thread(self._discover_supported_methods),
+            asyncio.to_thread(self._discover_version),
+        )
         self._stopping = False
         await self._connect()
+
+    def _discover_version(self) -> str | None:
+        try:
+            completed = subprocess.run(
+                [self.executable, "--version"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if completed.returncode != 0:
+            return None
+        value = completed.stdout.strip()
+        return value.removeprefix("codex-cli ")[:80] or None
 
     async def _connect(self) -> None:
         async with self._connect_lock:
@@ -248,6 +270,7 @@ class Codex:
 
     async def _emit_reconciled(self, thread: dict[str, Any]) -> None:
         turns = thread.get("turns", [])
+        latest_turn = turns[-1] if turns else None
         active_turn_id = next(
             (
                 turn.get("id")
@@ -263,6 +286,7 @@ class Codex:
                     "threadId": thread["id"],
                     "status": thread.get("status", {"type": "notLoaded"}),
                     "activeTurnId": active_turn_id,
+                    "latestTurn": latest_turn,
                 },
             }
         )
@@ -417,6 +441,7 @@ class Codex:
                     message = json.loads(raw)
                 except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
                     continue
+                self.last_communication = time.time()
                 request_id = message.get("id")
                 if request_id is not None and ("result" in message or "error" in message):
                     future = self._pending.get(request_id)
@@ -769,7 +794,22 @@ def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str,
         "model": thread.get("_foremanModel"),
         "reasoningEffort": thread.get("_foremanReasoningEffort"),
         "accessLevel": thread.get("_foremanAccessLevel"),
+        "activeTurnId": active_turn_id,
     }
+    if turns:
+        latest = turns[-1]
+        value.update(
+            {
+                "activeTurnStartedAt": latest.get("startedAt") if active_turn_id else None,
+                "terminalAt": latest.get("completedAt"),
+                "turnDurationMs": latest.get("durationMs"),
+                "failureSummary": safe_failure_summary(latest.get("error")),
+            }
+        )
+    wait_type, wait_description = waiting_details(thread.get("status"))
+    if wait_type:
+        value["waitType"] = wait_type
+        value["waitDescription"] = wait_description
     if include_messages:
         messages: list[dict[str, Any]] = []
         for turn in turns:
@@ -780,8 +820,32 @@ def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str,
                     messages.append(normalized)
         bound_message_images(messages)
         value["messages"] = messages
-        value["activeTurnId"] = active_turn_id
     return value
+
+
+def safe_failure_summary(raw: Any) -> str | None:
+    message = raw.get("message") if isinstance(raw, dict) else raw
+    if not isinstance(message, str):
+        return None
+    compact = " ".join(message.split())
+    lowered = compact.lower()
+    if not compact or any(
+        marker in lowered
+        for marker in ("traceback", "json-rpc", "authorization: bearer", "private key")
+    ):
+        return "Turn failed"
+    return compact[:240]
+
+
+def waiting_details(raw: Any) -> tuple[str | None, str | None]:
+    if not isinstance(raw, dict) or raw.get("type") != "active":
+        return None, None
+    flags = raw.get("activeFlags", [])
+    if "waitingOnApproval" in flags:
+        return "approval", "Approval is required in another compatible Codex client."
+    if "waitingOnUserInput" in flags:
+        return "input", "Codex requested structured input in another compatible client."
+    return None, None
 
 
 def bound_message_images(
@@ -996,11 +1060,13 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
             }
         )
     elif method == "turn/started":
+        turn = params.get("turn", {})
         event.update(
             {
                 "kind": "status",
                 "status": "working",
-                "turnId": params.get("turn", {}).get("id"),
+                "turnId": turn.get("id"),
+                "startedAt": turn.get("startedAt"),
             }
         )
     elif method == "turn/completed":
@@ -1010,17 +1076,29 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
                 "kind": "status",
                 "status": status({}, turn.get("status")),
                 "turnId": turn.get("id"),
-                "error": turn.get("error"),
+                "completedAt": turn.get("completedAt"),
+                "durationMs": turn.get("durationMs"),
+                "failureSummary": safe_failure_summary(turn.get("error")),
             }
         )
     elif method == "thread/status/changed":
+        latest_turn = params.get("latestTurn") or {}
+        raw_status = params.get("status")
+        wait_type, wait_description = waiting_details(raw_status)
         event.update(
             {
                 "kind": "status",
-                "status": status(params.get("status")),
+                "status": status(raw_status, latest_turn.get("status")),
                 "turnId": params.get("activeTurnId"),
+                "startedAt": latest_turn.get("startedAt"),
+                "completedAt": latest_turn.get("completedAt"),
+                "durationMs": latest_turn.get("durationMs"),
+                "failureSummary": safe_failure_summary(latest_turn.get("error")),
             }
         )
+        if wait_type:
+            event["waitType"] = wait_type
+            event["waitDescription"] = wait_description
     elif method == "thread/settings/updated":
         settings = params.get("threadSettings", {})
         event["kind"] = "route"
@@ -1036,12 +1114,24 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         "item/fileChange/requestApproval",
         "item/tool/requestUserInput",
         "permissions/requestApproval",
+        "item/permissions/requestApproval",
     ):
+        wait_type = "input" if method == "item/tool/requestUserInput" else "approval"
+        descriptions = {
+            "item/commandExecution/requestApproval": "Approval is required for a command in another compatible Codex client.",
+            "item/fileChange/requestApproval": "Approval is required for file changes in another compatible Codex client.",
+            "item/tool/requestUserInput": "Codex requested structured input in another compatible client.",
+            "permissions/requestApproval": "Permission approval is required in another compatible Codex client.",
+            "item/permissions/requestApproval": "Permission approval is required in another compatible Codex client.",
+        }
         event.update(
             {
                 "kind": "status",
                 "status": "waiting",
                 "reason": "approvalOrInputUnsupported",
+                "turnId": params.get("turnId"),
+                "waitType": wait_type,
+                "waitDescription": descriptions.get(method),
             }
         )
     else:
