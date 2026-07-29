@@ -138,6 +138,23 @@ export function groupSessions(
   return grouped;
 }
 
+export function liveActivityLabel(session: SessionSummary): string {
+  if (session.activityLabel?.trim()) return session.activityLabel;
+  const activeItem = [...(session.messages ?? [])].reverse().find((item) =>
+    ["inprogress", "running"].includes((item.status ?? "").toLowerCase()),
+  );
+  if (activeItem?.kind === "command") return "Running command";
+  if (activeItem?.kind === "tool" && /^web search/i.test(activeItem.description ?? "")) {
+    return "Searching";
+  }
+  if (activeItem?.kind === "tool") return "Using tool";
+  return "Thinking";
+}
+
+export function liveActivityMessage(session: SessionSummary): string | null {
+  return session.activityText?.trim().split("\n").filter(Boolean).at(-1) ?? null;
+}
+
 export function applySessionEvent(
   session: SessionSummary,
   event: SessionEvent,
@@ -176,6 +193,8 @@ export function applySessionEvent(
       status: "working",
       activeTurnId: event.turnId ?? session.activeTurnId,
       messages,
+      activityLabel: "Responding",
+      activityText: "",
     };
   }
 
@@ -185,15 +204,34 @@ export function applySessionEvent(
     const index = messages.findIndex((existing) => existing.id === item.id);
     if (index >= 0) messages[index] = { ...messages[index], ...item };
     else messages.push(item);
-    return { ...session, messages };
+    const updated = {
+      ...session,
+      status: "working",
+      activeTurnId: event.turnId ?? session.activeTurnId,
+      messages,
+    };
+    if (event.phase === "started") {
+      return {
+        ...updated,
+        activityLabel: liveActivityLabel({ ...updated, activityLabel: "" }),
+        activityText: item.description ?? "",
+      };
+    }
+    if (event.phase === "completed") {
+      return { ...updated, activityLabel: "Thinking", activityText: "" };
+    }
+    return updated;
   }
 
   if (event.kind === "activity") {
     const text = event.text ?? "";
+    const label = event.label ?? session.activityLabel ?? "Working";
     return {
       ...session,
-      activityLabel: event.label ?? session.activityLabel ?? "Working",
-      activityText: event.append ? `${session.activityText ?? ""}${text}` : text,
+      activityLabel: label,
+      activityText: event.append
+        ? `${session.activityText ?? ""}${text}`
+        : text || (label === session.activityLabel ? session.activityText ?? "" : ""),
     };
   }
 

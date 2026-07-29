@@ -951,6 +951,10 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         (self.web_root / "assets").mkdir(parents=True)
         (self.web_root / "index.html").write_text("<main>Foreman</main>", encoding="utf-8")
         (self.web_root / "assets" / "app.js").write_text("export {};", encoding="utf-8")
+        (self.web_root / "sw.js").write_text(
+            'self.addEventListener("notificationclick", () => {});',
+            encoding="utf-8",
+        )
         self.state = State(base / "state")
         self.web_pairing_key, _ = self.state.create_pairing()
         self.app = Foreman(
@@ -1029,10 +1033,25 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertIn("default-src 'self'", headers["content-security-policy"])
 
+        status, headers, body = await self.http_get("/sessions/thread-1")
+        self.assertIn("200", status)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(body, b"<main>Foreman</main>")
+
+        status, _, body = await self.http_get("/settings")
+        self.assertIn("200", status)
+        self.assertEqual(body, b"<main>Foreman</main>")
+
         status, headers, body = await self.http_get("/assets/app.js")
         self.assertIn("200", status)
         self.assertIn("immutable", headers["cache-control"])
         self.assertEqual(body, b"export {};")
+
+        status, headers, body = await self.http_get("/sw.js")
+        self.assertIn("200", status)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("javascript", headers["content-type"])
+        self.assertIn(b"notificationclick", body)
 
         status, _, body = await self.http_get("/health")
         self.assertIn("200", status)

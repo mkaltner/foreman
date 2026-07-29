@@ -3,13 +3,20 @@ import {
   forgetHost,
   loadAppearance,
   loadHost,
+  loadNotificationsEnabled,
   saveAppearance,
   saveHost,
+  saveNotificationsEnabled,
 } from "./storage";
 import {
   confirmSessionAction,
   createSubmissionGuard,
   isNearBottom,
+  parseAssistantContent,
+  parseWebRoute,
+  reasoningDescription,
+  reasoningLabel,
+  webRoutePath,
 } from "./ui";
 
 describe("storage, appearance, and interaction helpers", () => {
@@ -36,6 +43,14 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadAppearance()).toEqual({ theme: "system", accent: "purple" });
   });
 
+  it("persists the browser notification preference disabled by default", () => {
+    expect(loadNotificationsEnabled()).toBe(false);
+    saveNotificationsEnabled(true);
+    expect(loadNotificationsEnabled()).toBe(true);
+    saveNotificationsEnabled(false);
+    expect(loadNotificationsEnabled()).toBe(false);
+  });
+
   it("prevents duplicate submissions until the accepted request finishes", () => {
     const guard = createSubmissionGuard();
     expect(guard.enter()).toBe(true);
@@ -51,5 +66,42 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(confirmSessionAction("archive", "Alpha", confirm)).toBe(true);
     expect(confirmSessionAction("delete", "Alpha", confirm)).toBe(true);
     expect(confirm.mock.calls[1][0]).toContain("cannot be undone");
+  });
+
+  it("uses Android-style reasoning labels and warns about Ultra usage", () => {
+    expect(reasoningLabel("low")).toBe("Light");
+    expect(reasoningLabel("xhigh")).toBe("Extra High");
+    expect(reasoningDescription("high")).toBeUndefined();
+    expect(reasoningDescription("ultra")).toBe("Consumes usage limits faster");
+  });
+
+  it("separates app directives from assistant Markdown", () => {
+    const content = parseAssistantContent([
+      "Validation passed.",
+      "",
+      '::git-commit{cwd="/home/mkaltner/projects/foreman"}',
+      '::git-push{cwd="/home/mkaltner/projects/foreman" branch="codex/web"}',
+    ].join("\n"));
+
+    expect(content).toEqual([
+      { kind: "markdown", text: "Validation passed.\n" },
+      { kind: "directive", directive: { name: "git-commit", attributes: { cwd: "/home/mkaltner/projects/foreman" } } },
+      { kind: "directive", directive: { name: "git-push", attributes: { cwd: "/home/mkaltner/projects/foreman", branch: "codex/web" } } },
+    ]);
+  });
+
+  it("preserves unsupported directives as ordinary Markdown", () => {
+    expect(parseAssistantContent('::unknown{value="safe"}')).toEqual([
+      { kind: "markdown", text: '::unknown{value="safe"}' },
+    ]);
+  });
+
+  it("round-trips session, settings, and list browser routes", () => {
+    expect(parseWebRoute("/settings")).toEqual({ view: "settings" });
+    expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", sessionId: "thread/one" });
+    expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
+    expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
+    expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
+      .toBe("/sessions/thread%2Fone");
   });
 });

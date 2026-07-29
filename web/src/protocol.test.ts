@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   applySessionEvent,
   groupSessions,
+  liveActivityLabel,
+  liveActivityMessage,
   routeForSession,
   type AccessLevelInfo,
   type ModelInfo,
@@ -69,6 +71,36 @@ describe("session mapping and live events", () => {
     current = applySessionEvent(current, { kind: "status", status: "completed", turnId: "turn-1" });
     expect(current.activeTurnId).toBeNull();
     expect(current.activityText).toBe("");
+  });
+
+  it("presents the latest meaningful live activity like Android", () => {
+    let current = applySessionEvent(session, {
+      kind: "item",
+      phase: "started",
+      turnId: "turn-1",
+      item: {
+        id: "command-1",
+        kind: "command",
+        description: "/bin/bash -lc 'npm test'",
+        status: "inProgress",
+      },
+    });
+    expect(liveActivityLabel(current)).toBe("Running command");
+    expect(liveActivityMessage(current)).toBe("/bin/bash -lc 'npm test'");
+    current = applySessionEvent(current, {
+      kind: "activity",
+      label: "Running command",
+      text: "",
+      append: false,
+    });
+    expect(liveActivityMessage(current)).toBe("/bin/bash -lc 'npm test'");
+    current = applySessionEvent(current, {
+      kind: "activity",
+      label: "Thinking",
+      text: "Checking files\nPlanning the next change",
+      append: false,
+    });
+    expect(liveActivityMessage(current)).toBe("Planning the next change");
   });
 
   it("selects only dynamic model, effort, and access data", () => {

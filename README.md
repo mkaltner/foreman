@@ -47,6 +47,17 @@ foreman pair
 foreman web
 ```
 
+The Android transport and web client are served by the same
+`foreman.service`; there is no separate web process to manage. Use:
+
+```sh
+foreman start       # start Android :8765 and web :8766
+foreman stop        # stop both listeners
+foreman restart     # restart after configuration changes
+foreman status      # show service status and recent errors
+foreman logs        # follow the user-service journal
+```
+
 To update:
 
 ```sh
@@ -70,9 +81,13 @@ as an alternative.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
 - Stream live status, assistant deltas, tool activity, and progress updates.
-- Select installed models, supported reasoning efforts, and Codex access levels.
-- Attach up to four JPEG, PNG, or WebP images to a prompt or steer.
-- Notify Android devices when monitored turns finish or need attention.
+- Show current reasoning, plans, commands, tool names, and other meaningful
+  live activity while Codex works.
+- Select installed models, Android-style reasoning levels, and Codex access
+  profiles from descriptive themed menus.
+- Attach or paste up to four JPEG, PNG, or WebP images into a prompt or steer.
+- Notify Android devices and supported background browser tabs when monitored
+  turns finish or need attention.
 - Follow light, dark, or system themes with a configurable accent color.
 - Use dedicated Android and responsive web clients.
 - Install as a rootless user-level systemd service without pip or a Python venv.
@@ -90,23 +105,62 @@ Android protects the persistent device token with Android Keystore.
 
 ## Web
 
-Open the URL printed by `foreman web`—normally `http://HOST:8766`—on a trusted
-network. Run `foreman pair`, enter the six-digit code, and Foreman stores the
-resulting persistent device token in that browser profile. The one-time pairing
-code is not retained. Current Chrome, Firefox, and Edge releases are the target
-browsers.
+The web client is bundled with the Linux installation; it does not require a
+separate web-server package, Node, or another systemd unit. Install Foreman,
+confirm the unified service is running, print the URL, and create a pairing
+code:
 
-The SPA supports sessions and real history, live deltas and status, new empty
-sessions, prompt/steer/interrupt, dynamic route controls, processed images,
-archive/delete, bounded reconnect without request replay, and responsive
-appearance controls. Browser storage does not provide Android Keystore
-protection; use **Disconnect and forget host** before leaving a shared browser.
+```sh
+git clone https://github.com/mkaltner/foreman.git
+cd foreman
+./install.sh
+foreman status
+foreman web
+foreman pair
+```
+
+Open the printed URL—normally `http://HOST:8766`—from a current Chrome, Firefox,
+or Edge release on a trusted network. Enter the host and six-digit code. The
+browser connects back through the same port that served the page, so there is
+no separate port field. Run `foreman pair` again for every additional browser
+profile or device.
+
+`foreman web` only prints the configured URL; `foreman start`, `stop`, and
+`restart` control both the web listener on `8766` and Android protocol listener
+on `8765`. If a firewall is enabled, allow only the listener needed by each
+trusted client or secure overlay.
+
+The SPA supports sessions and real history; detailed live thinking, planning,
+command, and tool activity; new sessions; prompt, steer, and interrupt;
+descriptive model/reasoning/access menus; file-picker and clipboard images;
+archive/delete; opt-in browser notifications for background tabs; bounded
+reconnect without request replay; durable session URLs with browser Back,
+Forward, and refresh restoration; and responsive theme and accent controls.
+Browser notifications require HTTPS or localhost and work while Foreman remains
+open in a background tab. For another device on the LAN, put the web listener
+behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
+Foreman host can terminate TLS and proxy both HTTP and WebSocket traffic:
+
+```caddyfile
+foreman.example.com {
+    reverse_proxy 127.0.0.1:8766
+}
+```
+
+Open `https://foreman.example.com`, pair that browser, then enable alerts under
+**Settings → Notifications**. The hostname must use a certificate trusted by
+the client device; Caddy's automatic public certificates or a client-trusted
+internal CA both satisfy the browser secure-context requirement. Browser
+storage does not provide Android Keystore protection; use **Disconnect and
+forget host** before leaving a shared browser.
 
 The installed SPA is prebuilt, so normal users do not need Node. Maintainers can
 rebuild the committed assets with the pinned Node version as documented in the
 [installation guide](docs/install.md).
 
 ## Screenshots
+
+### Android
 
 <table>
   <tr>
@@ -118,6 +172,27 @@ rebuild the committed assets with the pinned Node version as documented in the
     <td align="center">Pair with a Linux host</td>
     <td align="center">Browse live sessions</td>
     <td align="center">Monitor work in progress</td>
+  </tr>
+</table>
+
+### Web
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/web-sessions.png" alt="Foreman web session dashboard" width="430"></td>
+    <td align="center"><img src="docs/screenshots/web-conversation.png" alt="Foreman web conversation and composer" width="430"></td>
+  </tr>
+  <tr>
+    <td align="center">Session dashboard</td>
+    <td align="center">Conversation and compact composer</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/web-route-menu.png" alt="Foreman web model route menu" width="430"></td>
+    <td align="center"><img src="docs/screenshots/web-mobile.png" alt="Foreman responsive mobile web client" width="220"></td>
+  </tr>
+  <tr>
+    <td align="center">Descriptive route controls</td>
+    <td align="center">Responsive mobile layout</td>
   </tr>
 </table>
 

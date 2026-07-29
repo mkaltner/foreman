@@ -1,18 +1,35 @@
 import {
   type ChangeEvent,
+  type ClipboardEvent,
   type FormEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
-import { ForemanWebClient, parseEndpoint, type ConnectionState } from "./client";
-import { processImages, type ProcessedImage } from "./images";
+import {
+  ForemanWebClient,
+  inferPagePort,
+  parseEndpoint,
+  type ConnectionState,
+} from "./client";
+import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
+import {
+  browserNotificationState,
+  notificationStateDescription,
+  requestBrowserNotifications,
+  showTurnNotification,
+  TurnNotificationMonitor,
+  type BrowserNotificationState,
+} from "./notifications";
 import {
   applySessionEvent,
   groupSessions,
+  liveActivityLabel,
+  liveActivityMessage,
   routeForSession,
   type AccessLevelInfo,
   type HelloPayload,
@@ -27,8 +44,10 @@ import {
   forgetHost,
   loadAppearance,
   loadHost,
+  loadNotificationsEnabled,
   saveAppearance,
   saveHost,
+  saveNotificationsEnabled,
   type Appearance,
   type StoredHost,
 } from "./storage";
@@ -38,11 +57,19 @@ import {
   createSubmissionGuard,
   formatActivity,
   isNearBottom,
+  parseAssistantContent,
+  parseWebRoute,
+  reasoningDescription,
+  reasoningLabel,
+  webRoutePath,
+  type AppDirective,
+  type WebRoute,
 } from "./ui";
 
 type View = "sessions" | "detail" | "settings";
 
 function App() {
+  const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
   const [storedHost, setStoredHost] = useState<StoredHost | null>(() => loadHost());
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
@@ -50,22 +77,80 @@ function App() {
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selectedIdRef = useRef<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialRoute.view === "detail" ? initialRoute.sessionId : null,
+  );
+  const selectedIdRef = useRef<string | null>(
+    initialRoute.view === "detail" ? initialRoute.sessionId : null,
+  );
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [accessLevels, setAccessLevels] = useState<AccessLevelInfo[]>([]);
   const [repositories, setRepositories] = useState<RepositoryInfo[]>([]);
-  const [view, setView] = useState<View>(storedHost ? "sessions" : "sessions");
+  const [view, setView] = useState<View>(initialRoute.view);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(loadNotificationsEnabled);
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const sessionsRef = useRef<SessionSummary[]>([]);
+  const currentRef = useRef<SessionSummary | null>(null);
+  const connectedRef = useRef(false);
+  const notificationMonitor = useRef(new TurnNotificationMonitor());
+  const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
+
+  const updateRoute = useCallback((route: WebRoute, replace = false) => {
+    const path = webRoutePath(route);
+    if (window.location.pathname === path) return;
+    window.history[replace ? "replaceState" : "pushState"](null, "", path);
+  }, []);
 
   useEffect(() => applyAppearance(appearance), [appearance]);
+  useEffect(() => { notificationsEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { currentRef.current = current; }, [current]);
+  useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
+  useEffect(() => { updateRoute(initialRoute, true); }, [initialRoute, updateRoute]);
+
+  useEffect(() => {
+    if (window.isSecureContext && "serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+    const openFromNotification = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (sessionId) openSessionRef.current(sessionId);
+    };
+    const serviceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === "notification.open" && typeof event.data.sessionId === "string") {
+        openSessionRef.current(event.data.sessionId);
+      }
+    };
+    window.addEventListener("foreman.notification.open", openFromNotification);
+    navigator.serviceWorker?.addEventListener("message", serviceWorkerMessage);
+    return () => {
+      window.removeEventListener("foreman.notification.open", openFromNotification);
+      navigator.serviceWorker?.removeEventListener("message", serviceWorkerMessage);
+    };
+  }, []);
 
   const onEvent = useCallback((message: WireMessage) => {
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
+    if (payload.event.kind === "status" && payload.event.status) {
+      const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
+      const notification = notificationMonitor.current.observe(
+        payload.sessionId,
+        title,
+        payload.event.status,
+      );
+      if (
+        notification &&
+        notificationsEnabledRef.current &&
+        (document.visibilityState !== "visible" || !document.hasFocus())
+      ) {
+        void showTurnNotification(notification).catch(() => undefined);
+      }
+    }
     setSessions((previous) =>
       previous.map((session) =>
         session.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
@@ -96,6 +181,8 @@ function App() {
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
       ]);
+      sessionsRef.current = sessionResult.sessions;
+      notificationMonitor.current.seed(sessionResult.sessions);
       setSessions(sessionResult.sessions);
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
@@ -112,10 +199,11 @@ function App() {
           setSelectedId(null);
           setCurrent(null);
           setView("sessions");
+          updateRoute({ view: "sessions" }, true);
         }
       }
     },
-    [client],
+    [client, updateRoute],
   );
 
   const connectHost = useCallback(
@@ -139,12 +227,13 @@ function App() {
   }, [client, connectHost, storedHost]);
 
   const openSession = useCallback(
-    async (id: string) => {
+    async (id: string, updateHistory = true) => {
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
       setSelectedId(id);
       setView("detail");
+      if (updateHistory) updateRoute({ view: "detail", sessionId: id });
       try {
         const result = await client.request<
           { session: SessionSummary } & Record<string, unknown>
@@ -157,8 +246,41 @@ function App() {
         setBusy(false);
       }
     },
-    [client],
+    [client, updateRoute],
   );
+  openSessionRef.current = (id, updateHistory = true) => { void openSession(id, updateHistory); };
+
+  useEffect(() => {
+    const restoreRoute = () => {
+      const route = parseWebRoute(window.location.pathname);
+      if (route.view === "settings") {
+        setView("settings");
+        return;
+      }
+      if (route.view === "sessions") {
+        setView("sessions");
+        return;
+      }
+      selectedIdRef.current = route.sessionId;
+      setSelectedId(route.sessionId);
+      setView("detail");
+      if (currentRef.current?.id !== route.sessionId && connectedRef.current) {
+        openSessionRef.current(route.sessionId, false);
+      }
+    };
+    window.addEventListener("popstate", restoreRoute);
+    return () => window.removeEventListener("popstate", restoreRoute);
+  }, []);
+
+  const showSessions = (replace = false) => {
+    setView("sessions");
+    updateRoute({ view: "sessions" }, replace);
+  };
+
+  const showSettings = () => {
+    setView("settings");
+    updateRoute({ view: "settings" });
+  };
 
   const updateAppearance = (next: Appearance) => {
     setAppearance(next);
@@ -175,7 +297,7 @@ function App() {
     setSelectedId(null);
     setHello(null);
     setError("");
-    setView("sessions");
+    showSessions(true);
   };
 
   if (!storedHost) {
@@ -206,16 +328,16 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => setView("sessions")} aria-label="Sessions">
+        <button className="brand" onClick={() => showSessions()} aria-label="Sessions">
           <span className="brand-mark">F</span>
           <span>Foreman</span>
         </button>
         <ConnectionBadge state={connection} detail={connectionDetail} />
         <nav>
-          <button className={view === "sessions" ? "active" : ""} onClick={() => setView("sessions")}>
+          <button className={view !== "settings" ? "active" : ""} onClick={() => showSessions()}>
             Sessions
           </button>
-          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
+          <button className={view === "settings" ? "active" : ""} onClick={showSettings}>
             Settings
           </button>
         </nav>
@@ -239,6 +361,16 @@ function App() {
           appearance={appearance}
           hello={hello}
           onAppearance={updateAppearance}
+          notificationsEnabled={notificationsEnabled}
+          notificationState={browserNotificationState()}
+          onNotifications={async (enabled) => {
+            if (enabled && !await requestBrowserNotifications()) {
+              setError(notificationStateDescription(browserNotificationState(), false));
+              return;
+            }
+            saveNotificationsEnabled(enabled);
+            setNotificationsEnabled(enabled);
+          }}
           onForget={forget}
         />
       ) : (
@@ -272,7 +404,7 @@ function App() {
                   selectedIdRef.current = null;
                   setSelectedId(null);
                   setCurrent(null);
-                  setView("sessions");
+                  showSessions(true);
                 }
               } catch (caught) {
                 setError(caught instanceof Error ? caught.message : `${action} failed`);
@@ -286,7 +418,7 @@ function App() {
                 models={models}
                 accessLevels={accessLevels}
                 connected={connected}
-                onBack={() => setView("sessions")}
+                onBack={() => showSessions()}
                 onRequest={(type, payload) => client.request(type, payload)}
                 onError={setError}
               />
@@ -316,6 +448,7 @@ function App() {
               setSelectedId(result.session.id);
               setCurrent(result.session);
               setView("detail");
+              updateRoute({ view: "detail", sessionId: result.session.id });
               setNewSessionOpen(false);
             } catch (caught) {
               setError(caught instanceof Error ? caught.message : "Session could not be started");
@@ -329,7 +462,7 @@ function App() {
   );
 }
 
-function SetupView({
+export function SetupView({
   error,
   busy,
   onConnect,
@@ -339,7 +472,6 @@ function SetupView({
   onConnect: (settings: Omit<StoredHost, "deviceToken">, pairingKey: string) => Promise<void>;
 }) {
   const [host, setHost] = useState(window.location.hostname || "");
-  const [port, setPort] = useState("8766");
   const [pairingKey, setPairingKey] = useState("");
   const [deviceName, setDeviceName] = useState("Web browser");
   return (
@@ -354,13 +486,12 @@ function SetupView({
           onSubmit={(event) => {
             event.preventDefault();
             void onConnect(
-              { host: host.trim(), port: Number(port), deviceName: deviceName.trim() },
+              { host: host.trim(), port: inferPagePort(), deviceName: deviceName.trim() },
               pairingKey,
             );
           }}
         >
           <label>Host<input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.59" autoComplete="url" required /></label>
-          <label>Web port<input value={port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required /></label>
           <label>Pairing code<input value={pairingKey} onChange={(event) => setPairingKey(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>
           <label>Device name<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} autoComplete="name" required /></label>
           <button className="primary full" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button>
@@ -459,6 +590,7 @@ function ConversationView({
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const processingImages = useRef(false);
   const submissionGuard = useRef(createSubmissionGuard());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -488,6 +620,8 @@ function ConversationView({
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
   const canSubmit = connected && !submitting && !processing && (!!text.trim() || images.length > 0);
+  const activityLabel = liveActivityLabel(session);
+  const activityMessage = liveActivityMessage(session);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -519,10 +653,13 @@ function ConversationView({
     }
   };
 
-  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  const addImages = async (files: File[]) => {
     if (!files.length) return;
+    if (processingImages.current) {
+      onError("Wait for the current images to finish processing");
+      return;
+    }
+    processingImages.current = true;
     setProcessing(true);
     try {
       const processed = await processImages(files, images);
@@ -530,8 +667,22 @@ function ConversationView({
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "Images could not be processed");
     } finally {
+      processingImages.current = false;
       setProcessing(false);
     }
+  };
+
+  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addImages(files);
+  };
+
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = clipboardImageFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void addImages(files);
   };
 
   return (
@@ -556,26 +707,135 @@ function ConversationView({
         {(session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
-            <div><strong>{session.activityLabel || (session.status === "waiting" ? "Waiting for attention" : "Working")}</strong>{session.activityText && <Markdown text={lastActivityLine(session.activityText)} />}</div>
+            <div>{activityMessage ? <><Markdown text={activityMessage} /><small>{activityLabel}…</small></> : <strong>{session.status === "waiting" ? "Waiting for attention…" : `${activityLabel}…`}</strong>}</div>
           </div>
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
-          <label><span>Access</span><select value={access} onChange={(event) => setAccess(event.target.value)} disabled={active || submitting}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>
-          <label><span>Model</span><select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }} disabled={active || submitting}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>
-          <label><span>Reasoning</span><select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={active || submitting}>{selectedModel?.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{titleCase(entry)}</option>)}</select></label>
+          <RouteSelect label="Access" value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: level.id === "full" }))} disabled={active || submitting} onChange={setAccess} />
+          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={active || submitting} onChange={(value) => { const next = models.find((entry) => entry.id === value); setModel(value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }} />
+          <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={active || submitting} onChange={setEffort} />
         </div>
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
-          <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={2} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+          <textarea value={text} onChange={(event) => setText(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
           {(session.status === "working" || session.status === "waiting") && session.activeTurnId && <button type="button" className="interrupt" disabled={!connected || submitting} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
       </form>
+    </div>
+  );
+}
+
+interface RouteOption {
+  value: string;
+  label: string;
+  description?: string;
+  warning?: boolean;
+}
+
+export function RouteSelect({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: RouteOption[];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selected = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    const frame = requestAnimationFrame(() => {
+      const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+      optionRefs.current[selectedIndex]?.focus();
+    });
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      cancelAnimationFrame(frame);
+    };
+  }, [open, options, value]);
+
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  return (
+    <div className={`route-select ${open ? "open" : ""}`} ref={rootRef}>
+      <span className="route-caption">{label}</span>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`route-trigger ${selected?.warning ? "warning" : ""}`}
+        aria-label={`${label}: ${selected?.label ?? value}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        disabled={disabled || options.length === 0}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span>{selected?.label ?? value}</span><i aria-hidden="true">⌄</i>
+      </button>
+      {open && (
+        <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>
+          {options.map((option, index) => (
+            <button
+              key={option.value}
+              ref={(node) => { optionRefs.current[index] = node; }}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={`route-option ${option.warning ? "warning" : ""}`}
+              onClick={() => {
+                onChange(option.value);
+                close();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  close();
+                } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                  event.preventDefault();
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+                  optionRefs.current[next]?.focus();
+                }
+              }}
+            >
+              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+              {option.value === value && <i aria-hidden="true">✓</i>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -597,16 +857,41 @@ function ConversationItemView({ item }: { item: NonNullable<SessionSummary["mess
 function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown
-        components={{
-          a: ({ href, children }) => {
-            const safe = safeLink(href);
-            return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
-          },
-        }}
-      >{text}</ReactMarkdown>
+      {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
+        ? <AppDirectiveCard key={`${segment.directive.name}-${index}`} directive={segment.directive} />
+        : <ReactMarkdown
+            key={`markdown-${index}`}
+            components={{
+              a: ({ href, children }) => {
+                const safe = safeLink(href);
+                return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
+              },
+            }}
+          >{segment.text}</ReactMarkdown>)}
     </div>
   );
+}
+
+function AppDirectiveCard({ directive }: { directive: AppDirective }) {
+  const labels: Record<string, string> = {
+    "created-thread": "Task created",
+    "git-stage": "Changes staged",
+    "git-commit": "Changes committed",
+    "git-create-branch": "Branch created",
+    "git-push": "Branch pushed",
+    "git-create-pr": directive.attributes.isDraft === "true" ? "Draft PR opened" : "Pull request opened",
+  };
+  const detail = directive.attributes.branch || shortPath(directive.attributes.cwd);
+  const url = directive.name === "git-create-pr" ? safeLink(directive.attributes.url) : null;
+  const content = <><span aria-hidden="true">✓</span><div><strong>{labels[directive.name] ?? "Action completed"}</strong>{detail && <small>{detail}</small>}</div></>;
+  return url
+    ? <a className="app-directive" href={url} target="_blank" rel="noreferrer noopener">{content}<i aria-hidden="true">↗</i></a>
+    : <div className="app-directive">{content}</div>;
+}
+
+function shortPath(path?: string): string | null {
+  if (!path) return null;
+  return path.replace(/\/+$/, "").split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: RepositoryInfo[]; onClose: () => void; onCreate: (id: string) => Promise<void> }) {
@@ -614,8 +899,10 @@ function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: R
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (selected) void onCreate(selected); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div><label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label>{repositories.length === 0 && <p className="muted">No Git repositories were found under Foreman’s configured root.</p>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!selected}>Create</button></div></form></div>;
 }
 
-function SettingsView({ host, appearance, hello, onAppearance, onForget }: { host: StoredHost; appearance: Appearance; hello: HelloPayload | null; onAppearance: (appearance: Appearance) => void; onForget: () => void }) {
-  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.port}</dd></div><div><dt>Device</dt><dd>{host.deviceName}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">The persistent device token is stored in localStorage. Browser storage is less protected than Android Keystore.</p><button className="danger" onClick={() => { if (window.confirm("Disconnect and forget this Foreman host?")) onForget(); }}>Disconnect and forget host</button></section></main>;
+function SettingsView({ host, appearance, hello, notificationsEnabled, notificationState, onAppearance, onNotifications, onForget }: { host: StoredHost; appearance: Appearance; hello: HelloPayload | null; notificationsEnabled: boolean; notificationState: BrowserNotificationState; onAppearance: (appearance: Appearance) => void; onNotifications: (enabled: boolean) => Promise<void>; onForget: () => void }) {
+  const notificationUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
+  const notificationsActive = notificationsEnabled && notificationState === "granted";
+  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Notifications</h2><div className="notification-setting"><div><strong>Turn results</strong><p>{notificationStateDescription(notificationState, notificationsActive)}</p></div><button className="secondary" disabled={notificationUnavailable} onClick={() => void onNotifications(!notificationsActive)}>{notificationsActive ? "Disable" : notificationState === "denied" ? "Blocked" : "Enable"}</button></div></section><section className="settings-card"><h2>Connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.port}</dd></div><div><dt>Device</dt><dd>{host.deviceName}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">The persistent device token is stored in localStorage. Browser storage is less protected than Android Keystore.</p><button className="danger" onClick={() => { if (window.confirm("Disconnect and forget this Foreman host?")) onForget(); }}>Disconnect and forget host</button></section></main>;
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -645,10 +932,6 @@ function shortRepository(path: string): string {
   if (!path) return "No repository";
   const parts = path.replace(/\/$/, "").split("/");
   return parts.at(-1) || path;
-}
-
-function lastActivityLine(text: string): string {
-  return text.trim().split("\n").filter(Boolean).at(-1) ?? "";
 }
 
 function titleCase(value: string): string {

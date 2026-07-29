@@ -68,6 +68,30 @@ browser `localStorage`. The one-time code isn't retained. Browser storage is
 less protected than Android Keystore, so use the **Disconnect and forget host**
 action on shared browsers.
 
+The CLI controls one unified service:
+
+| Command | Effect |
+| --- | --- |
+| `foreman start` | Start the Android TCP and browser HTTP/WebSocket listeners. |
+| `foreman stop` | Stop both listeners. |
+| `foreman restart` | Restart both listeners after an update or configuration change. |
+| `foreman status` | Show the systemd user-service status. |
+| `foreman logs` | Follow the service journal. |
+| `foreman web` | Print the browser URL; it does not start a second web process. |
+| `foreman pair` | Create a single-use pairing code valid for ten minutes. |
+
+To install specifically for browser use, no additional build or package is
+needed. Run `./install.sh`, verify `foreman status`, open the URL from
+`foreman web`, and enter a fresh code from `foreman pair`. The installed,
+prebuilt SPA uses the page's own port for its authenticated WebSocket connection.
+
+Browser turn notifications can be enabled under **Settings → Notifications**.
+Browsers require HTTPS or localhost for system notifications; plain LAN HTTP
+addresses cannot request notification permission. Notifications cover turns
+that finish, fail, are interrupted, or need attention while Foreman remains
+open in a background tab. A trusted same-origin HTTPS reverse proxy enables the
+feature for remote browsers.
+
 Allow TCP port `8765` and web port `8766` only on a trusted LAN or secure
 overlay. Foreman authenticates both transports but doesn't terminate TLS. Do
 not expose either port directly to the public Internet. Prefer Tailscale or
