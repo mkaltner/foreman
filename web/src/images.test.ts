@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clipboardImageFiles,
   MAX_IMAGE_PAYLOAD_BYTES,
   processImage,
   validateImageBatch,
@@ -15,6 +16,19 @@ const image = (encodedBytes: number): ProcessedImage => ({
 });
 
 describe("browser image processing", () => {
+  it("extracts pasted images without treating clipboard text as an attachment", () => {
+    const pasted = new File(["png"], "clipboard.png", { type: "image/png" });
+    const clipboard = {
+      items: [
+        { kind: "string", type: "text/plain", getAsFile: () => null },
+        { kind: "file", type: "image/png", getAsFile: () => pasted },
+      ],
+      files: [],
+    } as unknown as Pick<DataTransfer, "items" | "files">;
+
+    expect(clipboardImageFiles(clipboard)).toEqual([pasted]);
+  });
+
   it("enforces the four-image and eight-MiB encoded aggregate limits", () => {
     expect(() => validateImageBatch([image(1), image(1)], [image(1), image(1)])).not.toThrow();
     expect(() => validateImageBatch([image(1), image(1)], [image(1), image(1), image(1)])).toThrow("at most 4");

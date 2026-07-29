@@ -1,0 +1,56 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { RouteSelect, SetupView } from "./App";
+import { inferPagePort } from "./client";
+
+describe("Foreman setup", () => {
+  it("uses the current page port without showing a redundant port field", () => {
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    render(<SetupView error="" busy={false} onConnect={onConnect} />);
+
+    expect(screen.queryByLabelText("Web port")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Host"), {
+      target: { value: "foreman.local" },
+    });
+    fireEvent.change(screen.getByLabelText("Pairing code"), {
+      target: { value: "123456" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    expect(onConnect).toHaveBeenCalledWith(
+      {
+        host: "foreman.local",
+        port: inferPagePort(),
+        deviceName: "Web browser",
+      },
+      "123456",
+    );
+  });
+});
+
+describe("route selector", () => {
+  it("renders a themed option menu and changes the selected route", () => {
+    const onChange = vi.fn();
+    render(
+      <RouteSelect
+        label="Access"
+        value="full"
+        options={[
+          { value: "ask", label: "Ask for approval", description: "Always ask first" },
+          { value: "full", label: "Full access", description: "Unrestricted", warning: true },
+        ]}
+        disabled={false}
+        onChange={onChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Access: Full access" });
+    expect(trigger).toHaveClass("warning");
+    expect(screen.getByText("Access")).not.toHaveClass("warning");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("listbox", { name: "Access options" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: /Ask for approval/ }));
+    expect(onChange).toHaveBeenCalledWith("ask");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+});

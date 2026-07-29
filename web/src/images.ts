@@ -11,6 +11,17 @@ export interface ProcessedImage extends ImagePayload {
   encodedBytes: number;
 }
 
+export function clipboardImageFiles(
+  clipboard: Pick<DataTransfer, "items" | "files">,
+): File[] {
+  const itemFiles = Array.from(clipboard.items)
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+  if (itemFiles.length) return itemFiles;
+  return Array.from(clipboard.files).filter((file) => file.type.startsWith("image/"));
+}
+
 export function validateImageBatch(
   existing: ProcessedImage[],
   incoming: ProcessedImage[],

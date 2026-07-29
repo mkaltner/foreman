@@ -20,6 +20,16 @@ export type ConnectionState =
   | "connected"
   | "reconnecting";
 
+export function inferPagePort(
+  pagePort = window.location.port,
+  pageProtocol = window.location.protocol,
+): number {
+  if (pagePort) return Number(pagePort);
+  if (pageProtocol === "https:") return 443;
+  if (pageProtocol === "http:") return 80;
+  return 8766;
+}
+
 interface SocketLike {
   readonly readyState: number;
   onopen: ((event: Event) => void) | null;

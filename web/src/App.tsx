@@ -1,18 +1,27 @@
 import {
   type ChangeEvent,
+  type ClipboardEvent,
   type FormEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
-import { ForemanWebClient, parseEndpoint, type ConnectionState } from "./client";
-import { processImages, type ProcessedImage } from "./images";
+import {
+  ForemanWebClient,
+  inferPagePort,
+  parseEndpoint,
+  type ConnectionState,
+} from "./client";
+import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
 import {
   applySessionEvent,
   groupSessions,
+  liveActivityLabel,
+  liveActivityMessage,
   routeForSession,
   type AccessLevelInfo,
   type HelloPayload,
@@ -38,6 +47,8 @@ import {
   createSubmissionGuard,
   formatActivity,
   isNearBottom,
+  reasoningDescription,
+  reasoningLabel,
 } from "./ui";
 
 type View = "sessions" | "detail" | "settings";
@@ -329,7 +340,7 @@ function App() {
   );
 }
 
-function SetupView({
+export function SetupView({
   error,
   busy,
   onConnect,
@@ -339,7 +350,6 @@ function SetupView({
   onConnect: (settings: Omit<StoredHost, "deviceToken">, pairingKey: string) => Promise<void>;
 }) {
   const [host, setHost] = useState(window.location.hostname || "");
-  const [port, setPort] = useState("8766");
   const [pairingKey, setPairingKey] = useState("");
   const [deviceName, setDeviceName] = useState("Web browser");
   return (
@@ -354,13 +364,12 @@ function SetupView({
           onSubmit={(event) => {
             event.preventDefault();
             void onConnect(
-              { host: host.trim(), port: Number(port), deviceName: deviceName.trim() },
+              { host: host.trim(), port: inferPagePort(), deviceName: deviceName.trim() },
               pairingKey,
             );
           }}
         >
           <label>Host<input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.59" autoComplete="url" required /></label>
-          <label>Web port<input value={port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required /></label>
           <label>Pairing code<input value={pairingKey} onChange={(event) => setPairingKey(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>
           <label>Device name<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} autoComplete="name" required /></label>
           <button className="primary full" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button>
@@ -459,6 +468,7 @@ function ConversationView({
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const processingImages = useRef(false);
   const submissionGuard = useRef(createSubmissionGuard());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -488,6 +498,8 @@ function ConversationView({
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
   const canSubmit = connected && !submitting && !processing && (!!text.trim() || images.length > 0);
+  const activityLabel = liveActivityLabel(session);
+  const activityMessage = liveActivityMessage(session);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -519,10 +531,13 @@ function ConversationView({
     }
   };
 
-  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  const addImages = async (files: File[]) => {
     if (!files.length) return;
+    if (processingImages.current) {
+      onError("Wait for the current images to finish processing");
+      return;
+    }
+    processingImages.current = true;
     setProcessing(true);
     try {
       const processed = await processImages(files, images);
@@ -530,8 +545,22 @@ function ConversationView({
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "Images could not be processed");
     } finally {
+      processingImages.current = false;
       setProcessing(false);
     }
+  };
+
+  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addImages(files);
+  };
+
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = clipboardImageFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void addImages(files);
   };
 
   return (
@@ -556,26 +585,135 @@ function ConversationView({
         {(session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
-            <div><strong>{session.activityLabel || (session.status === "waiting" ? "Waiting for attention" : "Working")}</strong>{session.activityText && <Markdown text={lastActivityLine(session.activityText)} />}</div>
+            <div>{activityMessage ? <><Markdown text={activityMessage} /><small>{activityLabel}…</small></> : <strong>{session.status === "waiting" ? "Waiting for attention…" : `${activityLabel}…`}</strong>}</div>
           </div>
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
-          <label><span>Access</span><select value={access} onChange={(event) => setAccess(event.target.value)} disabled={active || submitting}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>
-          <label><span>Model</span><select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }} disabled={active || submitting}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>
-          <label><span>Reasoning</span><select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={active || submitting}>{selectedModel?.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{titleCase(entry)}</option>)}</select></label>
+          <RouteSelect label="Access" value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: level.id === "full" }))} disabled={active || submitting} onChange={setAccess} />
+          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={active || submitting} onChange={(value) => { const next = models.find((entry) => entry.id === value); setModel(value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }} />
+          <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={active || submitting} onChange={setEffort} />
         </div>
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
-          <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={2} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+          <textarea value={text} onChange={(event) => setText(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
           {(session.status === "working" || session.status === "waiting") && session.activeTurnId && <button type="button" className="interrupt" disabled={!connected || submitting} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
       </form>
+    </div>
+  );
+}
+
+interface RouteOption {
+  value: string;
+  label: string;
+  description?: string;
+  warning?: boolean;
+}
+
+export function RouteSelect({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: RouteOption[];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selected = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    const frame = requestAnimationFrame(() => {
+      const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+      optionRefs.current[selectedIndex]?.focus();
+    });
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      cancelAnimationFrame(frame);
+    };
+  }, [open, options, value]);
+
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  return (
+    <div className={`route-select ${open ? "open" : ""}`} ref={rootRef}>
+      <span className="route-caption">{label}</span>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`route-trigger ${selected?.warning ? "warning" : ""}`}
+        aria-label={`${label}: ${selected?.label ?? value}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        disabled={disabled || options.length === 0}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span>{selected?.label ?? value}</span><i aria-hidden="true">⌄</i>
+      </button>
+      {open && (
+        <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>
+          {options.map((option, index) => (
+            <button
+              key={option.value}
+              ref={(node) => { optionRefs.current[index] = node; }}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={`route-option ${option.warning ? "warning" : ""}`}
+              onClick={() => {
+                onChange(option.value);
+                close();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  close();
+                } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                  event.preventDefault();
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+                  optionRefs.current[next]?.focus();
+                }
+              }}
+            >
+              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+              {option.value === value && <i aria-hidden="true">✓</i>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -645,10 +783,6 @@ function shortRepository(path: string): string {
   if (!path) return "No repository";
   const parts = path.replace(/\/$/, "").split("/");
   return parts.at(-1) || path;
-}
-
-function lastActivityLine(text: string): string {
-  return text.trim().split("\n").filter(Boolean).at(-1) ?? "";
 }
 
 function titleCase(value: string): string {

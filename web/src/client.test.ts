@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ForemanWebClient, parseEndpoint } from "./client";
+import { ForemanWebClient, inferPagePort, parseEndpoint } from "./client";
 
 class MockSocket {
   readyState: number = WebSocket.CONNECTING;
@@ -51,6 +51,13 @@ class MockSocket {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("web client pairing, authentication, and reconnect", () => {
+  it("infers the Foreman web port from the page URL", () => {
+    expect(inferPagePort("8766", "http:")).toBe(8766);
+    expect(inferPagePort("9443", "https:")).toBe(9443);
+    expect(inferPagePort("", "http:")).toBe(80);
+    expect(inferPagePort("", "https:")).toBe(443);
+  });
+
   it("parses hosts and derives secure WebSocket URLs without tokens", () => {
     expect(parseEndpoint("codex.local", "8766", "http:")).toEqual({
       host: "codex.local",

@@ -10,6 +10,8 @@ import {
   confirmSessionAction,
   createSubmissionGuard,
   isNearBottom,
+  reasoningDescription,
+  reasoningLabel,
 } from "./ui";
 
 describe("storage, appearance, and interaction helpers", () => {
@@ -51,5 +53,12 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(confirmSessionAction("archive", "Alpha", confirm)).toBe(true);
     expect(confirmSessionAction("delete", "Alpha", confirm)).toBe(true);
     expect(confirm.mock.calls[1][0]).toContain("cannot be undone");
+  });
+
+  it("uses Android-style reasoning labels and warns about Ultra usage", () => {
+    expect(reasoningLabel("low")).toBe("Light");
+    expect(reasoningLabel("xhigh")).toBe("Extra High");
+    expect(reasoningDescription("high")).toBeUndefined();
+    expect(reasoningDescription("ultra")).toBe("Consumes usage limits faster");
   });
 });

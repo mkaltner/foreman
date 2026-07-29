@@ -44,3 +44,20 @@ export function formatActivity(timestamp?: number | null): string {
     new Date(milliseconds),
   );
 }
+
+export function reasoningLabel(effort: string): string {
+  const labels: Record<string, string> = {
+    low: "Light",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+    max: "Max",
+    ultra: "Ultra",
+  };
+  return labels[effort.toLowerCase()] ??
+    (effort ? effort[0].toUpperCase() + effort.slice(1).replaceAll("-", " ") : "");
+}
+
+export function reasoningDescription(effort: string): string | undefined {
+  return effort.toLowerCase() === "ultra" ? "Consumes usage limits faster" : undefined;
+}
