@@ -84,6 +84,43 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun forgettingConnectionClearsHostStateButPreservesUiPreferences() {
+        val forgotten =
+            UiState(
+                screen = Screen.Detail,
+                host = "foreman.local:8765",
+                pairingKey = "123456",
+                deviceName = "Work phone",
+                connected = true,
+                hasSavedConnection = true,
+                loading = true,
+                submitting = true,
+                error = "Old connection error",
+                showNewSession = true,
+                themeMode = ThemeMode.Dark,
+                monitorActiveTurns = true,
+                pendingSessionAction =
+                    PendingSessionAction("session-1", "Example", SessionAction.Archive),
+                capabilities = setOf("archive", "delete"),
+            ).withForgottenConnection()
+
+        assertEquals(Screen.Setup, forgotten.screen)
+        assertEquals("", forgotten.host)
+        assertEquals("", forgotten.pairingKey)
+        assertEquals("Android", forgotten.deviceName)
+        assertFalse(forgotten.connected)
+        assertFalse(forgotten.hasSavedConnection)
+        assertFalse(forgotten.loading)
+        assertFalse(forgotten.submitting)
+        assertNull(forgotten.error)
+        assertFalse(forgotten.showNewSession)
+        assertNull(forgotten.pendingSessionAction)
+        assertTrue(forgotten.capabilities.isEmpty())
+        assertEquals(ThemeMode.Dark, forgotten.themeMode)
+        assertTrue(forgotten.monitorActiveTurns)
+    }
+
+    @Test
     fun sessionHapticsOnlyFireForActiveTerminalTransitions() {
         assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "completed"))
         assertEquals(SessionHapticEvent.Completed, sessionHapticEvent("working", "idle"))

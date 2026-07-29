@@ -125,7 +125,7 @@ class TokenStore(context: Context) {
     }
 
     fun clear() {
-        preferences.edit().clear().apply()
+        preferences.edit().clear().commit()
     }
 
     private fun key(): SecretKey {
