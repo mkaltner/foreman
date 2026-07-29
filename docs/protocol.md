@@ -1,7 +1,11 @@
-# TCP protocol v1
+# Foreman protocol v1
 
-Foreman uses UTF-8 newline-delimited JSON over raw TCP. Every frame is at most
-16 MiB and has:
+Foreman uses the same versioned messages over two transports:
+
+- UTF-8 newline-delimited JSON over raw TCP on port `8765`;
+- one UTF-8 JSON message per WebSocket text frame at `/ws` on port `8766`.
+
+Every logical message is at most 16 MiB and has:
 
 ```json
 {"version":1,"id":"req-1","type":"session.list","payload":{}}
@@ -19,6 +23,12 @@ Before authentication a client may send `hello`, `pair`, `authenticate`, and
 `hello.codexRuntime` is either `SHARED_DESKTOP_LIVE_STATUS_AVAILABLE` for an
 attach to the configured Desktop socket or
 `SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE` for Foreman's independent fallback.
+
+The browser transport rejects binary frames and malformed, oversized, or
+unsupported messages with the same protocol error envelope where the
+WebSocket state permits it. Application operations are never exposed as REST
+resources. `GET /health` is operational status only and reports the Codex
+connection/runtime mode without paths, tokens, prompts, or logs.
 
 Implemented types:
 

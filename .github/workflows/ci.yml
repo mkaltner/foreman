@@ -15,6 +15,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web:
+    name: Web client
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Test, type check, and build web client
+        working-directory: web
+        run: npm test && npm run typecheck && npm run build
+      - name: Verify committed web assets are current
+        run: |
+          git diff --exit-code -- web/dist
+          test -f web/dist/index.html
+          compgen -G 'web/dist/assets/*' >/dev/null
+
   linux-service:
     name: Linux service
     runs-on: ubuntu-latest
@@ -36,12 +59,13 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Package Linux service
         run: >-
-          tar -czf foreman-linux.tar.gz install.sh requirements.txt linux
+          tar -czf foreman-linux.tar.gz install.sh requirements.txt linux web/dist
           scripts/vendor_python_dependencies.sh docs README.md
       - name: Verify Linux archive
         run: |
           tar -tzf foreman-linux.tar.gz
           tar -tzf foreman-linux.tar.gz | grep -qx 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE'
+          tar -tzf foreman-linux.tar.gz | grep -qx 'web/dist/index.html'
       - uses: actions/upload-artifact@v4
         with:
           name: foreman-linux

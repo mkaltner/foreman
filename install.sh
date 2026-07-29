@@ -60,6 +60,14 @@ python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || {
   echo "Vendored Python dependencies are missing from the install payload" >&2
   exit 1
 }
+[[ -f "$project_dir/web/dist/index.html" ]] || {
+  echo "Prebuilt web assets are missing; maintainers must run npm ci && npm run build in web/" >&2
+  exit 1
+}
+compgen -G "$project_dir/web/dist/assets/*" >/dev/null || {
+  echo "Prebuilt web assets are incomplete" >&2
+  exit 1
+}
 [[ -n "$pinned_version" ]] || {
   echo "requirements.txt must pin websockets with ==" >&2
   exit 1
@@ -80,6 +88,7 @@ install -m 644 "$project_dir/linux/codex.py" "$staging_dir/codex.py"
 install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
 install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
+cp -a "$project_dir/web/dist" "$staging_dir/web"
 if [[ -d "$install_dir/venv" ]]; then
   cp -a "$install_dir/venv" "$staging_dir/venv"
 fi
@@ -109,6 +118,8 @@ if [[ ! -e "$config_file" ]]; then
   {
     printf 'FOREMAN_HOST=0.0.0.0\n'
     printf 'FOREMAN_PORT=8765\n'
+    printf 'FOREMAN_WEB_HOST=0.0.0.0\n'
+    printf 'FOREMAN_WEB_PORT=8766\n'
     printf 'FOREMAN_REPOSITORY_ROOT=%s\n' "$HOME/projects"
     printf 'FOREMAN_CODEX_EXECUTABLE=%s\n' "$codex_executable"
   } >"$config_file"

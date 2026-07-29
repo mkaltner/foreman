@@ -6,9 +6,8 @@
   <strong>Monitor. Orchestrate. Command.</strong>
 </p>
 
-Foreman is an early-alpha Linux user service and Android companion app for
-viewing and controlling local Codex sessions over an authenticated TCP
-connection.
+Foreman is an early-alpha Linux user service with Android and responsive browser
+clients for viewing and controlling local Codex sessions.
 
 ## Install
 
@@ -25,6 +24,7 @@ Then confirm the service and create a short-lived pairing code:
 ```sh
 foreman status
 foreman pair
+foreman web
 ```
 
 To update an existing installation:
@@ -48,7 +48,7 @@ another Codex client.
 
 The current alpha can:
 
-- pair multiple Android devices, each with a short-lived six-digit one-time
+- pair Android devices and browsers, each with a short-lived six-digit one-time
   code;
 - list Git repositories below one configured root;
 - list and read real local Codex threads, grouped by active and recent status;
@@ -65,8 +65,10 @@ The current alpha can:
 - optionally monitor active turns in an Android foreground service and notify
   when they finish or need attention;
 - reconnect and refresh foregrounded sessions from Codex-authoritative state;
-- follow the Android system theme by default, with explicit light and dark
-  options and a purple Foreman palette.
+- reconnect browsers with fresh authoritative history without replaying
+  prompts or controls;
+- follow the system theme by default, with explicit light/dark modes and the
+  same fixed accent palette across Android and web.
 
 ## Screenshots
 
@@ -83,14 +85,14 @@ The current alpha can:
   </tr>
 </table>
 
-Foreman does not provide standalone shell, HTTP, Git-operation, approval, or
-structured-input endpoints. Codex may still run tools and modify files according
-to the access level selected for a turn. The TCP connection is authenticated
-but not encrypted; use it only on a trusted private LAN or through a secure
-tunnel.
+Foreman does not provide standalone shell, REST application, Git-operation,
+approval, or structured-input endpoints. Codex may still run tools and modify
+files according to the access level selected for a turn. The TCP and WebSocket
+connections are authenticated but not encrypted; use them only on a trusted
+private LAN or through a secure tunnel.
 
 > [!CAUTION]
-> Do not expose Foreman's TCP port (`8765`) directly to the public internet.
+> Do not expose Foreman's TCP (`8765`) or web (`8766`) port directly to the public internet.
 > Prefer a private overlay such as Tailscale or WireGuard, or a trusted LAN with
 > firewall rules limited to your devices. Pairing uses a six-digit, one-time
 > code that expires after ten minutes and throttles failed guesses per source
@@ -110,9 +112,26 @@ Requirements: Linux with user systemd, Python 3.10+, Git, and an authenticated
 `codex` CLI. The payload includes its pinned `websockets` dependency, so the
 installer doesn't need pip or Python venv support.
 
-The service listens on `0.0.0.0:8765`. Edit
+The service listens on raw TCP `0.0.0.0:8765` and HTTP/WebSocket
+`0.0.0.0:8766`. Edit
 `~/.config/foreman/foreman.env`, then run `foreman restart`, if the repository
 root or listener should change.
+
+## Web
+
+Run `foreman pair`, open the URL printed by `foreman web`, and enter the host,
+web port, pairing code, and a device name. The SPA supports sessions, live
+conversation updates, prompt/steer/interrupt, dynamic access/model/reasoning
+selection, processed image attachments, new sessions, archive/delete,
+reconnect, and system/light/dark appearance with fixed accents.
+
+The persistent browser device token is stored in `localStorage`, which is less
+protected than Android Keystore. Foreman doesn't retain the one-time pairing
+code or put tokens in URLs, cookies, or logs. Use **Disconnect and forget host**
+before leaving a shared browser. Foreman doesn't terminate TLS; use a trusted
+LAN, Tailscale/WireGuard, or a trusted reverse proxy with an explicit
+`FOREMAN_WEB_ORIGINS` allowlist. The installed SPA is prebuilt, so runtime and
+normal installation don't require Node.
 
 ## Android
 
@@ -149,11 +168,12 @@ most 8 MiB of encoded image data. Foreman detects approval/input waits but
 cannot answer them yet; manual approvals remain available through another
 client on the shared thread.
 
-For local development, the installed-Codex proof is:
+For local development, the installed-Codex proof and web checks are:
 
 ```sh
 python3 scripts/codex_poc.py
 python3 -m unittest discover -s tests -v
+cd web && npm ci && npm test && npm run typecheck && npm run build
 ```
 
 See [installation](docs/install.md), [architecture](docs/architecture.md), and

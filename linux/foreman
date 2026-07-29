@@ -24,8 +24,12 @@ case "${1:-}" in
     exec /usr/bin/env python3 \
       "$install_dir/foreman_service.py" --create-pairing
     ;;
+  web)
+    exec /usr/bin/env python3 \
+      "$install_dir/foreman_service.py" --print-web-url
+    ;;
   *)
-    echo "Usage: foreman {start|stop|restart|status|logs|pair}" >&2
+    echo "Usage: foreman {start|stop|restart|status|logs|pair|web}" >&2
     exit 2
     ;;
 esac

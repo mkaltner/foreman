@@ -131,6 +131,8 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
         config.write_text(
             "FOREMAN_HOST=127.0.0.1\n"
             "FOREMAN_PORT=0\n"
+            "FOREMAN_WEB_HOST=127.0.0.1\n"
+            "FOREMAN_WEB_PORT=0\n"
             f"FOREMAN_REPOSITORY_ROOT={home / 'projects'}\n"
             f"FOREMAN_CODEX_EXECUTABLE={codex}\n",
             encoding="utf-8",
@@ -185,6 +187,8 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
                     / "vendor/websockets-16.1.1.dist-info/licenses/LICENSE"
                 ).is_file()
             )
+            self.assertIn("<div id=\"root\"></div>", (install_dir / "web/index.html").read_text())
+            self.assertTrue(any((install_dir / "web/assets").iterdir()))
 
             paired = await self.run_command(
                 [str(launcher), "pair"],
@@ -221,12 +225,13 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             )
             try:
                 output = []
-                for _ in range(2):
+                for _ in range(3):
                     output.append(
                         (await asyncio.wait_for(process.stdout.readline(), 10)).decode()
                     )
                 self.assertIn("SHARED_DESKTOP_LIVE_STATUS_AVAILABLE", "".join(output))
                 self.assertIn("Foreman listening", "".join(output))
+                self.assertIn("Foreman web listening", "".join(output))
                 self.assertIn("initialize", server.methods)
                 self.assertIn("thread/list", server.methods)
                 self.assertIn("thread/resume", server.methods)

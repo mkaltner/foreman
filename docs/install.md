@@ -13,6 +13,7 @@ cd foreman
 ./install.sh
 foreman status
 foreman pair
+foreman web
 ```
 
 Update by pulling the checkout and rerunning the same transactional installer:
@@ -43,11 +44,15 @@ Configuration defaults:
 ```sh
 FOREMAN_HOST=0.0.0.0
 FOREMAN_PORT=8765
+FOREMAN_WEB_HOST=0.0.0.0
+FOREMAN_WEB_PORT=8766
 FOREMAN_REPOSITORY_ROOT=/home/you/projects
 FOREMAN_CODEX_EXECUTABLE=/absolute/path/to/codex
 # Optional:
 FOREMAN_CODEX_SOCKET=/absolute/path/to/app-server-control.sock
 FOREMAN_CODEX_FALLBACK_SOCKET=/absolute/path/to/foreman-codex-app-server.sock
+# Comma-separated origins only when a reverse proxy uses a different origin:
+FOREMAN_WEB_ORIGINS=https://foreman.example.internal
 ```
 
 `FOREMAN_CODEX_SOCKET` is attach-only. Foreman never starts or replaces a
@@ -56,8 +61,36 @@ listener there. The fallback defaults to
 co-presence.
 
 After edits, use `foreman restart`. `foreman logs` follows the user journal.
-Allow TCP port 8765 only on the trusted LAN; the prototype authenticates but
-does not encrypt transport.
+`foreman web` prints the configured local web URL; replace `localhost` with the
+host's trusted-LAN address when connecting remotely. The web client asks for
+the same one-time `foreman pair` code and stores its persistent device token in
+browser `localStorage`. The one-time code isn't retained. Browser storage is
+less protected than Android Keystore, so use the **Disconnect and forget host**
+action on shared browsers.
+
+Allow TCP port `8765` and web port `8766` only on a trusted LAN or secure
+overlay. Foreman authenticates both transports but doesn't terminate TLS. Do
+not expose either port directly to the public Internet. Prefer Tailscale or
+WireGuard; for browser TLS, place Foreman behind a trusted same-origin reverse
+proxy and add its exact HTTPS origin to `FOREMAN_WEB_ORIGINS`. Tokens must never
+be placed in proxy URLs or query strings.
+
+## Rebuild the web client
+
+Normal installation uses the committed `web/dist` assets and doesn't require
+Node. Maintainers updating `web/src` must use the pinned Node version and
+refresh those assets before committing:
+
+```sh
+cd web
+npm ci
+npm test
+npm run typecheck
+npm run build
+git status --short dist
+```
+
+CI rebuilds the SPA and fails if the committed assets are stale.
 
 ## Refresh the vendored Python dependency
 

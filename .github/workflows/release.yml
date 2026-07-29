@@ -32,6 +32,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -68,6 +73,9 @@ jobs:
         run: |
           python -m compileall -q linux scripts tests
           python -m unittest discover -s tests -v
+      - name: Test and build web client
+        working-directory: web
+        run: npm ci && npm test && npm run typecheck && npm run build
       - name: Test and build signed Android APK
         working-directory: android
         run: >-
@@ -84,7 +92,7 @@ jobs:
           test -x "$apksigner_path"
           "$apksigner_path" verify --verbose "$apk"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
-          tar -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" install.sh requirements.txt linux scripts/vendor_python_dependencies.sh docs README.md
+          tar -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" install.sh requirements.txt linux web/dist scripts/vendor_python_dependencies.sh docs README.md
           (cd dist && sha256sum foreman-* > SHA256SUMS)
       - name: Create GitHub release
         env:
