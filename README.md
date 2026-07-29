@@ -77,6 +77,7 @@ as an alternative.
 
 - Pair clients with a short-lived, six-digit, one-time code.
 - Reconnect with persistent token authentication and fresh authoritative state.
+- Inspect paired browser and Android clients and revoke individual tokens.
 - Supervise active, waiting, failed, stale, and recently terminal work from a
   live dashboard with an attention queue, oldest-turn callout, and activity feed.
 - Discover Git repositories and browse active and recent Codex sessions.
@@ -150,6 +151,9 @@ data come from current Codex state and events observed by this browser and are
 not a permanent audit history. **Other workspaces** contains session roots that
 do not map to a discovered Git repository. Approval and structured-input waits
 are identified, but must still be handled in another compatible Codex client.
+Host Status can disclose connected and offline paired clients. Revoking a client
+removes only that authentication token and immediately disconnects every live
+connection using it; sessions and repositories are untouched.
 Browser notifications require HTTPS or localhost and work while Foreman remains
 open in a background tab. For another device on the LAN, put the web listener
 behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
@@ -250,6 +254,9 @@ A paired client can control Codex with the access level selected for a turn, so
 treat its token and network access as sensitive. Foreman does not expose a
 standalone shell, Git-write, approval, or structured-input endpoint, but Codex
 can still run tools and modify files according to its selected access profile.
+Any authenticated Foreman client may revoke another paired token. Client lists
+contain only the saved label, client type, pairing time, and live connection
+state—never token values, token hashes, pairing codes, or source addresses.
 
 ## Codex Desktop runtime
 

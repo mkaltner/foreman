@@ -18,7 +18,7 @@ import {
   type RecentActivityEntry,
   type RepositoryGroup,
 } from "./dashboard";
-import type { RepositoryInfo, ServiceStatus, SessionSummary } from "./protocol";
+import type { PairedClient, RepositoryInfo, ServiceStatus, SessionSummary } from "./protocol";
 import {
   loadDashboardPreferences,
   saveDashboardPreferences,
@@ -31,11 +31,13 @@ interface DashboardProps {
   serviceStatus: ServiceStatus | null;
   repositories?: RepositoryInfo[];
   recentActivity?: RecentActivityEntry[];
+  pairedClients?: PairedClient[];
   connection: ConnectionState;
   disabled: boolean;
   onOpen: (id: string) => void;
   onInterrupt: (session: SessionSummary) => void;
   onRefresh: () => void;
+  onRevokeClient?: (client: PairedClient) => Promise<void>;
 }
 
 const FILTERS: Array<{ id: DashboardFilter; label: string }> = [
@@ -51,11 +53,13 @@ export function Dashboard({
   serviceStatus,
   repositories: discoveredRepositories = [],
   recentActivity = [],
+  pairedClients = [],
   connection,
   disabled,
   onOpen,
   onInterrupt,
   onRefresh,
+  onRevokeClient,
 }: DashboardProps) {
   const [preferences, setPreferences] = useState<DashboardPreferences>(loadDashboardPreferences);
   const now = useSharedClock();
@@ -119,7 +123,7 @@ export function Dashboard({
       </header>
 
       <section className="dashboard-overview" aria-label="Foreman overview">
-        <HealthPanel status={serviceStatus} connection={connection} now={now} />
+        <HealthPanel status={serviceStatus} connection={connection} now={now} clients={pairedClients} disabled={disabled} onRevokeClient={onRevokeClient} />
         <div className="summary-strip">
           <SummaryMetric label="Active" value={counts.active} icon="▶" onClick={() => updatePreferences({ ...preferences, filter: "active" })} />
           <SummaryMetric label="Waiting" value={counts.waiting} icon="◷" onClick={() => updatePreferences({ ...preferences, filter: "waiting" })} />
@@ -200,7 +204,8 @@ export function ElapsedTime({ startedAt }: { startedAt?: number | null }) {
   return <time>{formatElapsed(startedAt, now)}</time>;
 }
 
-function HealthPanel({ status, connection, now }: { status: ServiceStatus | null; connection: ConnectionState; now: number }) {
+function HealthPanel({ status, connection, now, clients, disabled, onRevokeClient }: { status: ServiceStatus | null; connection: ConnectionState; now: number; clients: PairedClient[]; disabled: boolean; onRevokeClient?: (client: PairedClient) => Promise<void> }) {
+  const [revoking, setRevoking] = useState<string | null>(null);
   const connected = connection === "connected";
   const runtimeConnected = status?.codex.connected === true;
   const mode = !status || !runtimeConnected ? "Codex unavailable" : status.codex.mode === "shared" ? "Shared Desktop runtime" : "Foreman-owned fallback runtime";
@@ -215,8 +220,20 @@ function HealthPanel({ status, connection, now }: { status: ServiceStatus | null
       <div><dt>Last event</dt><dd className={!eventRecent && runtimeConnected ? "quiet" : ""}>{eventLabel}</dd></div><div><dt>Last request</dt><dd>{formatAge(status?.codex.lastSuccessfulRequest, now)}</dd></div><div><dt>Attached</dt><dd>{formatAge(status?.codex.attachedAt, now)}</dd></div><div><dt>Threads</dt><dd>{status ? `${status.codex.loadedThreadCount ?? 0} loaded · ${status.codex.subscribedThreadCount ?? 0} subscribed` : "—"}</dd></div>
       <div className="health-root"><dt>Repository root</dt><dd title={status?.repositoryRoot}>{status?.repositoryRoot ?? "—"}</dd></div><div><dt>Listeners</dt><dd>{status ? `web :${status.listeners.webPort ?? "—"} · TCP :${status.listeners.tcpPort}` : "—"}</dd></div>
     </dl>
+    {clients.length > 0 && <details className="client-diagnostics"><summary>Connected clients and paired tokens <span>{clients.filter((client) => client.connected).length} connected</span></summary><div className="client-list">{clients.map((client) => <div className="client-row" key={client.id}><span className={`client-presence ${client.connected ? "online" : "offline"}`} aria-hidden="true">{client.connected ? "●" : "○"}</span><span className="client-identity"><strong>{client.name}</strong><small>{clientTypeLabel(client.type)} · {client.connected ? `${client.connectionCount} connection${client.connectionCount === 1 ? "" : "s"}` : "Not connected"}{client.current ? " · This browser" : ""}</small></span><time>{client.pairedAt ? `Paired ${formatAge(client.pairedAt, now)}` : "Pairing date unavailable"}</time><button className="revoke-client" disabled={disabled || revoking !== null} onClick={() => {
+      const warning = client.current
+        ? `Revoke ${client.name}? This will sign out this browser immediately.`
+        : `Revoke ${client.name}? Every live connection using this token will be disconnected.`;
+      if (!window.confirm(warning) || !onRevokeClient) return;
+      setRevoking(client.id);
+      void onRevokeClient(client).catch(() => undefined).finally(() => setRevoking(null));
+    }} aria-label={`Revoke token for ${client.name}`}>{revoking === client.id ? "Revoking…" : "Revoke"}</button></div>)}</div><p className="client-note">Revoking removes only the selected authentication token. It does not delete sessions or repositories.</p></details>}
     {status && <details className="runtime-diagnostics"><summary>Runtime details</summary><dl><div><dt>Foreman ownership</dt><dd>{status.codex.ownedByForeman ? "Yes" : "No"}</dd></div><div><dt>App-server PID</dt><dd>{status.codex.appServerPid ?? "Shared runtime"}</dd></div>{status.codex.socketPath && <div><dt>Socket</dt><dd title={status.codex.socketPath}>{status.codex.socketPath}</dd></div>}</dl></details>}
   </article>;
+}
+
+function clientTypeLabel(type: PairedClient["type"]): string {
+  return type === "browser" ? "Browser" : type === "android" ? "Android" : type === "mixed" ? "Browser and Android" : "Client";
 }
 
 function RepositorySection({ title, groups, now, onOpen }: { title: string; groups: RepositoryGroup[]; now: number; onOpen: (id: string) => void }) {

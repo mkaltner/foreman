@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Dashboard, ElapsedTime } from "./Dashboard";
 import type { ServiceStatus, SessionSummary } from "./protocol";
@@ -119,6 +119,24 @@ describe("monitoring dashboard", () => {
     fireEvent.click(screen.getByText("Runtime details"));
     expect(screen.getByText("123")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Repositories" })).toBeInTheDocument();
+  });
+
+  it("lists paired clients and confirms token revocation", async () => {
+    const revoke = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Dashboard sessions={[]} serviceStatus={status} pairedClients={[
+      { id: "browser", name: "Office browser", type: "browser", pairedAt: new Date(now - 60_000).toISOString(), connected: true, connectionCount: 1, current: true },
+      { id: "phone", name: "Pixel", type: "android", pairedAt: new Date(now - 120_000).toISOString(), connected: false, connectionCount: 0, current: false },
+    ]} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} onRevokeClient={revoke} />);
+
+    fireEvent.click(screen.getByText(/Connected clients and paired tokens/));
+    expect(screen.getByText("Office browser")).toBeInTheDocument();
+    expect(screen.getByText("Pixel")).toBeInTheDocument();
+    expect(screen.getByText(/Browser · 1 connection · This browser/)).toBeInTheDocument();
+    expect(screen.getByText(/Android · Not connected/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke token for Office browser" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("sign out this browser immediately"));
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ id: "browser" })));
   });
 
   it("returns a dismissed attention item after a material status change", () => {

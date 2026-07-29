@@ -90,7 +90,9 @@ notification, and connection preferences.
 
 The dashboard shows current session summaries, repository and non-Git workspace
 groups, attention states, oldest active work, event freshness, connected-client
-counts, and a bounded recent feed while the browser is connected. “No recent
+counts, a disclosure for paired-client token revocation, and a bounded recent
+feed while the browser is connected. Revocation disconnects that client but
+does not delete its sessions. “No recent
 activity” is a ten-minute browser heuristic and never changes a turn. Approval
 and structured-input waits must be resolved in another compatible Codex client.
 Recent activity is intentionally not a persistent audit history.

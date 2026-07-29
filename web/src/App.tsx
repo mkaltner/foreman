@@ -39,6 +39,7 @@ import {
   type AccessLevelInfo,
   type HelloPayload,
   type ModelInfo,
+  type PairedClient,
   type RepositoryInfo,
   type ServiceStatus,
   type SessionEvent,
@@ -83,6 +84,7 @@ function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
+  const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -171,6 +173,9 @@ function App() {
   const onEvent = useCallback((message: WireMessage) => {
     if (message.type === "service.event") {
       setServiceStatus({ ...(message.payload as unknown as ServiceStatus), receivedAt: Date.now() });
+      void clientRef.current?.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list")
+        .then((result) => setPairedClients(result.clients))
+        .catch(() => undefined);
       return;
     }
     if (message.type !== "session.event") return;
@@ -273,6 +278,18 @@ function App() {
           setConnectionDetail(detail ?? "");
         },
         onHello: setHello,
+        onAuthenticationRejected: (detail) => {
+          forgetHost();
+          setStoredHost(null);
+          setSessions([]);
+          setCurrent(null);
+          setHello(null);
+          setServiceStatus(null);
+          setPairedClients([]);
+          setRecentActivity([]);
+          dashboardSubscriptions.current.clear();
+          setError(detail);
+        },
       }),
     [onEvent],
   );
@@ -280,12 +297,13 @@ function App() {
 
   const refreshState = useCallback(
     async (reconnected = false) => {
-      const [sessionResult, modelResult, accessResult, statusResult, repositoryResult] = await Promise.all([
+      const [sessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
+        client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
       const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
       sessionsRef.current = reconciled;
@@ -295,6 +313,7 @@ function App() {
       setAccessLevels(accessResult.levels);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
       setRepositories(repositoryResult.repositories);
+      setPairedClients(clientResult.clients);
       if (reconnected) dashboardSubscriptions.current.clear();
       const wanted = new Set(
         reconciled
@@ -455,6 +474,7 @@ function App() {
     setSelectedId(null);
     setHello(null);
     setServiceStatus(null);
+    setPairedClients([]);
     dashboardSubscriptions.current.clear();
     setError("");
     showDashboard(true);
@@ -556,11 +576,22 @@ function App() {
           serviceStatus={serviceStatus}
           repositories={repositories}
           recentActivity={recentActivity}
+          pairedClients={pairedClients}
           connection={connection}
           disabled={!connected}
           onOpen={dashboardOpen}
           onInterrupt={dashboardInterrupt}
           onRefresh={dashboardRefresh}
+          onRevokeClient={async (pairedClient) => {
+            try {
+              await client.request("client.revoke", { clientId: pairedClient.id });
+              setPairedClients((previous) => previous.filter((entry) => entry.id !== pairedClient.id));
+              if (pairedClient.current) forget();
+            } catch (caught) {
+              setError(caught instanceof Error ? caught.message : "Client token could not be revoked");
+              throw caught;
+            }
+          }}
         />
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>

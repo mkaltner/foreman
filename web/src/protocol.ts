@@ -93,6 +93,16 @@ export interface ServiceStatus {
   activeTcpConnections?: number;
 }
 
+export interface PairedClient {
+  id: string;
+  name: string;
+  type: "browser" | "android" | "mixed" | "unknown";
+  pairedAt?: string | null;
+  connected: boolean;
+  connectionCount: number;
+  current: boolean;
+}
+
 export interface ModelInfo {
   id: string;
   displayName: string;
