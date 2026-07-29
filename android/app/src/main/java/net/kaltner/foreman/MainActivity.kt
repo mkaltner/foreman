@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
@@ -579,6 +580,7 @@ internal data class UiState(
     val pairingKey: String = "",
     val deviceName: String = "Android",
     val connected: Boolean = false,
+    val hasSavedConnection: Boolean = false,
     val loading: Boolean = false,
     val submitting: Boolean = false,
     val error: String? = null,
@@ -599,6 +601,27 @@ internal data class UiState(
     val composerModel: String? = null,
     val composerEffort: String? = null,
 )
+
+internal fun UiState.withForgottenConnection(): UiState =
+    copy(
+        screen = Screen.Setup,
+        host = "",
+        pairingKey = "",
+        deviceName = "Android",
+        connected = false,
+        hasSavedConnection = false,
+        loading = false,
+        submitting = false,
+        error = null,
+        sessions = emptyList(),
+        repositories = emptyList(),
+        selected = null,
+        showNewSession = false,
+        pendingSessionAction = null,
+        capabilities = emptySet(),
+        accessLevels = emptyList(),
+        models = emptyList(),
+    )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = PreferenceStore(application)
@@ -650,6 +673,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 it.copy(
                     host = saved.host,
                     deviceName = saved.deviceName,
+                    hasSavedConnection = true,
                 )
             }
             launchReconnect(saved)
@@ -754,6 +778,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 state.update {
                     it.copy(
                         connected = true,
+                        hasSavedConnection = true,
                         screen = Screen.Sessions,
                         pairingKey = "",
                         capabilities = client.capabilities,
@@ -770,6 +795,21 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             return
         }
         launchReconnect(saved)
+    }
+
+    fun forgetHost() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        synchronized(sessionDiscoveryLock) {
+            sessionDiscoveryJob?.cancel()
+            sessionDiscoveryJob = null
+            sessionDiscoveryQueue.clear()
+        }
+        notificationSessionId = null
+        client.close()
+        TurnMonitorService.stopAll(getApplication())
+        tokens.clear()
+        state.update { it.withForgottenConnection() }
     }
 
     fun onForeground() {
@@ -2437,6 +2477,7 @@ private fun UiSettingsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
+    var confirmForgetHost by remember { mutableStateOf(false) }
     val hapticFeedback = LocalHapticFeedback.current
     Box(modifier) {
         IconButton(
@@ -2573,8 +2614,66 @@ private fun UiSettingsMenu(
                         requestTurnMonitoring(!state.monitorActiveTurns)
                     },
                 )
+                if (state.hasSavedConnection) {
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Disconnect and forget host",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.LinkOff,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        onClick = {
+                            expanded = false
+                            confirmForgetHost = true
+                        },
+                    )
+                }
             }
         }
+    }
+    if (confirmForgetHost) {
+        AlertDialog(
+            onDismissRequest = { confirmForgetHost = false },
+            icon = {
+                Icon(
+                    Icons.Default.LinkOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            title = { Text("Disconnect and forget host?") },
+            text = {
+                Text(
+                    "This removes ${state.host} and its encrypted token from this device. " +
+                        "Foreman sessions remain on the host. You’ll need a new pairing code to reconnect.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForgetHost = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmForgetHost = false
+                        viewModel.forgetHost()
+                    },
+                    colors =
+                        ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                ) {
+                    Text("Disconnect and forget")
+                }
+            },
+        )
     }
 }
 
