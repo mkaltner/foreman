@@ -26,6 +26,13 @@ def decode(data: bytes) -> dict[str, Any]:
         raise ProtocolError("incomplete frame")
     if len(data) - 1 > MAX_FRAME_BYTES:
         raise ProtocolError("frame is too large")
+    return decode_message(data[:-1])
+
+
+def decode_message(data: bytes) -> dict[str, Any]:
+    """Decode one logical Foreman message without a transport delimiter."""
+    if len(data) > MAX_FRAME_BYTES:
+        raise ProtocolError("frame is too large")
     try:
         value = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:

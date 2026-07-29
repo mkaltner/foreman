@@ -1,9 +1,10 @@
 # Releases
 
 Pushing a semantic version tag such as `v0.1.0-alpha.2` runs the tagged-release
-workflow. It tests both projects, builds a signed Android release APK, packages
-the Linux service, and creates a GitHub release containing both files and their
-SHA-256 checksums.
+workflow. It tests Linux, the web client, and Android; rebuilds the committed SPA
+with pinned Node; builds a signed Android release APK; packages the Linux
+service with `web/dist`; and creates a GitHub release containing both files and
+their SHA-256 checksums. Release consumers don't need Node.
 
 The signing keystore and recovery secrets generated for this repository are at
 `~/foreman-release.jks` and `~/foreman-release-secrets.txt`. Keep secure backups

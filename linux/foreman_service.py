@@ -8,6 +8,9 @@ import asyncio
 import base64
 import binascii
 from collections import deque
+from http import HTTPStatus
+import json
+import mimetypes
 import os
 import signal
 import subprocess
@@ -15,10 +18,24 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
 from codex import Codex, CodexError, normalize_event, session
-from protocol import MAX_FRAME_BYTES, VERSION, ProtocolError, encode, error, read, response
+from protocol import (
+    MAX_FRAME_BYTES,
+    VERSION,
+    ProtocolError,
+    decode_message,
+    encode,
+    error,
+    read,
+    response,
+)
 from state import State
+from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.datastructures import Headers
+from websockets.exceptions import ConnectionClosed
+from websockets.http11 import Request, Response
 
 MAX_IMAGES = 4
 MAX_IMAGE_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -38,16 +55,23 @@ def load_env(path: Path) -> None:
 
 @dataclass(eq=False)
 class Client:
-    writer: asyncio.StreamWriter
+    writer: asyncio.StreamWriter | None
     peer: str
+    websocket: ServerConnection | None = None
     authenticated: bool = False
     subscriptions: set[str] = field(default_factory=set)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def send(self, message: dict[str, Any]) -> None:
         async with self.write_lock:
-            self.writer.write(encode(message))
-            await self.writer.drain()
+            if self.websocket is not None:
+                encoded = encode(message)
+                await self.websocket.send(encoded[:-1].decode("utf-8"))
+            elif self.writer is not None:
+                self.writer.write(encode(message))
+                await self.writer.drain()
+            else:
+                raise ConnectionError("client transport is closed")
 
 
 class PairingLimiter:
@@ -89,6 +113,10 @@ class Foreman:
         state: State,
         codex_executable: str,
         codex_factory=Codex,
+        web_host: str | None = None,
+        web_port: int | None = None,
+        web_root: Path | None = None,
+        web_origins: tuple[str, ...] = (),
     ) -> None:
         self.host = host
         self.port = port
@@ -99,6 +127,11 @@ class Foreman:
         self.pairing_limiter = PairingLimiter()
         self.codex = codex_factory(codex_executable, self.codex_event)
         self.server: asyncio.Server | None = None
+        self.web_host = web_host or host
+        self.web_port = web_port
+        self.web_root = (web_root or Path(__file__).resolve().parent / "web").resolve()
+        self.web_origins = web_origins
+        self.web_server: Server | None = None
 
     async def start(self) -> None:
         await self.codex.start()
@@ -109,15 +142,31 @@ class Foreman:
             self.port,
             limit=MAX_FRAME_BYTES + 1,
         )
+        if self.web_port is not None:
+            self.web_server = await serve(
+                self.websocket_connected,
+                self.web_host,
+                self.web_port,
+                process_request=self.http_request,
+                max_size=MAX_FRAME_BYTES,
+                compression=None,
+                server_header="Foreman",
+            )
 
     async def stop(self) -> None:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+        if self.web_server:
+            self.web_server.close()
+            await self.web_server.wait_closed()
         writers = []
         for client in list(self.clients):
-            client.writer.close()
-            writers.append(client.writer.wait_closed())
+            if client.writer is not None:
+                client.writer.close()
+                writers.append(client.writer.wait_closed())
+            elif client.websocket is not None:
+                writers.append(client.websocket.close())
         if writers:
             await asyncio.gather(*writers, return_exceptions=True)
         await self.codex.stop()
@@ -155,15 +204,9 @@ class Foreman:
         try:
             while request := await read(reader):
                 try:
-                    result = await self.dispatch(client, request)
-                    await client.send(response(request, result))
-                except PermissionError as exc:
-                    await client.send(error(request, "unauthorized", str(exc)))
-                except (ValueError, CodexError) as exc:
-                    await client.send(error(request, "requestFailed", str(exc)))
-                except Exception as exc:
-                    print(f"request error: {exc}", flush=True)
-                    await client.send(error(request, "internalError", "request failed"))
+                    await self.handle_request(client, request)
+                except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
+                    break
         except ProtocolError as exc:
             try:
                 await client.send(error(request, "protocolError", str(exc)))
@@ -180,10 +223,149 @@ class Foreman:
         finally:
             self.clients.discard(client)
             try:
-                writer.close()
-                await writer.wait_closed()
+                if client.writer is not None:
+                    client.writer.close()
+                    await client.writer.wait_closed()
             except (ConnectionError, OSError):
                 pass
+
+    async def websocket_connected(self, websocket: ServerConnection) -> None:
+        path = websocket.request.path if websocket.request else ""
+        if urlsplit(path).path != "/ws":
+            await websocket.close(1008, "WebSocket endpoint is /ws")
+            return
+        peer_info = websocket.remote_address
+        peer = str(peer_info[0]) if isinstance(peer_info, tuple) else "unknown"
+        client = Client(None, peer, websocket=websocket)
+        self.clients.add(client)
+        try:
+            async for frame in websocket:
+                if not isinstance(frame, str):
+                    await client.send(error(None, "protocolError", "binary frames are not supported"))
+                    await websocket.close(1003, "binary frames are not supported")
+                    break
+                try:
+                    request = decode_message(frame.encode("utf-8"))
+                except ProtocolError as exc:
+                    await client.send(error(None, "protocolError", str(exc)))
+                    continue
+                await self.handle_request(client, request)
+        except ConnectionClosed:
+            pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.clients.discard(client)
+
+    async def handle_request(
+        self, client: Client, request: dict[str, Any]
+    ) -> None:
+        try:
+            result = await self.dispatch(client, request)
+            await client.send(response(request, result))
+        except PermissionError as exc:
+            await client.send(error(request, "unauthorized", str(exc)))
+        except (ValueError, CodexError) as exc:
+            await client.send(error(request, "requestFailed", str(exc)))
+        except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
+            raise
+        except Exception as exc:
+            print(f"request error: {exc}", flush=True)
+            await client.send(error(request, "internalError", "request failed"))
+
+    def http_request(
+        self, connection: ServerConnection, request: Request
+    ) -> Response | None:
+        path = urlsplit(request.path).path
+        if path == "/ws":
+            rejection = self.origin_rejection(connection, request)
+            return rejection
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            return self.http_response(HTTPStatus.NOT_FOUND, b"Not found\n", "text/plain")
+        if path == "/health":
+            body = json.dumps(self.health(), separators=(",", ":")).encode("utf-8")
+            return self.http_response(HTTPStatus.OK, body, "application/json", no_store=True)
+        asset = self.static_asset(path)
+        if asset is None:
+            return self.http_response(HTTPStatus.NOT_FOUND, b"Not found\n", "text/plain")
+        data, content_type, cache = asset
+        headers = {"Cache-Control": "public, max-age=31536000, immutable"} if cache else {}
+        return self.http_response(
+            HTTPStatus.OK,
+            data,
+            content_type,
+            headers,
+            no_store=not cache,
+        )
+
+    def origin_rejection(
+        self, connection: ServerConnection, request: Request
+    ) -> Response | None:
+        origin = request.headers.get("Origin")
+        if origin is None:
+            return None
+        host = request.headers.get("Host", "")
+        parsed = urlsplit(origin)
+        same_origin = parsed.scheme in ("http", "https") and parsed.netloc == host
+        if same_origin or origin in self.web_origins:
+            return None
+        return self.http_response(HTTPStatus.FORBIDDEN, b"Origin not allowed\n", "text/plain")
+
+    def static_asset(self, path: str) -> tuple[bytes, str, bool] | None:
+        relative = "index.html" if path == "/" else unquote(path).lstrip("/")
+        if not relative or not (relative == "index.html" or relative.startswith("assets/")):
+            return None
+        candidate = (self.web_root / relative).resolve()
+        try:
+            candidate.relative_to(self.web_root)
+        except ValueError:
+            return None
+        if not candidate.is_file():
+            return None
+        content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in (
+            "application/javascript",
+            "application/json",
+            "image/svg+xml",
+        ):
+            content_type += "; charset=utf-8"
+        return candidate.read_bytes(), content_type, relative.startswith("assets/")
+
+    @staticmethod
+    def http_response(
+        status: HTTPStatus,
+        body: bytes,
+        content_type: str,
+        extra_headers: dict[str, str] | None = None,
+        no_store: bool = False,
+    ) -> Response:
+        headers = Headers()
+        headers["Content-Type"] = content_type
+        headers["Content-Length"] = str(len(body))
+        headers["X-Content-Type-Options"] = "nosniff"
+        headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data: blob:; "
+            "style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; "
+            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        headers["Referrer-Policy"] = "no-referrer"
+        if no_store:
+            headers["Cache-Control"] = "no-store"
+        for key, value in (extra_headers or {}).items():
+            headers[key] = value
+        return Response(status.value, status.phrase, headers, body)
+
+    def health(self) -> dict[str, Any]:
+        runtime = self.codex.runtime_status
+        available = runtime == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
+        return {
+            "status": "ok",
+            "foremanConnected": True,
+            "codexConnected": getattr(self.codex, "is_connected", True),
+            "sharedDesktopRuntimeAttached": available,
+            "fallbackRuntimeActive": not available,
+            "codexRuntime": runtime,
+        }
 
     async def dispatch(
         self, client: Client, request: dict[str, Any]
@@ -198,6 +380,7 @@ class Foreman:
                 "server": "Foreman",
                 "protocolVersion": VERSION,
                 "codexRuntime": self.codex.runtime_status,
+                "codexConnected": getattr(self.codex, "is_connected", True),
                 "capabilities": {
                     "steer": True,
                     "interrupt": True,
@@ -490,10 +673,21 @@ async def run_service(args: argparse.Namespace) -> None:
         Path(args.repository_root),
         State(args.state_directory),
         args.codex,
+        web_host=args.web_host,
+        web_port=args.web_port,
+        web_root=Path(args.web_root),
+        web_origins=tuple(
+            origin.strip() for origin in args.web_origins.split(",") if origin.strip()
+        ),
     )
     await app.start()
     sockets = ", ".join(str(sock.getsockname()) for sock in app.server.sockets or [])
     print(f"Foreman listening on {sockets}", flush=True)
+    if app.web_server:
+        web_sockets = ", ".join(
+            str(sock.getsockname()) for sock in app.web_server.sockets
+        )
+        print(f"Foreman web listening on {web_sockets}", flush=True)
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -511,9 +705,25 @@ def arguments() -> argparse.Namespace:
     load_env(config)
     parser = argparse.ArgumentParser()
     parser.add_argument("--create-pairing", action="store_true")
+    parser.add_argument("--print-web-url", action="store_true")
     parser.add_argument("--host", default=os.environ.get("FOREMAN_HOST", "0.0.0.0"))
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("FOREMAN_PORT", "8765"))
+    )
+    parser.add_argument(
+        "--web-host", default=os.environ.get("FOREMAN_WEB_HOST", "0.0.0.0")
+    )
+    parser.add_argument(
+        "--web-port", type=int, default=int(os.environ.get("FOREMAN_WEB_PORT", "8766"))
+    )
+    parser.add_argument(
+        "--web-root",
+        default=os.environ.get(
+            "FOREMAN_WEB_ROOT", str(Path(__file__).resolve().parent / "web")
+        ),
+    )
+    parser.add_argument(
+        "--web-origins", default=os.environ.get("FOREMAN_WEB_ORIGINS", "")
     )
     parser.add_argument(
         "--repository-root",
@@ -536,6 +746,14 @@ def arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = arguments()
+    if args.print_web_url:
+        host = args.web_host
+        if host in ("0.0.0.0", "::"):
+            host = "localhost"
+        elif ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        print(f"http://{host}:{args.web_port}")
+        return
     if args.create_pairing:
         key, expires_at = State(args.state_directory).create_pairing()
         print(f"Pairing key: {key}")

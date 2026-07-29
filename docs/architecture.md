@@ -1,9 +1,10 @@
 # Architecture
 
-Foreman has two processes:
+Foreman has one Linux service and thin Android and browser clients:
 
 ```text
 Android Foreman ── authenticated JSONL/TCP :8765 ── Linux Foreman
+Browser Foreman ── static HTTP + authenticated WS :8766 ─┘
                                                     │
                                                     └─ WebSocket/Unix socket
                                                                │
@@ -18,6 +19,12 @@ directly on message type, normalizes only user-visible thread items, and pushes
 live events to subscribed connections. On reconnect it asks Codex for current
 threads and history again, resubscribes, and never retries a prompt or control.
 
+Both clients use the same protocol-v1 request, result, error, and event shapes.
+Only framing differs: TCP uses newline-delimited JSON and WebSocket uses one
+text message per frame. The browser assets and `/health` share the WebSocket
+listener; there is no application REST API, browser backend, database, cookie,
+or server-side rendering layer.
+
 Linux files:
 
 - `foreman_service.py`: listener, request switch, repository discovery;
@@ -25,6 +32,12 @@ Linux files:
 - `protocol.py`: bounded JSONL frames;
 - `state.py`: one-time pairing and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
+
+The React/TypeScript SPA under `web/` uses native WebSocket and local component
+state. It reloads Codex-authoritative sessions and history after reconnect,
+resubscribes to the open session, and never replays prompt, steer, interrupt,
+archive, or delete requests. Its committed `web/dist` output is copied into the
+installed data directory so Node isn't part of the runtime.
 
 Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed token store. Its cache is in memory and

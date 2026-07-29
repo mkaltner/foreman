@@ -38,11 +38,13 @@ cd foreman
 ./install.sh
 ```
 
-Then verify the user service and create a short-lived pairing code:
+Then verify the user service, create a short-lived pairing code, and print the
+browser URL:
 
 ```sh
 foreman status
 foreman pair
+foreman web
 ```
 
 To update:
@@ -54,15 +56,16 @@ git pull
 ```
 
 Foreman requires Linux with user systemd, Python 3.10+, Git, and an authenticated
-`codex` CLI. Its pinned Python dependency is included, so installation does not
-require pip, a Python virtual environment, root access, or network access.
-Tagged Linux archives and signed Android APKs are available from
-[GitHub releases](https://github.com/mkaltner/foreman/releases) as an alternative.
+`codex` CLI. Its pinned Python dependency and prebuilt web assets are included,
+so installation does not require pip, a Python virtual environment, Node, Java,
+root access, or network access. Tagged Linux archives and signed Android APKs
+are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
+as an alternative.
 
 ## Features
 
 - Pair clients with a short-lived, six-digit, one-time code.
-- Reconnect with persistent token authentication.
+- Reconnect with persistent token authentication and fresh authoritative state.
 - Discover Git repositories and browse active and recent Codex sessions.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
@@ -87,13 +90,21 @@ Android protects the persistent device token with Android Keystore.
 
 ## Web
 
-Open `http://HOST:8766` on a trusted network. Run `foreman pair`, enter the
-six-digit code in the browser, and Foreman stores the resulting device token in
-that browser profile for future connections. Current Chrome, Firefox, and Edge
-releases are the target browsers.
+Open the URL printed by `foreman web`—normally `http://HOST:8766`—on a trusted
+network. Run `foreman pair`, enter the six-digit code, and Foreman stores the
+resulting persistent device token in that browser profile. The one-time pairing
+code is not retained. Current Chrome, Firefox, and Edge releases are the target
+browsers.
 
-Browser storage does not provide Android Keystore protection. Use a dedicated,
-trusted browser profile and clear the Foreman site data to remove its token.
+The SPA supports sessions and real history, live deltas and status, new empty
+sessions, prompt/steer/interrupt, dynamic route controls, processed images,
+archive/delete, bounded reconnect without request replay, and responsive
+appearance controls. Browser storage does not provide Android Keystore
+protection; use **Disconnect and forget host** before leaving a shared browser.
+
+The installed SPA is prebuilt, so normal users do not need Node. Maintainers can
+rebuild the committed assets with the pinned Node version as documented in the
+[installation guide](docs/install.md).
 
 ## Screenshots
 
@@ -101,7 +112,7 @@ trusted browser profile and clear the Foreman site data to remove its token.
   <tr>
     <td align="center"><img src="docs/screenshots/pairing.png" alt="Pair Foreman with a Linux host" width="260"></td>
     <td align="center"><img src="docs/screenshots/session-list.png" alt="Browse active and recent Codex sessions" width="260"></td>
-    <td align="center"><img src="docs/screenshots/live-session.png" alt="Monitor a working Codex session" width="260"></td>
+    <td align="center"><img src="docs/screenshots/live-session.png" alt="Monitor work in progress" width="260"></td>
   </tr>
   <tr>
     <td align="center">Pair with a Linux host</td>
@@ -113,13 +124,14 @@ trusted browser profile and clear the Foreman site data to remove its token.
 ## Architecture
 
 ```text
-Android ─┐
-         ├─ Foreman service ── Codex app-server
-Browser ─┘
+Android ── authenticated JSONL/TCP :8765 ─┐
+                                          ├─ Foreman service ── Codex app-server
+Browser ── HTTP + authenticated WS :8766 ─┘
 ```
 
-- Android uses authenticated JSONL over TCP.
-- Browser clients use HTTP for static assets and WebSocket for control.
+- Android and browser clients use the same protocol-v1 messages.
+- TCP uses newline-delimited JSON; WebSocket uses one JSON text message per frame.
+- HTTP serves static assets and operational health only; there is no application REST API.
 - Foreman connects to Codex over a Unix-socket WebSocket.
 
 ## Security
@@ -132,7 +144,12 @@ Browser ─┘
 Pairing codes expire after ten minutes and are valid for one use. Failed guesses
 are throttled per source address. The service stores only device-token hashes;
 Android protects its token with Android Keystore, while browser tokens remain in
-the local browser profile without equivalent Keystore protection.
+`localStorage` without equivalent Keystore protection. Tokens are not placed in
+URLs, cookies, logs, or analytics.
+
+Foreman does not terminate TLS. When a trusted reverse proxy uses a different
+origin, add its exact HTTPS origin to `FOREMAN_WEB_ORIGINS`; permissive wildcard
+CORS is not enabled.
 
 A paired client can control Codex with the access level selected for a turn, so
 treat its token and network access as sensitive. Foreman does not expose a
