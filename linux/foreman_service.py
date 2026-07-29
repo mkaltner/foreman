@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
-from codex import Codex, CodexError, normalize_event, session
+from codex import FOREMAN_VERSION, Codex, CodexError, normalize_event, session
 from protocol import (
     MAX_FRAME_BYTES,
     VERSION,
@@ -41,7 +41,6 @@ from websockets.http11 import Request, Response
 MAX_IMAGES = 4
 MAX_IMAGE_PAYLOAD_BYTES = 8 * 1024 * 1024
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
-FOREMAN_VERSION = "0.1.0-alpha.3"
 
 
 def load_env(path: Path) -> None:
@@ -252,11 +251,19 @@ class Foreman:
             item = event.get("item") or {}
             item_kind = item.get("kind")
             description = item.get("description")
-            overlay["activityLabel"] = (
-                "Running command" if item_kind == "command" else "Using tool"
-            )
-            if isinstance(description, str):
+            if item_kind == "command":
+                overlay["activityLabel"] = "Running command"
+                overlay["activityText"] = ""
+            elif isinstance(description, str) and description.lower().startswith("web search"):
+                overlay["activityLabel"] = "Searching the web"
+            elif isinstance(description, str) and description.startswith("Editing "):
+                overlay["activityLabel"] = description
+            else:
+                overlay["activityLabel"] = "Using tool"
+            if item_kind != "command" and isinstance(description, str):
                 overlay["activityText"] = description
+        elif kind == "item" and event.get("phase") == "completed":
+            overlay["activityLabel"] = "Thinking"
         elif kind == "route":
             for key in ("model", "reasoningEffort", "accessLevel"):
                 if isinstance(event.get(key), str):

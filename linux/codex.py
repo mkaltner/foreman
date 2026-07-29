@@ -28,6 +28,7 @@ DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
 DESKTOP_REQUEST_MARKER = "\n## My request for Codex:\n"
 SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
 SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
+FOREMAN_VERSION = "0.1.0-alpha.3"
 
 ACCESS_LEVELS = (
     {
@@ -227,7 +228,7 @@ class Codex:
                 "clientInfo": {
                     "name": "foreman",
                     "title": "Foreman",
-                    "version": "0.1.0-alpha.2",
+                    "version": FOREMAN_VERSION,
                 },
                 "capabilities": {"experimentalApi": True},
             },
@@ -831,7 +832,17 @@ def safe_failure_summary(raw: Any) -> str | None:
     lowered = compact.lower()
     if not compact or any(
         marker in lowered
-        for marker in ("traceback", "json-rpc", "authorization: bearer", "private key")
+        for marker in (
+            "traceback",
+            "json-rpc",
+            "authorization: bearer",
+            "private key",
+            "password=",
+            "token=",
+            "api_key=",
+            "/home/",
+            "/tmp/",
+        )
     ):
         return "Turn failed"
     return compact[:240]

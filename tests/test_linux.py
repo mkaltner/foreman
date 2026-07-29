@@ -479,6 +479,8 @@ Tighten up this layout, please.
         self.assertEqual(
             safe_failure_summary("Traceback\nsecret-token-value"), "Turn failed"
         )
+        self.assertEqual(safe_failure_summary("request token=secret"), "Turn failed")
+        self.assertEqual(safe_failure_summary("failed at /home/user/private"), "Turn failed")
 
     def test_maps_public_live_activity_without_raw_reasoning(self) -> None:
         thread_id, event = normalize_event(
@@ -786,6 +788,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(repositories[0]["dirty"])
         sessions = (await self.request("session.list"))["sessions"]
         self.assertEqual(sessions[0]["title"], "Hello Foreman")
+        self.assertNotIn("messages", sessions[0])
         conversation = (
             await self.request("session.read", {"sessionId": "thread-1"})
         )["session"]
@@ -1125,6 +1128,10 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("200", status)
         self.assertEqual(body, b"<main>Foreman</main>")
 
+        status, _, body = await self.http_get("/dashboard")
+        self.assertIn("200", status)
+        self.assertEqual(body, b"<main>Foreman</main>")
+
         status, headers, body = await self.http_get("/assets/app.js")
         self.assertIn("200", status)
         self.assertIn("immutable", headers["cache-control"])
@@ -1166,6 +1173,9 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "authenticate", {"deviceToken": token}
         )
         self.assertTrue(authenticated["payload"]["authenticated"])
+        service_status = await self.web_exchange("service.status")
+        self.assertEqual(service_status["payload"]["listeners"]["webPort"], self.web_port)
+        self.assertEqual(service_status["payload"]["activeBrowserConnections"], 1)
 
         tcp_key, _ = self.state.create_pairing()
         tcp_socket = self.app.server.sockets[0]
