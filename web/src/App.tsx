@@ -18,6 +18,14 @@ import {
 } from "./client";
 import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
 import {
+  browserNotificationState,
+  notificationStateDescription,
+  requestBrowserNotifications,
+  showTurnNotification,
+  TurnNotificationMonitor,
+  type BrowserNotificationState,
+} from "./notifications";
+import {
   applySessionEvent,
   groupSessions,
   liveActivityLabel,
@@ -36,8 +44,10 @@ import {
   forgetHost,
   loadAppearance,
   loadHost,
+  loadNotificationsEnabled,
   saveAppearance,
   saveHost,
+  saveNotificationsEnabled,
   type Appearance,
   type StoredHost,
 } from "./storage";
@@ -72,13 +82,56 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(loadNotificationsEnabled);
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const sessionsRef = useRef<SessionSummary[]>([]);
+  const notificationMonitor = useRef(new TurnNotificationMonitor());
+  const openSessionRef = useRef<(id: string) => void>(() => undefined);
 
   useEffect(() => applyAppearance(appearance), [appearance]);
+  useEffect(() => { notificationsEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+
+  useEffect(() => {
+    if (window.isSecureContext && "serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+    const openFromNotification = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (sessionId) openSessionRef.current(sessionId);
+    };
+    const serviceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === "notification.open" && typeof event.data.sessionId === "string") {
+        openSessionRef.current(event.data.sessionId);
+      }
+    };
+    window.addEventListener("foreman.notification.open", openFromNotification);
+    navigator.serviceWorker?.addEventListener("message", serviceWorkerMessage);
+    return () => {
+      window.removeEventListener("foreman.notification.open", openFromNotification);
+      navigator.serviceWorker?.removeEventListener("message", serviceWorkerMessage);
+    };
+  }, []);
 
   const onEvent = useCallback((message: WireMessage) => {
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
+    if (payload.event.kind === "status" && payload.event.status) {
+      const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
+      const notification = notificationMonitor.current.observe(
+        payload.sessionId,
+        title,
+        payload.event.status,
+      );
+      if (
+        notification &&
+        notificationsEnabledRef.current &&
+        (document.visibilityState !== "visible" || !document.hasFocus())
+      ) {
+        void showTurnNotification(notification).catch(() => undefined);
+      }
+    }
     setSessions((previous) =>
       previous.map((session) =>
         session.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
@@ -109,6 +162,8 @@ function App() {
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
       ]);
+      sessionsRef.current = sessionResult.sessions;
+      notificationMonitor.current.seed(sessionResult.sessions);
       setSessions(sessionResult.sessions);
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
@@ -172,6 +227,7 @@ function App() {
     },
     [client],
   );
+  openSessionRef.current = (id) => { void openSession(id); };
 
   const updateAppearance = (next: Appearance) => {
     setAppearance(next);
@@ -252,6 +308,16 @@ function App() {
           appearance={appearance}
           hello={hello}
           onAppearance={updateAppearance}
+          notificationsEnabled={notificationsEnabled}
+          notificationState={browserNotificationState()}
+          onNotifications={async (enabled) => {
+            if (enabled && !await requestBrowserNotifications()) {
+              setError(notificationStateDescription(browserNotificationState(), false));
+              return;
+            }
+            saveNotificationsEnabled(enabled);
+            setNotificationsEnabled(enabled);
+          }}
           onForget={forget}
         />
       ) : (
@@ -779,8 +845,10 @@ function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: R
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (selected) void onCreate(selected); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div><label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label>{repositories.length === 0 && <p className="muted">No Git repositories were found under Foreman’s configured root.</p>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!selected}>Create</button></div></form></div>;
 }
 
-function SettingsView({ host, appearance, hello, onAppearance, onForget }: { host: StoredHost; appearance: Appearance; hello: HelloPayload | null; onAppearance: (appearance: Appearance) => void; onForget: () => void }) {
-  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.port}</dd></div><div><dt>Device</dt><dd>{host.deviceName}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">The persistent device token is stored in localStorage. Browser storage is less protected than Android Keystore.</p><button className="danger" onClick={() => { if (window.confirm("Disconnect and forget this Foreman host?")) onForget(); }}>Disconnect and forget host</button></section></main>;
+function SettingsView({ host, appearance, hello, notificationsEnabled, notificationState, onAppearance, onNotifications, onForget }: { host: StoredHost; appearance: Appearance; hello: HelloPayload | null; notificationsEnabled: boolean; notificationState: BrowserNotificationState; onAppearance: (appearance: Appearance) => void; onNotifications: (enabled: boolean) => Promise<void>; onForget: () => void }) {
+  const notificationUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
+  const notificationsActive = notificationsEnabled && notificationState === "granted";
+  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Notifications</h2><div className="notification-setting"><div><strong>Turn results</strong><p>{notificationStateDescription(notificationState, notificationsActive)}</p></div><button className="secondary" disabled={notificationUnavailable} onClick={() => void onNotifications(!notificationsActive)}>{notificationsActive ? "Disable" : notificationState === "denied" ? "Blocked" : "Enable"}</button></div></section><section className="settings-card"><h2>Connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.port}</dd></div><div><dt>Device</dt><dd>{host.deviceName}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">The persistent device token is stored in localStorage. Browser storage is less protected than Android Keystore.</p><button className="danger" onClick={() => { if (window.confirm("Disconnect and forget this Foreman host?")) onForget(); }}>Disconnect and forget host</button></section></main>;
 }
 
 function StatusPill({ status }: { status: string }) {

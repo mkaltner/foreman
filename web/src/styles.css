@@ -165,6 +165,11 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .settings-page>header{margin-bottom:22px}
 .settings-card{border:1px solid var(--border);background:var(--surface);border-radius:14px;margin-bottom:16px;padding:22px}
 .settings-card h2{margin-bottom:18px;font-size:16px}
+.notification-setting{align-items:center;gap:18px;display:flex}
+.notification-setting>div{flex:1;min-width:0}
+.notification-setting strong{font-size:13px}
+.notification-setting p{color:var(--muted);margin:4px 0 0;font-size:11px;line-height:1.45}
+.notification-setting .secondary{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700}
 .settings-card>label{grid-template-columns:120px 1fr;align-items:center;margin-bottom:18px}
 .field-label{color:var(--muted);margin-bottom:9px;font-size:12px;font-weight:700;display:block}
 .accent-grid{grid-template-columns:repeat(4,1fr);gap:8px;display:grid}

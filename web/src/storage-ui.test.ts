@@ -3,8 +3,10 @@ import {
   forgetHost,
   loadAppearance,
   loadHost,
+  loadNotificationsEnabled,
   saveAppearance,
   saveHost,
+  saveNotificationsEnabled,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -37,6 +39,14 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal" });
     localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
     expect(loadAppearance()).toEqual({ theme: "system", accent: "purple" });
+  });
+
+  it("persists the browser notification preference disabled by default", () => {
+    expect(loadNotificationsEnabled()).toBe(false);
+    saveNotificationsEnabled(true);
+    expect(loadNotificationsEnabled()).toBe(true);
+    saveNotificationsEnabled(false);
+    expect(loadNotificationsEnabled()).toBe(false);
   });
 
   it("prevents duplicate submissions until the accepted request finishes", () => {

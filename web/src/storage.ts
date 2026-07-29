@@ -15,6 +15,7 @@ export interface Appearance {
 
 const HOST_KEY = "foreman.host.v1";
 const APPEARANCE_KEY = "foreman.appearance.v1";
+const NOTIFICATIONS_KEY = "foreman.notifications.v1";
 export const DEFAULT_APPEARANCE: Appearance = { theme: "system", accent: "purple" };
 export const ACCENTS: AccentColor[] = [
   "purple",
@@ -74,4 +75,12 @@ export function saveAppearance(
   storage: Storage = localStorage,
 ): void {
   storage.setItem(APPEARANCE_KEY, JSON.stringify(appearance));
+}
+
+export function loadNotificationsEnabled(storage: Storage = localStorage): boolean {
+  return storage.getItem(NOTIFICATIONS_KEY) === "true";
+}
+
+export function saveNotificationsEnabled(enabled: boolean, storage: Storage = localStorage): void {
+  storage.setItem(NOTIFICATIONS_KEY, String(enabled));
 }

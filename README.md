@@ -86,7 +86,8 @@ as an alternative.
 - Select installed models, Android-style reasoning levels, and Codex access
   profiles from descriptive themed menus.
 - Attach or paste up to four JPEG, PNG, or WebP images into a prompt or steer.
-- Notify Android devices when monitored turns finish or need attention.
+- Notify Android devices and supported background browser tabs when monitored
+  turns finish or need attention.
 - Follow light, dark, or system themes with a configurable accent color.
 - Use dedicated Android and responsive web clients.
 - Install as a rootless user-level systemd service without pip or a Python venv.
@@ -132,9 +133,25 @@ trusted client or secure overlay.
 The SPA supports sessions and real history; detailed live thinking, planning,
 command, and tool activity; new sessions; prompt, steer, and interrupt;
 descriptive model/reasoning/access menus; file-picker and clipboard images;
-archive/delete; bounded reconnect without request replay; and responsive theme
-and accent controls. Browser storage does not provide Android Keystore
-protection; use **Disconnect and forget host** before leaving a shared browser.
+archive/delete; opt-in browser notifications for background tabs; bounded
+reconnect without request replay; and responsive theme and accent controls.
+Browser notifications require HTTPS or localhost and work while Foreman remains
+open in a background tab. For another device on the LAN, put the web listener
+behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the
+Foreman host can terminate TLS and proxy both HTTP and WebSocket traffic:
+
+```caddyfile
+foreman.example.com {
+    reverse_proxy 127.0.0.1:8766
+}
+```
+
+Open `https://foreman.example.com`, pair that browser, then enable alerts under
+**Settings → Notifications**. The hostname must use a certificate trusted by
+the client device; Caddy's automatic public certificates or a client-trusted
+internal CA both satisfy the browser secure-context requirement. Browser
+storage does not provide Android Keystore protection; use **Disconnect and
+forget host** before leaving a shared browser.
 
 The installed SPA is prebuilt, so normal users do not need Node. Maintainers can
 rebuild the committed assets with the pinned Node version as documented in the

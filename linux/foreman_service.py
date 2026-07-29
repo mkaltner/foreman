@@ -313,7 +313,9 @@ class Foreman:
 
     def static_asset(self, path: str) -> tuple[bytes, str, bool] | None:
         relative = "index.html" if path == "/" else unquote(path).lstrip("/")
-        if not relative or not (relative == "index.html" or relative.startswith("assets/")):
+        if not relative or not (
+            relative in ("index.html", "sw.js") or relative.startswith("assets/")
+        ):
             return None
         candidate = (self.web_root / relative).resolve()
         try:
