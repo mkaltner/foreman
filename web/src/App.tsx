@@ -11,6 +11,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import { Dashboard } from "./Dashboard";
+import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
   ForemanWebClient,
   inferPagePort,
@@ -93,6 +94,7 @@ function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [accessLevels, setAccessLevels] = useState<AccessLevelInfo[]>([]);
   const [repositories, setRepositories] = useState<RepositoryInfo[]>([]);
+  const [recentActivity, setRecentActivity] = useState<RecentActivityEntry[]>([]);
   const [view, setView] = useState<View>(initialRoute.view);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -167,9 +169,27 @@ function App() {
   }, []);
 
   const onEvent = useCallback((message: WireMessage) => {
+    if (message.type === "service.event") {
+      setServiceStatus({ ...(message.payload as unknown as ServiceStatus), receivedAt: Date.now() });
+      return;
+    }
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
+    const feedSession = payload.event.session ?? sessionsRef.current.find(
+      (session) => session.id === payload.sessionId,
+    );
+    setRecentActivity((previous) => recordRecentActivity(previous, feedSession, payload.event));
+    if (payload.event.kind !== "lifecycle" && payload.event.observedAt) {
+      const lastEvent = new Date(
+        payload.event.observedAt < 10_000_000_000
+          ? payload.event.observedAt * 1000
+          : payload.event.observedAt,
+      ).toISOString();
+      setServiceStatus((previous) => !previous || previous.codex.lastEvent === lastEvent
+        ? previous
+        : { ...previous, codex: { ...previous.codex, lastEvent } });
+    }
     if (payload.event.kind === "lifecycle") {
       if (payload.event.action === "removed") {
         setSessions((previous) => {
@@ -260,11 +280,12 @@ function App() {
 
   const refreshState = useCallback(
     async (reconnected = false) => {
-      const [sessionResult, modelResult, accessResult, statusResult] = await Promise.all([
+      const [sessionResult, modelResult, accessResult, statusResult, repositoryResult] = await Promise.all([
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
+        client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
       ]);
       const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
       sessionsRef.current = reconciled;
@@ -272,7 +293,8 @@ function App() {
       setSessions(reconciled);
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
-      setServiceStatus(statusResult);
+      setServiceStatus({ ...statusResult, receivedAt: Date.now() });
+      setRepositories(repositoryResult.repositories);
       if (reconnected) dashboardSubscriptions.current.clear();
       const wanted = new Set(
         reconciled
@@ -532,6 +554,8 @@ function App() {
         <Dashboard
           sessions={sessions}
           serviceStatus={serviceStatus}
+          repositories={repositories}
+          recentActivity={recentActivity}
           connection={connection}
           disabled={!connected}
           onOpen={dashboardOpen}

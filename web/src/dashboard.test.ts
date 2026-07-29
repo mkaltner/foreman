@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  attentionState,
   dashboardCounts,
+  MAX_RECENT_ACTIVITY,
   formatDuration,
   formatElapsed,
+  isStaleActive,
+  oldestActiveSession,
+  recordRecentActivity,
   repositoryGroups,
   sessionMatchesFilter,
   sortDashboardSessions,
@@ -149,5 +154,50 @@ describe("dashboard projections", () => {
     expect(updated.slice(0, 5).every((session) => session.activityText === "Update 19")).toBe(true);
     expect(updated.slice(5).every((session, index) => session === sessions[index + 5])).toBe(true);
     expect(updated.every((session) => session.messages === undefined)).toBe(true);
+  });
+
+  it("classifies waiting, failure, disconnect, and conservative stale attention", () => {
+    const service = {
+      foremanVersion: "test", connected: true, uptimeSeconds: 1,
+      codex: { connected: true, mode: "shared" as const, runtimeStatus: "available" },
+      listeners: { tcpPort: 1 }, repositoryRoot: "/work",
+    };
+    expect(attentionState({ ...base, status: "waiting", waitType: "input" }, service, now)?.label).toBe("Waiting for input");
+    expect(attentionState({ ...base, status: "failed", terminalAt: now / 1000 }, service, now)?.type).toBe("failed");
+    expect(attentionState({ ...base, status: "working" }, { ...service, codex: { ...service.codex, connected: false } }, now)?.type).toBe("disconnected");
+    const active = { ...base, status: "working", lastActivity: now / 1000 - 601 };
+    expect(isStaleActive(active, service, now)).toBe(true);
+    const refreshed = applySessionSummaryEvent(active, { kind: "activity", label: "Running tests", observedAt: now / 1000 });
+    expect(isStaleActive(refreshed, service, now)).toBe(false);
+  });
+
+  it("selects the oldest authoritative active turn", () => {
+    const selected = oldestActiveSession([
+      { ...base, id: "new", status: "working", activeTurnStartedAt: now / 1000 - 30 },
+      { ...base, id: "old", status: "waiting", activeTurnStartedAt: now / 1000 - 90 },
+      { ...base, id: "guess", status: "working" },
+    ]);
+    expect(selected?.id).toBe("old");
+  });
+
+  it("separates discovered repositories from unscoped workspaces", () => {
+    const groups = repositoryGroups([
+      { ...base, id: "repo", repository: "/work/foreman/packages/web" },
+      { ...base, id: "home", repository: "/home/operator" },
+    ], now, [{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }], "/work");
+    expect(groups.find((group) => group.id === "/work/foreman")?.kind).toBe("repository");
+    expect(groups.find((group) => group.id === "/home/operator")?.kind).toBe("workspace");
+  });
+
+  it("coalesces noisy activity and bounds the browser-only feed at twenty", () => {
+    let entries = recordRecentActivity([], base, { kind: "activity", label: "Thinking", observedAt: now / 1000 }, now);
+    entries = recordRecentActivity(entries, base, { kind: "activity", label: "Running tests", text: "private prompt", observedAt: now / 1000 + 1 }, now + 1000);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].description).toBe("Running tests");
+    expect(JSON.stringify(entries)).not.toContain("private prompt");
+    for (let index = 0; index < 25; index += 1) {
+      entries = recordRecentActivity(entries, { ...base, id: `session-${index}` }, { kind: "status", status: "completed", observedAt: now / 1000 + index + 10 }, now + index * 1000);
+    }
+    expect(entries).toHaveLength(MAX_RECENT_ACTIVITY);
   });
 });

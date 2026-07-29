@@ -61,9 +61,11 @@ export interface SessionSummary {
   failureSummary?: string | null;
   waitType?: "approval" | "input" | null;
   waitDescription?: string | null;
+  statusChangedAt?: number | null;
 }
 
 export interface ServiceStatus {
+  receivedAt?: number;
   foremanVersion: string;
   connected: boolean;
   uptimeSeconds: number;
@@ -73,6 +75,14 @@ export interface ServiceStatus {
     runtimeStatus: string;
     version?: string | null;
     lastCommunication?: string | null;
+    lastEvent?: string | null;
+    lastSuccessfulRequest?: string | null;
+    attachedAt?: string | null;
+    loadedThreadCount?: number;
+    subscribedThreadCount?: number;
+    ownedByForeman?: boolean;
+    appServerPid?: number | null;
+    socketPath?: string | null;
   };
   listeners: {
     tcpPort: number;
@@ -80,6 +90,7 @@ export interface ServiceStatus {
   };
   repositoryRoot: string;
   activeBrowserConnections?: number;
+  activeTcpConnections?: number;
 }
 
 export interface ModelInfo {
@@ -199,6 +210,9 @@ export function applySessionEvent(
     return {
       ...session,
       status: event.status ?? session.status,
+      statusChangedAt: event.status && event.status !== session.status
+        ? (event.observedAt ?? session.statusChangedAt)
+        : session.statusChangedAt,
       attention: event.status === "waiting",
       activeTurnId: active ? (event.turnId ?? session.activeTurnId) : null,
       activeTurnStartedAt: active

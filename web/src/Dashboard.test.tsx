@@ -107,4 +107,27 @@ describe("monitoring dashboard", () => {
     expect(screen.getByText("Codex unavailable")).toBeInTheDocument();
     expect(screen.getByText("Runtime needs attention")).toBeInTheDocument();
   });
+
+  it("shows freshness, client counts, route details, and runtime disclosure", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    render(<Dashboard sessions={[sessions[0]]} repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} serviceStatus={{ ...status, activeTcpConnections: 1, codex: { ...status.codex, mode: "shared", lastEvent: new Date(now - 3000).toISOString(), lastSuccessfulRequest: new Date(now - 8000).toISOString(), attachedAt: new Date(now - 60_000).toISOString(), loadedThreadCount: 4, subscribedThreadCount: 2, ownedByForeman: false, appServerPid: 123 } }} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getAllByText("Last Codex event: 3s ago")).toHaveLength(2);
+    expect(screen.getByText("2 browser · 1 Android")).toBeInTheDocument();
+    expect(screen.getByText("4 loaded · 2 subscribed")).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-5.6 · High · auto")).toHaveLength(2);
+    fireEvent.click(screen.getByText("Runtime details"));
+    expect(screen.getByText("123")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Repositories" })).toBeInTheDocument();
+  });
+
+  it("returns a dismissed attention item after a material status change", () => {
+    const waiting = sessions[1];
+    const props = { serviceStatus: status, connection: "connected" as const, disabled: false, onOpen: vi.fn(), onInterrupt: vi.fn(), onRefresh: vi.fn() };
+    const { rerender } = render(<Dashboard {...props} sessions={[waiting]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Deploy release")).not.toBeInTheDocument();
+    rerender(<Dashboard {...props} sessions={[{ ...waiting, status: "working", waitType: null, lastActivity: Date.now() / 1000 }]} />);
+    expect(screen.getAllByText("Deploy release").length).toBeGreaterThan(0);
+  });
 });
