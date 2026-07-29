@@ -55,6 +55,31 @@ export interface SessionSummary {
   model?: string | null;
   reasoningEffort?: string | null;
   accessLevel?: string | null;
+  activeTurnStartedAt?: number | null;
+  terminalAt?: number | null;
+  turnDurationMs?: number | null;
+  failureSummary?: string | null;
+  waitType?: "approval" | "input" | null;
+  waitDescription?: string | null;
+}
+
+export interface ServiceStatus {
+  foremanVersion: string;
+  connected: boolean;
+  uptimeSeconds: number;
+  codex: {
+    connected: boolean;
+    mode: "shared" | "fallback" | "unavailable";
+    runtimeStatus: string;
+    version?: string | null;
+    lastCommunication?: string | null;
+  };
+  listeners: {
+    tcpPort: number;
+    webPort?: number | null;
+  };
+  repositoryRoot: string;
+  activeBrowserConnections?: number;
 }
 
 export interface ModelInfo {
@@ -89,6 +114,15 @@ export interface SessionEvent {
   model?: string;
   reasoningEffort?: string;
   accessLevel?: string;
+  action?: "created" | "removed";
+  session?: SessionSummary;
+  startedAt?: number | null;
+  completedAt?: number | null;
+  durationMs?: number | null;
+  failureSummary?: string | null;
+  waitType?: "approval" | "input";
+  waitDescription?: string | null;
+  observedAt?: number;
 }
 
 export interface SessionEventPayload {
@@ -161,13 +195,28 @@ export function applySessionEvent(
 ): SessionSummary {
   if (event.kind === "status") {
     const active = event.status === "working" || event.status === "waiting";
+    const terminal = ["completed", "failed", "interrupted"].includes(event.status ?? "");
     return {
       ...session,
       status: event.status ?? session.status,
       attention: event.status === "waiting",
       activeTurnId: active ? (event.turnId ?? session.activeTurnId) : null,
-      activityLabel: active ? session.activityLabel : "",
-      activityText: active ? session.activityText : "",
+      activeTurnStartedAt: active
+        ? (event.startedAt ?? session.activeTurnStartedAt)
+        : null,
+      terminalAt: terminal ? (event.completedAt ?? event.observedAt ?? session.terminalAt) : null,
+      turnDurationMs: terminal ? (event.durationMs ?? session.turnDurationMs) : null,
+      failureSummary: event.status === "failed"
+        ? (event.failureSummary ?? session.failureSummary)
+        : null,
+      waitType: event.status === "waiting" ? (event.waitType ?? session.waitType) : null,
+      waitDescription: event.status === "waiting"
+        ? (event.waitDescription ?? session.waitDescription)
+        : null,
+      activityLabel: event.status === "waiting"
+        ? event.waitType === "input" ? "Waiting for input" : "Waiting for approval"
+        : session.activityLabel,
+      lastActivity: event.observedAt ?? session.lastActivity,
     };
   }
 
@@ -195,6 +244,7 @@ export function applySessionEvent(
       messages,
       activityLabel: "Responding",
       activityText: "",
+      lastActivity: event.observedAt ?? session.lastActivity,
     };
   }
 
@@ -209,6 +259,7 @@ export function applySessionEvent(
       status: "working",
       activeTurnId: event.turnId ?? session.activeTurnId,
       messages,
+      lastActivity: event.observedAt ?? session.lastActivity,
     };
     if (event.phase === "started") {
       return {
@@ -232,6 +283,7 @@ export function applySessionEvent(
       activityText: event.append
         ? `${session.activityText ?? ""}${text}`
         : text || (label === session.activityLabel ? session.activityText ?? "" : ""),
+      lastActivity: event.observedAt ?? session.lastActivity,
     };
   }
 
@@ -241,9 +293,93 @@ export function applySessionEvent(
       model: event.model ?? session.model,
       reasoningEffort: event.reasoningEffort ?? session.reasoningEffort,
       accessLevel: event.accessLevel ?? session.accessLevel,
+      lastActivity: event.observedAt ?? session.lastActivity,
     };
   }
   return session;
+}
+
+export function applySessionSummaryEvent(
+  session: SessionSummary,
+  event: SessionEvent,
+): SessionSummary {
+  if (event.kind === "assistant.delta") {
+    return {
+      ...session,
+      status: "working",
+      attention: false,
+      activeTurnId: event.turnId ?? session.activeTurnId,
+      activityLabel: "Responding",
+      activityText: "",
+      lastActivity: event.observedAt ?? session.lastActivity,
+    };
+  }
+  if (event.kind === "item") {
+    if (event.phase === "completed") {
+      return {
+        ...session,
+        activityLabel: "Thinking",
+        lastActivity: event.observedAt ?? session.lastActivity,
+      };
+    }
+    if (event.phase !== "started" || !event.item) {
+      return { ...session, lastActivity: event.observedAt ?? session.lastActivity };
+    }
+    const label = event.item.kind === "command"
+      ? "Running command"
+      : /^web search/i.test(event.item.description ?? "")
+        ? "Searching the web"
+        : event.item.description?.startsWith("Editing ")
+          ? event.item.description
+          : "Using tool";
+    return {
+      ...session,
+      status: "working",
+      activeTurnId: event.turnId ?? session.activeTurnId,
+      activityLabel: label,
+      activityText: event.item.kind === "command" ? "" : event.item.description ?? "",
+      lastActivity: event.observedAt ?? session.lastActivity,
+    };
+  }
+  const updated = applySessionEvent({ ...session, messages: undefined }, event);
+  return { ...updated, messages: undefined };
+}
+
+export function reconcileSessionSummaries(
+  previous: SessionSummary[],
+  incoming: SessionSummary[],
+): SessionSummary[] {
+  const prior = new Map(previous.map((session) => [session.id, session]));
+  return incoming.map((session) => {
+    const existing = prior.get(session.id);
+    if (
+      session.status === "idle" &&
+      existing &&
+      ["completed", "failed", "interrupted"].includes(existing.status) &&
+      existing.terminalAt
+    ) {
+      return {
+        ...session,
+        status: existing.status,
+        terminalAt: existing.terminalAt,
+        turnDurationMs: existing.turnDurationMs,
+        failureSummary: existing.failureSummary,
+        activityLabel: existing.activityLabel,
+        activityText: existing.activityText,
+      };
+    }
+    return session;
+  });
+}
+
+export function applySessionSummaryEventBatch(
+  sessions: SessionSummary[],
+  buffered: ReadonlyMap<string, SessionEvent[]>,
+): SessionSummary[] {
+  return sessions.map((session) => {
+    const events = buffered.get(session.id);
+    return events ? events.reduce(applySessionSummaryEvent, session) : session;
+  });
 }
 
 export interface RouteSelection {

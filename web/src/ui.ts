@@ -63,13 +63,16 @@ export function reasoningDescription(effort: string): string | undefined {
 }
 
 export type WebRoute =
+  | { view: "dashboard" }
   | { view: "sessions" }
   | { view: "settings" }
   | { view: "detail"; sessionId: string };
 
 export function parseWebRoute(pathname: string): WebRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/" || normalized === "/dashboard") return { view: "dashboard" };
   if (normalized === "/settings") return { view: "settings" };
+  if (normalized === "/sessions") return { view: "sessions" };
   const match = /^\/sessions\/([^/]+)$/.exec(normalized);
   if (match) {
     try {
@@ -79,10 +82,11 @@ export function parseWebRoute(pathname: string): WebRoute {
       // Treat malformed URL escapes as the session list.
     }
   }
-  return { view: "sessions" };
+  return { view: "dashboard" };
 }
 
 export function webRoutePath(route: WebRoute): string {
+  if (route.view === "dashboard") return "/";
   if (route.view === "settings") return "/settings";
   if (route.view === "detail") return `/sessions/${encodeURIComponent(route.sessionId)}`;
   return "/sessions";

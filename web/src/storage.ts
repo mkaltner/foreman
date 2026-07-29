@@ -16,6 +16,7 @@ export interface Appearance {
 const HOST_KEY = "foreman.host.v1";
 const APPEARANCE_KEY = "foreman.appearance.v1";
 const NOTIFICATIONS_KEY = "foreman.notifications.v1";
+const DASHBOARD_KEY = "foreman.dashboard.v1";
 export const DEFAULT_APPEARANCE: Appearance = { theme: "system", accent: "purple" };
 export const ACCENTS: AccentColor[] = [
   "purple",
@@ -83,4 +84,38 @@ export function loadNotificationsEnabled(storage: Storage = localStorage): boole
 
 export function saveNotificationsEnabled(enabled: boolean, storage: Storage = localStorage): void {
   storage.setItem(NOTIFICATIONS_KEY, String(enabled));
+}
+
+export interface DashboardPreferences {
+  filter: "all" | "active" | "waiting" | "failed" | "recent";
+  repository: string;
+  dismissedFailures: string[];
+}
+
+export function loadDashboardPreferences(storage: Storage = localStorage): DashboardPreferences {
+  try {
+    const parsed = JSON.parse(storage.getItem(DASHBOARD_KEY) ?? "null") as Partial<DashboardPreferences> | null;
+    const filters = ["all", "active", "waiting", "failed", "recent"];
+    return {
+      filter: filters.includes(parsed?.filter ?? "")
+        ? parsed!.filter as DashboardPreferences["filter"]
+        : "all",
+      repository: typeof parsed?.repository === "string" ? parsed.repository : "",
+      dismissedFailures: Array.isArray(parsed?.dismissedFailures)
+        ? parsed.dismissedFailures.filter((id): id is string => typeof id === "string").slice(-100)
+        : [],
+    };
+  } catch {
+    return { filter: "all", repository: "", dismissedFailures: [] };
+  }
+}
+
+export function saveDashboardPreferences(
+  preferences: DashboardPreferences,
+  storage: Storage = localStorage,
+): void {
+  storage.setItem(DASHBOARD_KEY, JSON.stringify({
+    ...preferences,
+    dismissedFailures: preferences.dismissedFailures.slice(-100),
+  }));
 }

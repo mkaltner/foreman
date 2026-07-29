@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   forgetHost,
   loadAppearance,
+  loadDashboardPreferences,
   loadHost,
   loadNotificationsEnabled,
   saveAppearance,
+  saveDashboardPreferences,
   saveHost,
   saveNotificationsEnabled,
 } from "./storage";
@@ -41,6 +43,24 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal" });
     localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
     expect(loadAppearance()).toEqual({ theme: "system", accent: "purple" });
+  });
+
+  it("persists bounded browser-local dashboard presentation choices", () => {
+    expect(loadDashboardPreferences()).toEqual({
+      filter: "all",
+      repository: "",
+      dismissedFailures: [],
+    });
+    saveDashboardPreferences({
+      filter: "failed",
+      repository: "/projects/foreman",
+      dismissedFailures: ["failed-1"],
+    });
+    expect(loadDashboardPreferences()).toEqual({
+      filter: "failed",
+      repository: "/projects/foreman",
+      dismissedFailures: ["failed-1"],
+    });
   });
 
   it("persists the browser notification preference disabled by default", () => {
@@ -96,11 +116,14 @@ describe("storage, appearance, and interaction helpers", () => {
     ]);
   });
 
-  it("round-trips session, settings, and list browser routes", () => {
+  it("uses the dashboard as the default and round-trips all browser routes", () => {
+    expect(parseWebRoute("/")).toEqual({ view: "dashboard" });
+    expect(parseWebRoute("/dashboard")).toEqual({ view: "dashboard" });
     expect(parseWebRoute("/settings")).toEqual({ view: "settings" });
     expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", sessionId: "thread/one" });
     expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
-    expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
+    expect(parseWebRoute("/not-a-route")).toEqual({ view: "dashboard" });
+    expect(webRoutePath({ view: "dashboard" })).toBe("/");
     expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
       .toBe("/sessions/thread%2Fone");
   });

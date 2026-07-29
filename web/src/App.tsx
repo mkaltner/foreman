@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import { Dashboard } from "./Dashboard";
 import {
   ForemanWebClient,
   inferPagePort,
@@ -27,14 +28,19 @@ import {
 } from "./notifications";
 import {
   applySessionEvent,
+  applySessionSummaryEventBatch,
+  applySessionSummaryEvent,
   groupSessions,
   liveActivityLabel,
   liveActivityMessage,
   routeForSession,
+  reconcileSessionSummaries,
   type AccessLevelInfo,
   type HelloPayload,
   type ModelInfo,
   type RepositoryInfo,
+  type ServiceStatus,
+  type SessionEvent,
   type SessionEventPayload,
   type SessionSummary,
   type WireMessage,
@@ -66,7 +72,7 @@ import {
   type WebRoute,
 } from "./ui";
 
-type View = "sessions" | "detail" | "settings";
+type View = "dashboard" | "sessions" | "detail" | "settings";
 
 function App() {
   const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
@@ -75,6 +81,7 @@ function App() {
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -95,6 +102,11 @@ function App() {
   const sessionsRef = useRef<SessionSummary[]>([]);
   const currentRef = useRef<SessionSummary | null>(null);
   const connectedRef = useRef(false);
+  const viewRef = useRef<View>(initialRoute.view);
+  const clientRef = useRef<ForemanWebClient | null>(null);
+  const dashboardSubscriptions = useRef(new Set<string>());
+  const pendingDashboardEvents = useRef(new Map<string, SessionEvent[]>());
+  const dashboardFrame = useRef<number | null>(null);
   const notificationMonitor = useRef(new TurnNotificationMonitor());
   const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
 
@@ -109,6 +121,7 @@ function App() {
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
+  useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { updateRoute(initialRoute, true); }, [initialRoute, updateRoute]);
 
   useEffect(() => {
@@ -132,10 +145,49 @@ function App() {
     };
   }, []);
 
+  const queueDashboardEvent = useCallback((sessionId: string, event: SessionEvent) => {
+    const pending = pendingDashboardEvents.current;
+    const events = pending.get(sessionId) ?? [];
+    pending.set(sessionId, [...events.slice(-49), event]);
+    if (dashboardFrame.current !== null) return;
+    dashboardFrame.current = requestAnimationFrame(() => {
+      dashboardFrame.current = null;
+      const buffered = new Map(pendingDashboardEvents.current);
+      pendingDashboardEvents.current.clear();
+      setSessions((previous) => {
+        const next = applySessionSummaryEventBatch(previous, buffered);
+        sessionsRef.current = next;
+        return next;
+      });
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (dashboardFrame.current !== null) cancelAnimationFrame(dashboardFrame.current);
+  }, []);
+
   const onEvent = useCallback((message: WireMessage) => {
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
+    if (payload.event.kind === "lifecycle") {
+      if (payload.event.action === "removed") {
+        setSessions((previous) => {
+          const next = previous.filter((session) => session.id !== payload.sessionId);
+          sessionsRef.current = next;
+          return next;
+        });
+      } else if (payload.event.session) {
+        setSessions((previous) => {
+          const next = previous.some((session) => session.id === payload.sessionId)
+            ? previous.map((session) => session.id === payload.sessionId ? payload.event.session! : session)
+            : [payload.event.session!, ...previous];
+          sessionsRef.current = next;
+          return next;
+        });
+      }
+      return;
+    }
     if (payload.event.kind === "status" && payload.event.status) {
       const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
       const notification = notificationMonitor.current.observe(
@@ -150,16 +202,47 @@ function App() {
       ) {
         void showTurnNotification(notification).catch(() => undefined);
       }
+      const active = ["working", "waiting"].includes(payload.event.status);
+      if (active && !dashboardSubscriptions.current.has(payload.sessionId)) {
+        dashboardSubscriptions.current.add(payload.sessionId);
+        void clientRef.current?.request("session.subscribe", { sessionId: payload.sessionId })
+          .catch(() => dashboardSubscriptions.current.delete(payload.sessionId));
+      } else if (!active && selectedIdRef.current !== payload.sessionId) {
+        dashboardSubscriptions.current.delete(payload.sessionId);
+        void clientRef.current?.request("session.unsubscribe", { sessionId: payload.sessionId })
+          .catch(() => undefined);
+      }
+      if (!sessionsRef.current.some((session) => session.id === payload.sessionId)) {
+        void clientRef.current?.request<{ sessions: SessionSummary[] } & Record<string, unknown>>(
+          "session.list",
+        ).then((result) => {
+          setSessions((previous) => {
+            const next = reconcileSessionSummaries(previous, result.sessions);
+            sessionsRef.current = next;
+            return next;
+          });
+        }).catch(() => undefined);
+      }
     }
-    setSessions((previous) =>
-      previous.map((session) =>
-        session.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
-      ),
-    );
-    setCurrent((session) =>
-      session?.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
-    );
-  }, []);
+    if (["activity", "assistant.delta"].includes(payload.event.kind)) {
+      queueDashboardEvent(payload.sessionId, payload.event);
+    } else {
+      setSessions((previous) => {
+        const next = previous.map((session) =>
+          session.id === payload.sessionId
+            ? applySessionSummaryEvent(session, payload.event)
+            : session,
+        );
+        sessionsRef.current = next;
+        return next;
+      });
+    }
+    if (viewRef.current === "detail") {
+      setCurrent((session) =>
+        session?.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
+      );
+    }
+  }, [queueDashboardEvent]);
 
   const client = useMemo(
     () =>
@@ -173,21 +256,44 @@ function App() {
       }),
     [onEvent],
   );
+  clientRef.current = client;
 
   const refreshState = useCallback(
-    async () => {
-      const [sessionResult, modelResult, accessResult] = await Promise.all([
+    async (reconnected = false) => {
+      const [sessionResult, modelResult, accessResult, statusResult] = await Promise.all([
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
+        client.request<ServiceStatus & Record<string, unknown>>("service.status"),
       ]);
-      sessionsRef.current = sessionResult.sessions;
-      notificationMonitor.current.seed(sessionResult.sessions);
-      setSessions(sessionResult.sessions);
+      const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
+      sessionsRef.current = reconciled;
+      notificationMonitor.current.seed(reconciled);
+      setSessions(reconciled);
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
+      setServiceStatus(statusResult);
+      if (reconnected) dashboardSubscriptions.current.clear();
+      const wanted = new Set(
+        reconciled
+          .filter((session) => ["working", "waiting"].includes(session.status))
+          .map((session) => session.id),
+      );
+      const stale = [...dashboardSubscriptions.current].filter((id) => !wanted.has(id));
+      await Promise.all([
+        ...[...wanted].map((sessionId) =>
+          client.request("session.subscribe", { sessionId }).then(() => {
+            dashboardSubscriptions.current.add(sessionId);
+          }).catch(() => undefined),
+        ),
+        ...stale.map((sessionId) =>
+          client.request("session.unsubscribe", { sessionId }).then(() => {
+            dashboardSubscriptions.current.delete(sessionId);
+          }).catch(() => undefined),
+        ),
+      ]);
       const reopenId = selectedIdRef.current;
-      if (reopenId) {
+      if (reopenId && viewRef.current === "detail") {
         try {
           const result = await client.request<
             { session: SessionSummary } & Record<string, unknown>
@@ -198,8 +304,8 @@ function App() {
           selectedIdRef.current = null;
           setSelectedId(null);
           setCurrent(null);
-          setView("sessions");
-          updateRoute({ view: "sessions" }, true);
+          setView("dashboard");
+          updateRoute({ view: "dashboard" }, true);
         }
       }
     },
@@ -232,6 +338,7 @@ function App() {
       setBusy(true);
       selectedIdRef.current = id;
       setSelectedId(id);
+      viewRef.current = "detail";
       setView("detail");
       if (updateHistory) updateRoute({ view: "detail", sessionId: id });
       try {
@@ -250,14 +357,32 @@ function App() {
   );
   openSessionRef.current = (id, updateHistory = true) => { void openSession(id, updateHistory); };
 
+  const closeSelectedSession = useCallback(() => {
+    const sessionId = selectedIdRef.current;
+    if (sessionId && !dashboardSubscriptions.current.has(sessionId)) {
+      void client.request("session.unsubscribe", { sessionId }).catch(() => undefined);
+    }
+    selectedIdRef.current = null;
+    setSelectedId(null);
+    setCurrent(null);
+  }, [client]);
+
   useEffect(() => {
     const restoreRoute = () => {
       const route = parseWebRoute(window.location.pathname);
+      viewRef.current = route.view;
+      if (route.view === "dashboard") {
+        closeSelectedSession();
+        setView("dashboard");
+        return;
+      }
       if (route.view === "settings") {
+        closeSelectedSession();
         setView("settings");
         return;
       }
       if (route.view === "sessions") {
+        closeSelectedSession();
         setView("sessions");
         return;
       }
@@ -270,15 +395,26 @@ function App() {
     };
     window.addEventListener("popstate", restoreRoute);
     return () => window.removeEventListener("popstate", restoreRoute);
-  }, []);
+  }, [closeSelectedSession]);
+
+  const showDashboard = (replace = false) => {
+    viewRef.current = "dashboard";
+    setView("dashboard");
+    closeSelectedSession();
+    updateRoute({ view: "dashboard" }, replace);
+  };
 
   const showSessions = (replace = false) => {
+    viewRef.current = "sessions";
     setView("sessions");
+    closeSelectedSession();
     updateRoute({ view: "sessions" }, replace);
   };
 
   const showSettings = () => {
+    viewRef.current = "settings";
     setView("settings");
+    closeSelectedSession();
     updateRoute({ view: "settings" });
   };
 
@@ -296,9 +432,25 @@ function App() {
     selectedIdRef.current = null;
     setSelectedId(null);
     setHello(null);
+    setServiceStatus(null);
+    dashboardSubscriptions.current.clear();
     setError("");
-    showSessions(true);
+    showDashboard(true);
   };
+
+  const dashboardOpen = useCallback((id: string) => {
+    void openSession(id);
+  }, [openSession]);
+  const dashboardInterrupt = useCallback((session: SessionSummary) => {
+    if (!session.activeTurnId) return;
+    void client.request("turn.interrupt", {
+      sessionId: session.id,
+      turnId: session.activeTurnId,
+    }).catch((caught) => setError(caught instanceof Error ? caught.message : "Interrupt failed"));
+  }, [client]);
+  const dashboardRefresh = useCallback(() => {
+    void refreshState().catch((caught) => setError(String(caught)));
+  }, [refreshState]);
 
   if (!storedHost) {
     return (
@@ -328,13 +480,16 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => showSessions()} aria-label="Sessions">
+        <button className="brand" onClick={() => showDashboard()} aria-label="Dashboard">
           <span className="brand-mark">F</span>
           <span>Foreman</span>
         </button>
         <ConnectionBadge state={connection} detail={connectionDetail} />
         <nav>
-          <button className={view !== "settings" ? "active" : ""} onClick={() => showSessions()}>
+          <button className={view === "dashboard" ? "active" : ""} onClick={() => showDashboard()}>
+            Dashboard
+          </button>
+          <button className={view === "sessions" || view === "detail" ? "active" : ""} onClick={() => showSessions()}>
             Sessions
           </button>
           <button className={view === "settings" ? "active" : ""} onClick={showSettings}>
@@ -372,6 +527,16 @@ function App() {
             setNotificationsEnabled(enabled);
           }}
           onForget={forget}
+        />
+      ) : view === "dashboard" ? (
+        <Dashboard
+          sessions={sessions}
+          serviceStatus={serviceStatus}
+          connection={connection}
+          disabled={!connected}
+          onOpen={dashboardOpen}
+          onInterrupt={dashboardInterrupt}
+          onRefresh={dashboardRefresh}
         />
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
@@ -443,10 +608,13 @@ function App() {
               const result = await client.request<
                 { session: SessionSummary } & Record<string, unknown>
               >("session.start", { repositoryId });
-              setSessions((previous) => [result.session, ...previous]);
+              setSessions((previous) => previous.some((session) => session.id === result.session.id)
+                ? previous.map((session) => session.id === result.session.id ? result.session : session)
+                : [result.session, ...previous]);
               selectedIdRef.current = result.session.id;
               setSelectedId(result.session.id);
               setCurrent(result.session);
+              viewRef.current = "detail";
               setView("detail");
               updateRoute({ view: "detail", sessionId: result.session.id });
               setNewSessionOpen(false);
