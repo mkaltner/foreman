@@ -134,7 +134,8 @@ The SPA supports sessions and real history; detailed live thinking, planning,
 command, and tool activity; new sessions; prompt, steer, and interrupt;
 descriptive model/reasoning/access menus; file-picker and clipboard images;
 archive/delete; opt-in browser notifications for background tabs; bounded
-reconnect without request replay; and responsive theme and accent controls.
+reconnect without request replay; durable session URLs with browser Back,
+Forward, and refresh restoration; and responsive theme and accent controls.
 Browser notifications require HTTPS or localhost and work while Foreman remains
 open in a background tab. For another device on the LAN, put the web listener
 behind a trusted same-origin HTTPS reverse proxy. For example, Caddy on the

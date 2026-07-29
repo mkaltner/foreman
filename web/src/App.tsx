@@ -58,14 +58,18 @@ import {
   formatActivity,
   isNearBottom,
   parseAssistantContent,
+  parseWebRoute,
   reasoningDescription,
   reasoningLabel,
+  webRoutePath,
   type AppDirective,
+  type WebRoute,
 } from "./ui";
 
 type View = "sessions" | "detail" | "settings";
 
 function App() {
+  const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
   const [storedHost, setStoredHost] = useState<StoredHost | null>(() => loadHost());
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
@@ -73,24 +77,39 @@ function App() {
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selectedIdRef = useRef<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialRoute.view === "detail" ? initialRoute.sessionId : null,
+  );
+  const selectedIdRef = useRef<string | null>(
+    initialRoute.view === "detail" ? initialRoute.sessionId : null,
+  );
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [accessLevels, setAccessLevels] = useState<AccessLevelInfo[]>([]);
   const [repositories, setRepositories] = useState<RepositoryInfo[]>([]);
-  const [view, setView] = useState<View>(storedHost ? "sessions" : "sessions");
+  const [view, setView] = useState<View>(initialRoute.view);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(loadNotificationsEnabled);
   const notificationsEnabledRef = useRef(notificationsEnabled);
   const sessionsRef = useRef<SessionSummary[]>([]);
+  const currentRef = useRef<SessionSummary | null>(null);
+  const connectedRef = useRef(false);
   const notificationMonitor = useRef(new TurnNotificationMonitor());
-  const openSessionRef = useRef<(id: string) => void>(() => undefined);
+  const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
+
+  const updateRoute = useCallback((route: WebRoute, replace = false) => {
+    const path = webRoutePath(route);
+    if (window.location.pathname === path) return;
+    window.history[replace ? "replaceState" : "pushState"](null, "", path);
+  }, []);
 
   useEffect(() => applyAppearance(appearance), [appearance]);
   useEffect(() => { notificationsEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { currentRef.current = current; }, [current]);
+  useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
+  useEffect(() => { updateRoute(initialRoute, true); }, [initialRoute, updateRoute]);
 
   useEffect(() => {
     if (window.isSecureContext && "serviceWorker" in navigator) {
@@ -180,10 +199,11 @@ function App() {
           setSelectedId(null);
           setCurrent(null);
           setView("sessions");
+          updateRoute({ view: "sessions" }, true);
         }
       }
     },
-    [client],
+    [client, updateRoute],
   );
 
   const connectHost = useCallback(
@@ -207,12 +227,13 @@ function App() {
   }, [client, connectHost, storedHost]);
 
   const openSession = useCallback(
-    async (id: string) => {
+    async (id: string, updateHistory = true) => {
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
       setSelectedId(id);
       setView("detail");
+      if (updateHistory) updateRoute({ view: "detail", sessionId: id });
       try {
         const result = await client.request<
           { session: SessionSummary } & Record<string, unknown>
@@ -225,9 +246,41 @@ function App() {
         setBusy(false);
       }
     },
-    [client],
+    [client, updateRoute],
   );
-  openSessionRef.current = (id) => { void openSession(id); };
+  openSessionRef.current = (id, updateHistory = true) => { void openSession(id, updateHistory); };
+
+  useEffect(() => {
+    const restoreRoute = () => {
+      const route = parseWebRoute(window.location.pathname);
+      if (route.view === "settings") {
+        setView("settings");
+        return;
+      }
+      if (route.view === "sessions") {
+        setView("sessions");
+        return;
+      }
+      selectedIdRef.current = route.sessionId;
+      setSelectedId(route.sessionId);
+      setView("detail");
+      if (currentRef.current?.id !== route.sessionId && connectedRef.current) {
+        openSessionRef.current(route.sessionId, false);
+      }
+    };
+    window.addEventListener("popstate", restoreRoute);
+    return () => window.removeEventListener("popstate", restoreRoute);
+  }, []);
+
+  const showSessions = (replace = false) => {
+    setView("sessions");
+    updateRoute({ view: "sessions" }, replace);
+  };
+
+  const showSettings = () => {
+    setView("settings");
+    updateRoute({ view: "settings" });
+  };
 
   const updateAppearance = (next: Appearance) => {
     setAppearance(next);
@@ -244,7 +297,7 @@ function App() {
     setSelectedId(null);
     setHello(null);
     setError("");
-    setView("sessions");
+    showSessions(true);
   };
 
   if (!storedHost) {
@@ -275,16 +328,16 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => setView("sessions")} aria-label="Sessions">
+        <button className="brand" onClick={() => showSessions()} aria-label="Sessions">
           <span className="brand-mark">F</span>
           <span>Foreman</span>
         </button>
         <ConnectionBadge state={connection} detail={connectionDetail} />
         <nav>
-          <button className={view === "sessions" ? "active" : ""} onClick={() => setView("sessions")}>
+          <button className={view !== "settings" ? "active" : ""} onClick={() => showSessions()}>
             Sessions
           </button>
-          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
+          <button className={view === "settings" ? "active" : ""} onClick={showSettings}>
             Settings
           </button>
         </nav>
@@ -351,7 +404,7 @@ function App() {
                   selectedIdRef.current = null;
                   setSelectedId(null);
                   setCurrent(null);
-                  setView("sessions");
+                  showSessions(true);
                 }
               } catch (caught) {
                 setError(caught instanceof Error ? caught.message : `${action} failed`);
@@ -365,7 +418,7 @@ function App() {
                 models={models}
                 accessLevels={accessLevels}
                 connected={connected}
-                onBack={() => setView("sessions")}
+                onBack={() => showSessions()}
                 onRequest={(type, payload) => client.request(type, payload)}
                 onError={setError}
               />
@@ -395,6 +448,7 @@ function App() {
               setSelectedId(result.session.id);
               setCurrent(result.session);
               setView("detail");
+              updateRoute({ view: "detail", sessionId: result.session.id });
               setNewSessionOpen(false);
             } catch (caught) {
               setError(caught instanceof Error ? caught.message : "Session could not be started");

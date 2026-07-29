@@ -312,7 +312,9 @@ class Foreman:
         return self.http_response(HTTPStatus.FORBIDDEN, b"Origin not allowed\n", "text/plain")
 
     def static_asset(self, path: str) -> tuple[bytes, str, bool] | None:
-        relative = "index.html" if path == "/" else unquote(path).lstrip("/")
+        relative = unquote(path).lstrip("/")
+        if not relative or relative in ("sessions", "settings") or relative.startswith("sessions/"):
+            relative = "index.html"
         if not relative or not (
             relative in ("index.html", "sw.js") or relative.startswith("assets/")
         ):

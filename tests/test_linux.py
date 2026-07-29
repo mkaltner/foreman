@@ -1033,6 +1033,15 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertIn("default-src 'self'", headers["content-security-policy"])
 
+        status, headers, body = await self.http_get("/sessions/thread-1")
+        self.assertIn("200", status)
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(body, b"<main>Foreman</main>")
+
+        status, _, body = await self.http_get("/settings")
+        self.assertIn("200", status)
+        self.assertEqual(body, b"<main>Foreman</main>")
+
         status, headers, body = await self.http_get("/assets/app.js")
         self.assertIn("200", status)
         self.assertIn("immutable", headers["cache-control"])

@@ -13,8 +13,10 @@ import {
   createSubmissionGuard,
   isNearBottom,
   parseAssistantContent,
+  parseWebRoute,
   reasoningDescription,
   reasoningLabel,
+  webRoutePath,
 } from "./ui";
 
 describe("storage, appearance, and interaction helpers", () => {
@@ -92,5 +94,14 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(parseAssistantContent('::unknown{value="safe"}')).toEqual([
       { kind: "markdown", text: '::unknown{value="safe"}' },
     ]);
+  });
+
+  it("round-trips session, settings, and list browser routes", () => {
+    expect(parseWebRoute("/settings")).toEqual({ view: "settings" });
+    expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", sessionId: "thread/one" });
+    expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
+    expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
+    expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
+      .toBe("/sessions/thread%2Fone");
   });
 });

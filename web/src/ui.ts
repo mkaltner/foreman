@@ -62,6 +62,32 @@ export function reasoningDescription(effort: string): string | undefined {
   return effort.toLowerCase() === "ultra" ? "Consumes usage limits faster" : undefined;
 }
 
+export type WebRoute =
+  | { view: "sessions" }
+  | { view: "settings" }
+  | { view: "detail"; sessionId: string };
+
+export function parseWebRoute(pathname: string): WebRoute {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/settings") return { view: "settings" };
+  const match = /^\/sessions\/([^/]+)$/.exec(normalized);
+  if (match) {
+    try {
+      const sessionId = decodeURIComponent(match[1]);
+      if (sessionId) return { view: "detail", sessionId };
+    } catch {
+      // Treat malformed URL escapes as the session list.
+    }
+  }
+  return { view: "sessions" };
+}
+
+export function webRoutePath(route: WebRoute): string {
+  if (route.view === "settings") return "/settings";
+  if (route.view === "detail") return `/sessions/${encodeURIComponent(route.sessionId)}`;
+  return "/sessions";
+}
+
 export interface AppDirective {
   name: string;
   attributes: Record<string, string>;
