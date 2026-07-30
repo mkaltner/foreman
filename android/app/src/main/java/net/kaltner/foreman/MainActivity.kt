@@ -142,6 +142,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -393,7 +394,10 @@ class MainActivity : ComponentActivity() {
 
     private fun openNotificationSession(intent: Intent?) {
         intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)?.let {
-            foremanViewModel.openSessionFromNotification(it)
+            foremanViewModel.openSessionFromNotification(
+                it,
+                intent.getStringExtra(TurnMonitorService.EXTRA_APPROVAL_ID),
+            )
         }
     }
 }
@@ -618,6 +622,19 @@ internal data class UiState(
     val pinnedSessionIds: Set<String> = emptySet(),
     val hiddenSessionIds: Set<String> = emptySet(),
     val highlightedItemId: String? = null,
+    val focusedApprovalId: String? = null,
+    val approvals: List<ApprovalRequest> = emptyList(),
+    val submittingApprovalIds: Set<String> = emptySet(),
+    val approvalErrors: Map<String, String> = emptyMap(),
+)
+
+private data class SyncSnapshot(
+    val sessions: List<SessionSummary>,
+    val repositories: List<RepositoryInfo>,
+    val repositoryRoot: String,
+    val models: List<ModelInfo>,
+    val accessLevels: List<AccessLevelInfo>,
+    val approvals: List<ApprovalRequest>,
 )
 
 internal fun UiState.withForgottenConnection(): UiState =
@@ -642,6 +659,9 @@ internal fun UiState.withForgottenConnection(): UiState =
         searchResults = emptyList(),
         searchLoading = false,
         searchError = null,
+        approvals = emptyList(),
+        submittingApprovalIds = emptySet(),
+        approvalErrors = emptyMap(),
     )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -680,6 +700,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
     private var notificationSessionId: String? = null
+    private var notificationApprovalId: String? = null
     private var searchJob: Job? = null
     private var lastSearchRequestKey = ""
     private val client = ForemanClient(
@@ -698,6 +719,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     error = message,
                     capabilities = emptySet(),
                     pendingSessionAction = null,
+                    approvals = it.approvals.map { approval ->
+                        if (approval.status == "pending" || approval.status == "submitting") {
+                            approval.copy(status = "expired", resolution = "disconnected")
+                        } else approval
+                    },
+                    submittingApprovalIds = emptySet(),
                 )
             }
         },
@@ -882,11 +909,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
     }
 
-    fun openSessionFromNotification(id: String) {
+    fun openSessionFromNotification(id: String, approvalId: String? = null) {
         notificationSessionId = id
+        notificationApprovalId = approvalId
         if (state.value.connected) {
             notificationSessionId = null
-            openSession(id)
+            openSession(id, focusedApprovalId = approvalId)
         }
     }
 
@@ -933,6 +961,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             sessionDiscoveryQueue.clear()
         }
         notificationSessionId = null
+        notificationApprovalId = null
         client.close()
         TurnMonitorService.stopAll(getApplication())
         tokens.clear()
@@ -978,6 +1007,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             }
             synchronizeSessions(selectedId)
             notificationSessionId = null
+            state.update { it.copy(focusedApprovalId = notificationApprovalId) }
+            notificationApprovalId = null
         }.onFailure(::fail)
     }
 
@@ -989,9 +1020,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun openSession(id: String, highlightedItemId: String? = null) {
+    fun openSession(
+        id: String,
+        highlightedItemId: String? = null,
+        focusedApprovalId: String? = null,
+    ) {
         viewModelScope.launch {
-            state.update { it.copy(screen = Screen.Detail, loading = true, error = null, highlightedItemId = highlightedItemId) }
+            state.update { it.copy(screen = Screen.Detail, loading = true, error = null, highlightedItemId = highlightedItemId, focusedApprovalId = focusedApprovalId) }
             runCatching {
                 val selected = readSession(id)
                 state.update {
@@ -1006,9 +1041,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private suspend fun synchronizeSessions(selectedSessionId: String? = null) {
         state.update { it.copy(loading = true, error = null) }
-        val (sessions, repositoryContext, catalogs) =
+        val snapshot =
             coroutineScope {
                 val sessionsRequest = async { listSessions() }
+                val approvalsRequest =
+                    async {
+                        if ("approvals" in client.capabilities) client.request("approval.list") else null
+                    }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val serviceStatusRequest = async { client.request("service.status") }
                 val modelsRequest =
@@ -1043,21 +1082,29 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     accessRequest.await()?.payload?.get("levels")?.jsonArray
                         ?.map { json.decodeFromJsonElement<AccessLevelInfo>(it) }
                         ?: emptyList()
-                Triple(sessions, repositories to repositoryRoot, models to accessLevels)
+                val approvals =
+                    approvalsRequest.await()?.payload?.get("approvals")?.jsonArray
+                        ?.map { json.decodeFromJsonElement<ApprovalRequest>(it) }
+                        ?: emptyList()
+                SyncSnapshot(sessions, repositories, repositoryRoot, models, accessLevels, approvals)
             }
-        val (repositories, repositoryRoot) = repositoryContext
-        val (models, accessLevels) = catalogs
+        val sessions = snapshot.sessions
         val selected = selectedSessionId?.let { readSession(it) }
         state.update {
             it.withSynchronizedSessions(
                     sessions = sessions,
-                    repositories = repositories,
+                    repositories = snapshot.repositories,
                     selectedSessionId = selectedSessionId,
                     selectedSession = selected,
                 )
-                .copy(repositoryRoot = repositoryRoot)
-                .withModelsAndSessionRoute(models, selected)
-                .withAccessLevelsAndSessionAccess(accessLevels, selected)
+                .copy(
+                    repositoryRoot = snapshot.repositoryRoot,
+                    approvals = snapshot.approvals,
+                    submittingApprovalIds = emptySet(),
+                    approvalErrors = emptyMap(),
+                )
+                .withModelsAndSessionRoute(snapshot.models, selected)
+                .withAccessLevelsAndSessionAccess(snapshot.accessLevels, selected)
         }
         val validIds = sessions.mapTo(mutableSetOf()) { it.id }
         preferences.retainSessionIds(validIds)
@@ -1128,7 +1175,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun backToSessions() {
-        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null) }
+        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null, focusedApprovalId = null) }
         refresh()
     }
 
@@ -1323,7 +1370,84 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun respondToApproval(approval: ApprovalRequest, decision: JsonObject) {
+        val current = state.value
+        if (!current.connected || approval.id in current.submittingApprovalIds || approval.status != "pending") return
+        state.update {
+            it.copy(
+                submittingApprovalIds = it.submittingApprovalIds + approval.id,
+                approvalErrors = it.approvalErrors - approval.id,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "approval.respond",
+                    buildJsonObject {
+                        put("approvalId", approval.id)
+                        put("decision", decision)
+                    },
+                )
+                state.update { currentState ->
+                    currentState.copy(
+                        approvals = currentState.approvals.map {
+                            if (it.id == approval.id) it.copy(status = "submitting") else it
+                        },
+                    )
+                }
+            }.onFailure { failure ->
+                val message = failure.message ?: "Approval response failed"
+                state.update {
+                    it.copy(
+                        submittingApprovalIds = it.submittingApprovalIds - approval.id,
+                        approvalErrors = it.approvalErrors +
+                            (approval.id to if (message.contains("already resolved", true)) "Already resolved in another client." else message),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun handleApprovalEvent(message: WireMessage): Boolean {
+        if (message.type !in setOf("approval.requested", "approval.updated", "approval.resolved")) return false
+        val raw = message.payload["approval"] ?: return true
+        val approval = runCatching { json.decodeFromJsonElement<ApprovalRequest>(raw) }.getOrNull() ?: return true
+        val terminal = approval.status == "resolved" || approval.status == "expired"
+        if (state.value.sessions.none { it.id == approval.sessionId }) discoverSession(approval.sessionId)
+        state.update { current ->
+            fun updateSession(session: SessionSummary): SessionSummary =
+                if (session.id != approval.sessionId) session else session.copy(
+                    status = if (terminal && session.status == "waiting") "working" else "waiting",
+                    attention = !terminal,
+                    activeTurnId = approval.turnId ?: session.activeTurnId,
+                    activityLabel = if (terminal) "Approval resolved" else approvalAttentionLabel(approval.type),
+                    activityText = "",
+                )
+            current.copy(
+                approvals =
+                    if (current.approvals.any { it.id == approval.id }) {
+                        current.approvals.map { if (it.id == approval.id) approval else it }
+                    } else {
+                        current.approvals + approval
+                    },
+                sessions = current.sessions.map(::updateSession),
+                selected = current.selected?.let(::updateSession),
+                submittingApprovalIds = if (terminal) current.submittingApprovalIds - approval.id else current.submittingApprovalIds,
+                approvalErrors = if (terminal) current.approvalErrors - approval.id else current.approvalErrors,
+            )
+        }
+        if (terminal) viewModelScope.launch {
+            delay(5_000)
+            state.update { it.copy(
+                approvals = it.approvals.filterNot { item -> item.id == approval.id },
+                focusedApprovalId = it.focusedApprovalId.takeUnless { id -> id == approval.id },
+            ) }
+        }
+        return true
+    }
+
     private fun handleEvent(message: WireMessage) {
+        if (handleApprovalEvent(message)) return
         if (message.type != "session.event") return
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val event = message.eventObject()
@@ -2122,6 +2246,7 @@ private fun SessionDetailScreen(
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
     val selected = state.selected
+    val selectedApprovals = state.approvals.filter { it.sessionId == selected?.id }
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
     val hapticFeedback = LocalHapticFeedback.current
@@ -2144,12 +2269,13 @@ private fun SessionDetailScreen(
         }
     }
 
-    LaunchedEffect(selected?.id) {
+    LaunchedEffect(selected?.id, state.focusedApprovalId, selectedApprovals.size) {
         selected?.let {
-            val matchedIndex = it.messages.indexOfFirst { item -> item.id == state.highlightedItemId }
+            val focusedItemId = selectedApprovals.firstOrNull { approval -> approval.id == state.focusedApprovalId }?.itemId
+            val matchedIndex = it.messages.indexOfFirst { item -> item.id == (focusedItemId ?: state.highlightedItemId) }
             listState.scrollToItem(
                 if (matchedIndex >= 0) matchedIndex + 1
-                else it.messages.size + if (it.status == "working") 1 else 0,
+                else it.messages.size + 1,
             )
         }
     }
@@ -2161,6 +2287,7 @@ private fun SessionDetailScreen(
         selected?.status,
         selected?.activityLabel,
         selected?.activityText,
+        selectedApprovals.size,
     ) {
         if (state.followNewMessages && state.highlightedItemId == null) {
             selected?.let {
@@ -2196,7 +2323,7 @@ private fun SessionDetailScreen(
                     }
                 },
                 actions = {
-                    if (selected?.status == "working" && selected.activeTurnId != null) {
+                    if (selected?.status in setOf("working", "waiting") && selected?.activeTurnId != null) {
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                         }
@@ -2224,7 +2351,7 @@ private fun SessionDetailScreen(
         bottomBar = {
             if (selected != null) PromptBox(
                 working = selected.status == "working",
-                enabled = state.connected && !state.submitting,
+                enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" },
                 accessLevels = state.accessLevels,
                 accessLevelId = state.composerAccessLevel,
                 models = state.models,
@@ -2265,7 +2392,30 @@ private fun SessionDetailScreen(
                         selected.messages,
                         key = { index, item -> "${item.id}-$index" },
                     ) { _, item ->
-                        ConversationRow(item)
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ConversationRow(item)
+                            selectedApprovals.filter { it.itemId == item.id }.forEach { approval ->
+                                ApprovalCard(
+                                    approval = approval,
+                                    connected = state.connected,
+                                    submitting = approval.id in state.submittingApprovalIds,
+                                    error = state.approvalErrors[approval.id],
+                                    onRespond = { viewModel.respondToApproval(approval, it) },
+                                )
+                            }
+                        }
+                    }
+                    items(
+                        selectedApprovals.filter { approval -> approval.itemId == null || selected.messages.none { it.id == approval.itemId } },
+                        key = { "approval-${it.id}" },
+                    ) { approval ->
+                        ApprovalCard(
+                            approval = approval,
+                            connected = state.connected,
+                            submitting = approval.id in state.submittingApprovalIds,
+                            error = state.approvalErrors[approval.id],
+                            onRespond = { viewModel.respondToApproval(approval, it) },
+                        )
                     }
                     if (selected.status == "working") {
                         item(key = "live-activity") {

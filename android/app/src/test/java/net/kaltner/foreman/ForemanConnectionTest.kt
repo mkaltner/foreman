@@ -633,7 +633,7 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun monitorLifecycleCleansUpOnlyTheCompletedSession() {
+    fun monitorLifecycleKeepsWaitingApprovalSessionsUntilTerminal() {
         val lifecycle = MonitorLifecycle()
         lifecycle.monitor("session-1", active = true)
         lifecycle.monitor("session-2", active = true)
@@ -642,9 +642,57 @@ class ForemanConnectionTest {
             "Foreman needs your attention",
             lifecycle.status("session-1", "waiting")?.title,
         )
-        assertFalse(lifecycle.contains("session-1"))
+        assertTrue(lifecycle.contains("session-1"))
         assertTrue(lifecycle.contains("session-2"))
+        assertEquals(setOf("session-1", "session-2"), lifecycle.sessionIds())
+        lifecycle.status("session-1", "completed")
         assertEquals(setOf("session-2"), lifecycle.sessionIds())
+    }
+
+    @Test
+    fun approvalPermissionSelectionBuildsOnlyTheChosenSubset() {
+        val approval =
+            ApprovalRequest(
+                id = "apr-safe",
+                sessionId = "session-1",
+                type = "permission",
+                title = "Permissions requested",
+                createdAt = 1,
+                status = "pending",
+                requestedPermissions =
+                    buildJsonObject {
+                        put(
+                            "fileSystem",
+                            buildJsonObject {
+                                put("write", kotlinx.serialization.json.buildJsonArray {
+                                    add(kotlinx.serialization.json.JsonPrimitive("/workspace/one"))
+                                    add(kotlinx.serialization.json.JsonPrimitive("/workspace/two"))
+                                })
+                            },
+                        )
+                        put("network", buildJsonObject { put("enabled", true) })
+                    },
+            )
+        val choices = permissionChoices(approval)
+        assertEquals(listOf("write-0", "write-1", "network"), choices.map { it.id })
+        val selected = selectedPermissions(approval, choices, setOf("write-0"))
+        assertEquals(
+            listOf("/workspace/one"),
+            selected["fileSystem"]!!.jsonObject["write"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertNull(selected["network"])
+    }
+
+    @Test
+    fun approvalLabelsAndNotificationTextArePrivacySafe() {
+        assertEquals("Waiting for command approval", approvalAttentionLabel("command"))
+        assertEquals("Waiting for file-change approval", approvalAttentionLabel("fileChange"))
+        assertEquals("Waiting for permission grant", approvalAttentionLabel("permission"))
+        val notification = approvalNotificationText()
+        assertEquals("Foreman needs your attention", notification.title)
+        assertEquals("A monitored session has an approval request.", notification.detail)
+        assertFalse(notification.detail.contains("/private"))
+        assertFalse(notification.detail.contains("command"))
     }
 
     @Test
