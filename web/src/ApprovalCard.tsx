@@ -13,6 +13,8 @@ interface PermissionChoice {
   add: (target: ApprovalPermissions) => void;
 }
 
+export const APPROVAL_CARD_MAX_WIDTH = 760;
+
 export function approvalAttentionLabel(approval: ApprovalRequest): string {
   return {
     command: "Waiting for command approval",
@@ -124,6 +126,7 @@ export function ApprovalCard({
       ref={rootRef}
       id={`approval-${approval.id}`}
       className={`approval-card approval-${approval.type} ${focused ? "approval-focused" : ""}`}
+      style={{ maxWidth: APPROVAL_CARD_MAX_WIDTH }}
       tabIndex={-1}
       aria-labelledby={`approval-title-${approval.id}`}
     >

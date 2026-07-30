@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ApprovalCard } from "./ApprovalCard";
+import { APPROVAL_CARD_MAX_WIDTH, ApprovalCard } from "./ApprovalCard";
 import type { ApprovalRequest } from "./protocol";
 
 const base: ApprovalRequest = {
@@ -22,6 +22,13 @@ const base: ApprovalRequest = {
 };
 
 describe("approval card", () => {
+  it("aligns its focus treatment with the conversation column", () => {
+    const { container } = render(<ApprovalCard approval={base} focused connected onRespond={vi.fn()} />);
+    expect(APPROVAL_CARD_MAX_WIDTH).toBe(760);
+    expect(container.querySelector(".approval-card")).toHaveStyle({ maxWidth: "760px" });
+    expect(container.querySelector(".approval-card")).toHaveClass("approval-focused");
+  });
+
   it("renders command fields safely and only advertised decisions", async () => {
     const respond = vi.fn().mockResolvedValue(undefined);
     render(<ApprovalCard approval={base} connected onRespond={respond} />);
