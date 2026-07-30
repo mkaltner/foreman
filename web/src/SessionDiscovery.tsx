@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 import { activeFilterCount, type RepositoryFilterOption, type SessionFilters, type VisibleSession } from "./session-search";
 
 export function SessionSearchControls({
@@ -15,6 +15,23 @@ export function SessionSearchControls({
   onSearchNow: () => void;
 }) {
   const count = activeFilterCount(filters);
+  const panelRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = () => panelRef.current?.removeAttribute("open");
+    const outside = (event: MouseEvent) => {
+      const panel = panelRef.current;
+      if (panel?.open && event.target instanceof Node && !panel.contains(event.target)) close();
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, []);
   const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -42,7 +59,7 @@ export function SessionSearchControls({
           {loading && <i className="search-spinner" role="status" aria-label="Searching" />}
           {filters.query && <button type="button" onClick={() => onChange({ ...filters, query: "" })} aria-label="Clear search">×</button>}
         </label>
-        <details className="filter-panel">
+        <details className="filter-panel" ref={panelRef}>
           <summary>Filters{count > 0 && <b aria-label={`${count} active filters`}>{count}</b>}</summary>
           <div className="filter-grid">
             <label>Repository or workspace
@@ -67,7 +84,10 @@ export function SessionSearchControls({
             <label>Sort
               <select value={filters.sort} onChange={(event) => onChange({ ...filters, sort: event.target.value as SessionFilters["sort"] })}><option value="relevance">Relevance</option><option value="recent">Most recent</option><option value="oldest">Oldest</option><option value="status">Status</option></select>
             </label>
-            <button className="secondary clear-filters" type="button" disabled={!count} onClick={() => onChange({ query: "", repository: "", statuses: [], dateRange: "all", dateFrom: "", dateTo: "", pinnedOnly: false, hidden: "visible", sort: "relevance" })}>Clear filters</button>
+            <div className="filter-actions">
+              <button className="secondary clear-filters" type="button" disabled={!count} onClick={() => onChange({ query: "", repository: "", statuses: [], dateRange: "all", dateFrom: "", dateTo: "", pinnedOnly: false, hidden: "visible", sort: "relevance" })}>Clear filters</button>
+              <button className="primary" type="button" onClick={() => panelRef.current?.removeAttribute("open")}>Done</button>
+            </div>
           </div>
         </details>
       </div>

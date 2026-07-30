@@ -23,6 +23,21 @@ describe("SessionSearchControls", () => {
     expect(document.querySelector("[data-search-result]")).toHaveFocus();
   });
 
+  it("dismisses filters with Done, Escape, and an outside click", () => {
+    render(<SessionSearchControls filters={DEFAULT_SESSION_FILTERS} repositories={[]} loading={false} onChange={vi.fn()} onSearchNow={vi.fn()} />);
+    const details = document.querySelector("details");
+    fireEvent.click(screen.getByText("Filters"));
+    expect(details).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Filters"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Filters"));
+    fireEvent.mouseDown(document.body);
+    expect(details).not.toHaveAttribute("open");
+  });
+
   it("shows loading, empty, error, snippets, and accessible local actions", () => {
     const { rerender } = render(<SessionSearchResults results={[]} query="missing" loading={true} error="" onOpen={vi.fn()} onPin={vi.fn()} onHide={vi.fn()} />);
     expect(screen.getByText("Searching sessions…")).toBeInTheDocument();
