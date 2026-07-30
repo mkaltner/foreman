@@ -934,6 +934,7 @@ class Foreman:
                     ),
                     "models": self.codex.supports("model/list"),
                     "access": self.codex.supports("permissionProfile/list"),
+                    "threadSettings": self.codex.supports("thread/settings/update"),
                     "images": True,
                     "search": True,
                     "diagnostics": True,
@@ -1095,6 +1096,23 @@ class Foreman:
             self.session_overlays.pop(thread_id, None)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
+        if message_type == "session.settings":
+            thread_id = required_text(payload, "sessionId", 100)
+            if not any(
+                payload.get(key) is not None
+                for key in ("model", "reasoningEffort", "accessLevel")
+            ):
+                raise ValueError("at least one session setting is required")
+            model_id, effort = await self.route(payload)
+            selected_access_level = await self.access_level(payload)
+            async with self.thread_lock(thread_id):
+                await self.codex.update_thread_settings(
+                    thread_id,
+                    model_id,
+                    effort,
+                    selected_access_level,
+                )
+            return {"updated": True}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)
             images = image_payloads(payload)

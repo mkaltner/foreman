@@ -1561,6 +1561,7 @@ export function ConversationView({
   const [access, setAccess] = useState(initialRoute.accessLevel);
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [updatingRoute, setUpdatingRoute] = useState(false);
   const [processing, setProcessing] = useState(false);
   const processingImages = useRef(false);
   const submissionGuard = useRef(createSubmissionGuard());
@@ -1601,7 +1602,8 @@ export function ConversationView({
 
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
-  const canSubmit = connected && !submitting && !processing && (!!draft.trim() || images.length > 0);
+  const hasActiveTurn = (session.status === "working" || session.status === "waiting") && !!session.activeTurnId;
+  const canSubmit = connected && !submitting && !updatingRoute && !processing && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
 
@@ -1667,6 +1669,61 @@ export function ConversationView({
     void addImages(files);
   };
 
+  const updateAccess = async (value: string) => {
+    const previous = access;
+    setAccess(value);
+    setUpdatingRoute(true);
+    try {
+      await onRequest("session.settings", { sessionId: session.id, accessLevel: value });
+    } catch (caught) {
+      setAccess(previous);
+      onError(caught instanceof Error ? caught.message : "Access setting was not updated");
+    } finally {
+      setUpdatingRoute(false);
+    }
+  };
+
+  const updateModel = async (value: string) => {
+    const previousModel = model;
+    const previousEffort = effort;
+    const next = models.find((entry) => entry.id === value);
+    const nextEffort = next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? "";
+    setModel(value);
+    setEffort(nextEffort);
+    setUpdatingRoute(true);
+    try {
+      await onRequest("session.settings", {
+        sessionId: session.id,
+        model: value,
+        ...(nextEffort ? { reasoningEffort: nextEffort } : {}),
+      });
+    } catch (caught) {
+      setModel(previousModel);
+      setEffort(previousEffort);
+      onError(caught instanceof Error ? caught.message : "Model setting was not updated");
+    } finally {
+      setUpdatingRoute(false);
+    }
+  };
+
+  const updateEffort = async (value: string) => {
+    const previous = effort;
+    setEffort(value);
+    setUpdatingRoute(true);
+    try {
+      await onRequest("session.settings", {
+        sessionId: session.id,
+        model,
+        reasoningEffort: value,
+      });
+    } catch (caught) {
+      setEffort(previous);
+      onError(caught instanceof Error ? caught.message : "Reasoning setting was not updated");
+    } finally {
+      setUpdatingRoute(false);
+    }
+  };
+
   return (
     <div className="conversation">
       <header className="conversation-header">
@@ -1698,15 +1755,15 @@ export function ConversationView({
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
-          <RouteSelect label="Access" value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: level.id === "full" }))} disabled={active || submitting} onChange={setAccess} />
-          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={active || submitting} onChange={(value) => { const next = models.find((entry) => entry.id === value); setModel(value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }} />
-          <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={active || submitting} onChange={setEffort} />
+          <RouteSelect label="Access" value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: level.id === "full" }))} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateAccess(value)} />
+          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateModel(value)} />
+          <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateEffort(value)} />
         </div>
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
           <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-          {(session.status === "working" || session.status === "waiting") && session.activeTurnId && <button type="button" className="interrupt" disabled={!connected || submitting} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
+          {hasActiveTurn && <button type="button" className="interrupt" disabled={!connected || submitting || updatingRoute} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}

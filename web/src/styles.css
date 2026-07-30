@@ -506,6 +506,10 @@ button.unified-metric:hover{border-color:var(--accent)}.unified-metric strong{fo
   padding-top: .75rem;
 }
 
+.approval-actions.confirmation-actions {
+  display: flex;
+}
+
 .input-attention-card .status-label.waiting {
   color: var(--warning);
 }

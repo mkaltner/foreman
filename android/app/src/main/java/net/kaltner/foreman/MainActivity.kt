@@ -521,6 +521,18 @@ internal fun turnPayload(
     }
 }
 
+internal fun sessionSettingsPayload(
+    sessionId: String,
+    accessLevel: String? = null,
+    model: String? = null,
+    effort: String? = null,
+) = buildJsonObject {
+    put("sessionId", sessionId)
+    accessLevel?.let { put("accessLevel", it) }
+    model?.let { put("model", it) }
+    effort?.let { put("reasoningEffort", it) }
+}
+
 internal fun UiState.withAccessLevelsAndSessionAccess(
     available: List<AccessLevelInfo>,
     session: SessionSummary?,
@@ -984,30 +996,157 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun setComposerModel(id: String) {
-        state.update { current ->
-            val model = current.models.firstOrNull { it.id == id } ?: return@update current
-            val effort = compatibleEffort(model, current.composerEffort)
-            preferences.setModelRoute(model.id, effort)
-            current.copy(composerModel = model.id, composerEffort = effort)
+        val current = state.value
+        val model = current.models.firstOrNull { it.id == id } ?: return
+        val effort = compatibleEffort(model, current.composerEffort)
+        val previousModel = current.composerModel
+        val previousEffort = current.composerEffort
+        val previousSessionModel = current.selected?.model
+        val previousSessionEffort = current.selected?.reasoningEffort
+        preferences.setModelRoute(model.id, effort)
+        state.update { it.copy(composerModel = model.id, composerEffort = effort) }
+        val sessionId = current.selected?.id ?: return
+        if (!current.connected || "threadSettings" !in current.capabilities) return
+        state.update { it.copy(submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "session.settings",
+                    sessionSettingsPayload(sessionId, model = model.id, effort = effort),
+                )
+            }.onSuccess {
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(model = model.id, reasoningEffort = effort)
+                            } else {
+                                selected
+                            },
+                    )
+                }
+            }.onFailure { error ->
+                preferences.setModelRoute(previousModel, previousEffort)
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        composerModel = previousModel,
+                        composerEffort = previousEffort,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(
+                                    model = previousSessionModel,
+                                    reasoningEffort = previousSessionEffort,
+                                )
+                            } else {
+                                selected
+                            },
+                        error = error.message ?: "Model setting was not updated",
+                    )
+                }
+            }
         }
     }
 
     fun setComposerAccessLevel(id: String) {
-        state.update { current ->
-            if (current.accessLevels.none { it.id == id }) return@update current
-            preferences.setAccessLevel(id)
-            current.copy(composerAccessLevel = id)
+        val current = state.value
+        if (current.accessLevels.none { it.id == id }) return
+        val previous = current.composerAccessLevel
+        val previousSessionAccess = current.selected?.accessLevel
+        preferences.setAccessLevel(id)
+        state.update { it.copy(composerAccessLevel = id) }
+        val sessionId = current.selected?.id ?: return
+        if (!current.connected || "threadSettings" !in current.capabilities) return
+        state.update { it.copy(submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "session.settings",
+                    sessionSettingsPayload(sessionId, accessLevel = id),
+                )
+            }.onSuccess {
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(accessLevel = id)
+                            } else {
+                                selected
+                            },
+                    )
+                }
+            }.onFailure { error ->
+                preferences.setAccessLevel(previous)
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        composerAccessLevel = previous,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(accessLevel = previousSessionAccess)
+                            } else {
+                                selected
+                            },
+                        error = error.message ?: "Access setting was not updated",
+                    )
+                }
+            }
         }
     }
 
     fun setComposerEffort(effort: String) {
-        state.update { current ->
-            val model =
-                current.models.firstOrNull { it.id == current.composerModel }
-                    ?: return@update current
-            if (effort !in model.reasoningEfforts) return@update current
-            preferences.setModelRoute(model.id, effort)
-            current.copy(composerEffort = effort)
+        val current = state.value
+        val model = current.models.firstOrNull { it.id == current.composerModel } ?: return
+        if (effort !in model.reasoningEfforts) return
+        val previous = current.composerEffort
+        val previousSessionEffort = current.selected?.reasoningEffort
+        preferences.setModelRoute(model.id, effort)
+        state.update { it.copy(composerEffort = effort) }
+        val sessionId = current.selected?.id ?: return
+        if (!current.connected || "threadSettings" !in current.capabilities) return
+        state.update { it.copy(submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "session.settings",
+                    sessionSettingsPayload(sessionId, model = model.id, effort = effort),
+                )
+            }.onSuccess {
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(reasoningEffort = effort)
+                            } else {
+                                selected
+                            },
+                    )
+                }
+            }.onFailure { error ->
+                preferences.setModelRoute(model.id, previous)
+                state.update {
+                    val selected = it.selected
+                    it.copy(
+                        submitting = false,
+                        composerEffort = previous,
+                        selected =
+                            if (selected?.id == sessionId) {
+                                selected.copy(reasoningEffort = previousSessionEffort)
+                            } else {
+                                selected
+                            },
+                        error = error.message ?: "Reasoning setting was not updated",
+                    )
+                }
+            }
         }
     }
 
@@ -3476,6 +3615,7 @@ private fun SessionDetailScreen(
         bottomBar = {
             if (selected != null) PromptBox(
                 working = selected.status == "working",
+                routeEnabled = state.connected && !state.submitting,
                 enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" } && selectedInputs.none { it.status == "pending" || it.status == "submitting" },
                 accessLevels = state.accessLevels,
                 accessLevelId = state.composerAccessLevel,
@@ -3740,6 +3880,7 @@ private fun ImageThumbnailRow(
 @Composable
 private fun PromptBox(
     working: Boolean,
+    routeEnabled: Boolean,
     enabled: Boolean,
     accessLevels: List<AccessLevelInfo>,
     accessLevelId: String?,
@@ -3810,7 +3951,7 @@ private fun PromptBox(
                 selectedModel = selectedModel,
                 modelId = modelId,
                 effort = effort,
-                enabled = enabled && !working,
+                enabled = routeEnabled,
                 showAccessLevels = { showAccessLevels = true },
                 showModels = { showModels = true },
                 showEfforts = { showEfforts = true },

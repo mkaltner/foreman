@@ -64,6 +64,22 @@ describe("structured input card", () => {
     await waitFor(() => expect(respond).toHaveBeenCalledWith("inp-safe", { action: "decline" }));
   });
 
+  it("renders a zero-field MCP elicitation as an Allow confirmation", async () => {
+    const respond = vi.fn().mockResolvedValue(undefined);
+    render(<InputCard input={{ ...supported, title: "Confirmation requested", message: "Allow GitHub to create a pull request?", fields: [] }} connected onRespond={respond} />);
+
+    expect(screen.getByText("Allow GitHub to create a pull request?")).toBeInTheDocument();
+    const allow = screen.getByRole("button", { name: "Allow" });
+    expect(allow.parentElement).toHaveClass("confirmation-actions");
+    expect(allow.parentElement).toContainElement(screen.getByRole("button", { name: "Decline" }));
+    expect(allow.parentElement).toContainElement(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(allow);
+    await waitFor(() => expect(respond).toHaveBeenCalledWith("inp-safe", {
+      action: "accept",
+      values: {},
+    }));
+  });
+
   it("does not invent decline or cancel for Codex tool questions", () => {
     render(<InputCard input={{ ...supported, source: "codex", canDecline: false, canCancel: false }} connected onRespond={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Decline" })).not.toBeInTheDocument();

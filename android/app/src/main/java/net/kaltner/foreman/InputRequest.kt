@@ -84,6 +84,9 @@ data class InputRequest(
 internal fun inputAttentionLabel(input: InputRequest): String =
     if (input.supported) "Waiting for user input" else "Waiting for unsupported user input"
 
+internal fun inputSubmitLabel(input: InputRequest): String =
+    if (input.source == "mcp" && input.supported && input.fields.isEmpty()) "Allow" else "Submit"
+
 @Composable
 internal fun InputRequestCard(
     input: InputRequest,
@@ -98,6 +101,7 @@ internal fun InputRequestCard(
     var otherValues by remember(input.id) { mutableStateOf(emptyMap<String, String>()) }
     var localError by remember(input.id) { mutableStateOf<String?>(null) }
     val disabled = !connected || submitting || input.status != "pending"
+    val isActionConfirmation = input.source == "mcp" && input.supported && input.fields.isEmpty()
 
     fun submit() {
         val normalized = values.toMutableMap()
@@ -163,13 +167,31 @@ internal fun InputRequestCard(
                         onOther = { value -> otherValues = otherValues + (field.id to value) },
                     )
                 }
-                Button(enabled = !disabled, onClick = ::submit) { Text("Submit") }
+                if (isActionConfirmation) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(enabled = !disabled, onClick = ::submit) { Text("Allow") }
+                        if (input.canDecline) {
+                            OutlinedButton(
+                                enabled = !disabled,
+                                onClick = { onRespond(buildJsonObject { put("action", "decline") }) },
+                            ) { Text("Decline") }
+                        }
+                        if (input.canCancel) {
+                            OutlinedButton(
+                                enabled = !disabled,
+                                onClick = { onRespond(buildJsonObject { put("action", "cancel") }) },
+                            ) { Text("Cancel") }
+                        }
+                    }
+                } else {
+                    Button(enabled = !disabled, onClick = ::submit) { Text(inputSubmitLabel(input)) }
+                }
             }
             if (submitting || input.status == "submitting") Text("Submitting response…", color = MaterialTheme.colorScheme.primary)
             if (input.status == "resolved") Text(if (input.resolution == "resolvedElsewhere") "Already resolved in another client." else "Input resolved.")
             if (input.status == "expired") Text("This input request is no longer available.")
             (localError ?: error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (input.canDecline || input.canCancel) {
+            if (!isActionConfirmation && (input.canDecline || input.canCancel)) {
                 HorizontalDivider()
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (input.canDecline) OutlinedButton(enabled = !disabled, onClick = { onRespond(buildJsonObject { put("action", "decline") }) }) { Text("Decline") }
