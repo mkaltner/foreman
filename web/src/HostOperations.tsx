@@ -44,12 +44,14 @@ export function HostOperations({
   connection,
   disabled,
   remoteRestartEnabled,
+  restartBlocked = false,
   fetchDiagnostics,
   scheduleRestart,
 }: {
   connection: ConnectionState;
   disabled: boolean;
   remoteRestartEnabled: boolean;
+  restartBlocked?: boolean;
   fetchDiagnostics: () => Promise<DiagnosticEvent[]>;
   scheduleRestart: () => Promise<{ scheduled: boolean; timeoutSeconds?: number }>;
 }) {
@@ -86,6 +88,7 @@ export function HostOperations({
   }, [restartDeadline, restartPhase]);
 
   const restart = async () => {
+    if (restartBlocked) return;
     if (!window.confirm("Restart Foreman? Connected clients will briefly disconnect and reconnect automatically. Desktop Codex will not be restarted.")) return;
     setRestartPhase("scheduling");
     try {
@@ -93,8 +96,9 @@ export function HostOperations({
       if (!result.scheduled) throw new Error("Restart was not scheduled");
       setRestartDeadline(Date.now() + (result.timeoutSeconds ?? 45) * 1000);
       setRestartPhase("scheduled");
-    } catch {
+    } catch (caught) {
       setRestartPhase("failed");
+      setError(caught instanceof Error ? caught.message : "Restart could not be scheduled");
     }
   };
 
@@ -114,9 +118,10 @@ export function HostOperations({
           window.setTimeout(() => setCopied(false), 1500);
         }).catch(() => setError("Diagnostics could not be copied"));
       }} disabled={!events.length}>{copied ? "Copied" : "Copy"}</button>
-      <button className="restart-service" onClick={() => void restart()} disabled={disabled || !remoteRestartEnabled || restartPhase === "scheduling" || restartPhase === "scheduled" || restartPhase === "reconnecting"}>Restart Foreman</button>
+      <button className="restart-service" onClick={() => void restart()} disabled={disabled || !remoteRestartEnabled || restartBlocked || restartPhase === "scheduling" || restartPhase === "scheduled" || restartPhase === "reconnecting"}>Restart Foreman</button>
     </div>
     {!remoteRestartEnabled && <p className="diagnostic-note">Remote restart is disabled on this host.</p>}
+    {remoteRestartEnabled && restartBlocked && <p className="diagnostic-note">Restart is unavailable while sessions are active or waiting for attention.</p>}
     {restartPhase !== "idle" && <p className={`restart-progress ${restartPhase}`} role="status">{restartLabel(restartPhase)}</p>}
     {error && <p className="diagnostic-error" role="alert">{error}</p>}
     {!loading && !error && events.length === 0 && <p className="diagnostic-note">No diagnostic events are available.</p>}

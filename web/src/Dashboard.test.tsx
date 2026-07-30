@@ -174,6 +174,13 @@ describe("monitoring dashboard", () => {
     await waitFor(() => expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ id: "browser" })));
   });
 
+  it("disables remote restart when any session is active", () => {
+    render(<Dashboard sessions={[sessions[0]]} serviceStatus={{ ...status, remoteRestartEnabled: true }} connection="connected" disabled={false} onOpen={vi.fn()} onInterrupt={vi.fn()} onRefresh={vi.fn()} onFetchDiagnostics={vi.fn().mockResolvedValue([])} onRestart={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Restart Foreman" })).toBeDisabled();
+    expect(screen.getByText("Restart is unavailable while sessions are active or waiting for attention.")).toBeInTheDocument();
+  });
+
   it("returns a dismissed attention item after a material status change", () => {
     const waiting = sessions[1];
     const props = { serviceStatus: status, connection: "connected" as const, disabled: false, onOpen: vi.fn(), onInterrupt: vi.fn(), onRefresh: vi.fn() };

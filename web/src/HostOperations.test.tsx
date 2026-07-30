@@ -57,6 +57,15 @@ describe("sanitized host operations", () => {
     expect(screen.getByRole("status")).not.toHaveTextContent("complete");
   });
 
+  it("disables restart while sessions need uninterrupted attention", () => {
+    const scheduleRestart = vi.fn();
+    render(<HostOperations connection="connected" disabled={false} remoteRestartEnabled restartBlocked fetchDiagnostics={vi.fn().mockResolvedValue([])} scheduleRestart={scheduleRestart} />);
+
+    expect(screen.getByRole("button", { name: "Restart Foreman" })).toBeDisabled();
+    expect(screen.getByText("Restart is unavailable while sessions are active or waiting for attention.")).toBeInTheDocument();
+    expect(scheduleRestart).not.toHaveBeenCalled();
+  });
+
   it("requires a disconnected phase before success", () => {
     expect(restartPhaseAfterConnection("scheduled", "connected")).toBe("scheduled");
     expect(restartPhaseAfterConnection("scheduled", "reconnecting")).toBe("reconnecting");

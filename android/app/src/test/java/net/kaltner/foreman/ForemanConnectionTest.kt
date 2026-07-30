@@ -27,6 +27,34 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun restartIsBlockedForActiveSessionsAndPendingInput() {
+        assertFalse(restartBlocked(UiState()))
+        assertTrue(
+            restartBlocked(
+                UiState(sessions = listOf(SessionSummary("thread-1", "/repo", "Active", "working", 1))),
+            ),
+        )
+        assertTrue(
+            restartBlocked(
+                UiState(
+                    inputs =
+                        listOf(
+                            InputRequest(
+                                id = "input-1",
+                                sessionId = "thread-1",
+                                source = "codex",
+                                title = "Choose",
+                                supported = true,
+                                createdAt = 1,
+                                status = "pending",
+                            ),
+                        ),
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun zeroFieldMcpConfirmationUsesExplicitAllowAction() {
         val input =
             InputRequest(

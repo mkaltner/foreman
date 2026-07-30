@@ -312,6 +312,8 @@ class Codex:
                     "status": thread.get("status", {"type": "notLoaded"}),
                     "activeTurnId": active_turn_id,
                     "latestTurn": latest_turn,
+                    "_foremanReconciled": True,
+                    "_foremanObservedAt": thread.get("recencyAt") or thread.get("updatedAt"),
                 },
             }
         )

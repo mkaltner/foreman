@@ -1362,6 +1362,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun restartService() {
         val current = state.value
         if (!current.connected || "remoteRestart" !in current.capabilities || restartRequested) return
+        if (restartBlocked(current)) {
+            state.update {
+                it.copy(diagnosticsError = "Restart is unavailable while sessions are active or waiting for attention.")
+            }
+            return
+        }
         restartRequested = true
         state.update { it.copy(restartPhase = RestartPhase.Scheduling, diagnosticsError = null) }
         viewModelScope.launch {
@@ -1393,10 +1399,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             }
                     }
                 }
-            }.onFailure {
+            }.onFailure { error ->
                 if (state.value.restartPhase != RestartPhase.Reconnecting) {
                     restartRequested = false
-                    state.update { it.copy(restartPhase = RestartPhase.Failed) }
+                    state.update {
+                        it.copy(
+                            restartPhase = RestartPhase.Failed,
+                            diagnosticsError = error.message ?: "Restart could not be scheduled",
+                        )
+                    }
                 }
             }
         }
@@ -2655,6 +2666,7 @@ private fun ForemanApp(
 private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
     val context = LocalContext.current
     var confirmRestart by remember { mutableStateOf(false) }
+    val restartBlocked = restartBlocked(state)
     BackHandler(onBack = viewModel::closeDiagnostics)
     Scaffold(
         topBar = {
@@ -2710,6 +2722,7 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                         onClick = { confirmRestart = true },
                         enabled =
                             state.connected && "remoteRestart" in state.capabilities &&
+                                !restartBlocked &&
                                 state.restartPhase !in setOf(
                                     RestartPhase.Scheduling,
                                     RestartPhase.Scheduled,
@@ -2723,6 +2736,15 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                 item {
                     Text(
                         "Remote restart is disabled on this host.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            if ("remoteRestart" in state.capabilities && restartBlocked) {
+                item {
+                    Text(
+                        "Restart is unavailable while sessions are active or waiting for attention.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -2796,11 +2818,17 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                         confirmRestart = false
                         viewModel.restartService()
                     },
+                    enabled = !restartBlocked,
                 ) { Text("Restart") }
             },
         )
     }
 }
+
+internal fun restartBlocked(state: UiState): Boolean =
+    state.sessions.any { it.status == "working" || it.status == "waiting" } ||
+        state.approvals.any { it.status == "pending" || it.status == "submitting" } ||
+        state.inputs.any { it.status == "pending" || it.status == "submitting" }
 
 @Composable
 private fun SetupScreen(

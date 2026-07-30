@@ -436,7 +436,6 @@ export function applySessionEvent(
       model: event.model ?? session.model,
       reasoningEffort: event.reasoningEffort ?? session.reasoningEffort,
       accessLevel: event.accessLevel ?? session.accessLevel,
-      lastActivity: event.observedAt ?? session.lastActivity,
     };
   }
   return session;

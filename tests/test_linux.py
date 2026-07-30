@@ -564,6 +564,50 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected.message["payload"]["code"], "unauthorized")
         self.assertNotIn(secret, json.dumps(self.app.diagnostics.entries()))
 
+    async def test_restart_is_rejected_while_volatile_attention_state_exists(self) -> None:
+        client = Client(None, "redacted", authenticated=True)
+        request = {"version": 1, "type": "service.restart", "payload": {}}
+
+        self.app.codex.inputs = [{"id": "input-1", "status": "pending"}]
+        with self.assertRaisesRegex(ValueError, "approval or input requests"):
+            await self.app.dispatch(client, request)
+
+        self.app.codex.inputs = []
+        self.app.session_overlays["thread-1"] = {"status": "working"}
+        with self.assertRaisesRegex(ValueError, "sessions are active"):
+            await self.app.dispatch(client, request)
+
+        self.assertFalse(self.app.restart_scheduled)
+        self.assertEqual(self.calls, [])
+
+    async def test_reconnect_reconciliation_preserves_authoritative_recency(self) -> None:
+        await self.app.codex_event(
+            {
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "status": {"type": "idle"},
+                    "_foremanReconciled": True,
+                    "_foremanObservedAt": 124,
+                },
+            }
+        )
+        self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
+
+        await self.app.codex_event(
+            {
+                "method": "thread/settings/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "model": "gpt-test",
+                    "reasoningEffort": "high",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                },
+            }
+        )
+        self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
+
     async def test_remote_restart_gate_defaults_off_and_parses_explicit_opt_in(self) -> None:
         default = Foreman(
             "127.0.0.1",
@@ -911,6 +955,18 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reconciled_status_includes_stored_thread_recency(self) -> None:
+        events: list[dict[str, Any]] = []
+
+        async def on_event(event: dict[str, Any]) -> None:
+            events.append(event)
+
+        adapter = Codex("unused", on_event)
+        await adapter._emit_reconciled(THREAD)
+
+        self.assertTrue(events[0]["params"]["_foremanReconciled"])
+        self.assertEqual(events[0]["params"]["_foremanObservedAt"], 124)
+
     async def test_server_request_params_are_bounded_before_storage(self) -> None:
         params = bounded_approval_params(
             COMMAND_METHOD,

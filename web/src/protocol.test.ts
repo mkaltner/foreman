@@ -103,6 +103,17 @@ describe("session mapping and live events", () => {
     expect(liveActivityMessage(current)).toBe("Planning the next change");
   });
 
+  it("does not treat route changes as conversation activity", () => {
+    const current = applySessionEvent({ ...session, lastActivity: 123 }, {
+      kind: "route",
+      model: "gpt-test",
+      observedAt: 999,
+    });
+
+    expect(current.lastActivity).toBe(123);
+    expect(current.model).toBe("gpt-test");
+  });
+
   it("selects only dynamic model, effort, and access data", () => {
     const models: ModelInfo[] = [
       { id: "hidden", displayName: "Hidden", visible: false, isDefault: false, reasoningEfforts: ["low"] },

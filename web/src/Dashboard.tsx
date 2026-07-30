@@ -108,6 +108,8 @@ export function Dashboard({
   );
   const pendingApprovals = approvals.filter((approval) => approval.status === "pending" || approval.status === "submitting");
   const pendingInputs = inputs.filter((input) => input.status === "pending" || input.status === "submitting");
+  const restartBlocked = pendingApprovals.length > 0 || pendingInputs.length > 0 ||
+    sessions.some((session) => session.status === "working" || session.status === "waiting");
   const requestSessionIds = new Set([...pendingApprovals.map((approval) => approval.sessionId), ...pendingInputs.map((input) => input.sessionId)]);
   const attentionPairs = sorted
     .map((session) => ({ session, attention: attentionState(session, serviceStatus, now) }))
@@ -145,7 +147,7 @@ export function Dashboard({
       </header>
 
       <section className="dashboard-overview" aria-label="Foreman overview">
-        <HealthPanel status={serviceStatus} connection={connection} now={now} clients={pairedClients} disabled={disabled} onRevokeClient={onRevokeClient} onFetchDiagnostics={onFetchDiagnostics} onRestart={onRestart} />
+        <HealthPanel status={serviceStatus} connection={connection} now={now} clients={pairedClients} disabled={disabled} restartBlocked={restartBlocked} onRevokeClient={onRevokeClient} onFetchDiagnostics={onFetchDiagnostics} onRestart={onRestart} />
         <aside className="summary-strip" aria-label="Operational summary">
           <header><div><span className="eyebrow">Operational summary</span><strong>Work at a glance</strong></div><small>Live</small></header>
           <div className="summary-grid">
@@ -252,7 +254,7 @@ export function ElapsedTime({ startedAt }: { startedAt?: number | null }) {
   return <time>{formatElapsed(startedAt, now)}</time>;
 }
 
-function HealthPanel({ status, connection, now, clients, disabled, onRevokeClient, onFetchDiagnostics, onRestart }: { status: ServiceStatus | null; connection: ConnectionState; now: number; clients: PairedClient[]; disabled: boolean; onRevokeClient?: (client: PairedClient) => Promise<void>; onFetchDiagnostics?: () => Promise<DiagnosticEvent[]>; onRestart?: () => Promise<{ scheduled: boolean; timeoutSeconds?: number }> }) {
+function HealthPanel({ status, connection, now, clients, disabled, restartBlocked, onRevokeClient, onFetchDiagnostics, onRestart }: { status: ServiceStatus | null; connection: ConnectionState; now: number; clients: PairedClient[]; disabled: boolean; restartBlocked: boolean; onRevokeClient?: (client: PairedClient) => Promise<void>; onFetchDiagnostics?: () => Promise<DiagnosticEvent[]>; onRestart?: () => Promise<{ scheduled: boolean; timeoutSeconds?: number }> }) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const connected = connection === "connected";
   const runtimeConnected = status?.codex.connected === true;
@@ -278,7 +280,7 @@ function HealthPanel({ status, connection, now, clients, disabled, onRevokeClien
       void onRevokeClient(client).catch(() => undefined).finally(() => setRevoking(null));
     }} aria-label={`Revoke token for ${client.name}`}>{revoking === client.id ? "Revoking…" : "Revoke"}</button></div>)}</div><p className="client-note">Revoking removes only the selected authentication token. It does not delete sessions or repositories.</p></details>}
     {status && <details className="runtime-diagnostics"><summary>Runtime details</summary><dl><div><dt>Foreman ownership</dt><dd>{status.codex.ownedByForeman ? "Yes" : "No"}</dd></div><div><dt>App-server PID</dt><dd>{status.codex.appServerPid ?? "Shared runtime"}</dd></div>{status.codex.socketPath && <div><dt>Socket</dt><dd title={status.codex.socketPath}>{status.codex.socketPath}</dd></div>}</dl></details>}
-    {onFetchDiagnostics && onRestart && <HostOperations connection={connection} disabled={disabled} remoteRestartEnabled={status?.remoteRestartEnabled === true} fetchDiagnostics={onFetchDiagnostics} scheduleRestart={onRestart} />}
+    {onFetchDiagnostics && onRestart && <HostOperations connection={connection} disabled={disabled} remoteRestartEnabled={status?.remoteRestartEnabled === true} restartBlocked={restartBlocked} fetchDiagnostics={onFetchDiagnostics} scheduleRestart={onRestart} />}
   </article>;
 }
 

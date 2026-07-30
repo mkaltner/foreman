@@ -255,7 +255,13 @@ class Foreman:
         thread_id, event = normalize_event(message)
         if not thread_id:
             return
-        event["observedAt"] = int(time.time())
+        params = message.get("params") or {}
+        reconciled = params.get("_foremanReconciled") is True
+        reconciled_at = params.get("_foremanObservedAt")
+        if reconciled and isinstance(reconciled_at, (int, float)) and not isinstance(reconciled_at, bool):
+            event["observedAt"] = reconciled_at
+        elif not reconciled:
+            event["observedAt"] = int(time.time())
         if (
             event.get("type") == "turn/started"
             and event.get("kind") == "status"
@@ -411,10 +417,10 @@ class Foreman:
 
     def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
-        observed_at = event.get("observedAt")
-        if isinstance(observed_at, (int, float)):
-            overlay["lastActivity"] = observed_at
         kind = event.get("kind")
+        observed_at = event.get("observedAt")
+        if kind != "route" and isinstance(observed_at, (int, float)):
+            overlay["lastActivity"] = observed_at
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
@@ -989,6 +995,7 @@ class Foreman:
                 raise ValueError("remote restart is disabled")
             if self.restart_scheduled:
                 raise ValueError("restart is already scheduled")
+            await self.require_restart_safe()
             self.restart_scheduled = True
             return {"scheduled": True, "timeoutSeconds": 45}
         if message_type == "client.list":
@@ -1358,6 +1365,20 @@ class Foreman:
         projected = session(await self.codex.read_thread(thread_id))
         if projected["status"] in ("working", "waiting"):
             raise ValueError("session is active; interrupt it before archive or delete")
+
+    async def require_restart_safe(self) -> None:
+        if self.codex.list_approvals() or self.codex.list_inputs():
+            raise ValueError(
+                "restart is unavailable while approval or input requests are pending"
+            )
+        threads = await self.codex.list_threads()
+        if any(
+            self.projected_session(thread)["status"] in ("working", "waiting")
+            for thread in threads
+        ):
+            raise ValueError(
+                "restart is unavailable while sessions are active or waiting for attention"
+            )
 
     def thread_lock(self, thread_id: str) -> asyncio.Lock:
         return self.thread_locks.setdefault(thread_id, asyncio.Lock())

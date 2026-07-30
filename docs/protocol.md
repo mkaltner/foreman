@@ -78,7 +78,9 @@ that envelope is flushed before Foreman invokes exactly
 `systemctl --user restart --no-block foreman.service`. The scheduled result is
 not a success claim. Clients report completion only after the connection drops,
 Foreman returns, and authentication succeeds again. The operation never targets
-Desktop Codex or any other service.
+Desktop Codex or any other service. Foreman rejects restart while a session is
+active or waiting, or while an approval or input request is pending, so volatile
+request state is not deliberately discarded.
 
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.
