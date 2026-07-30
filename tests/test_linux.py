@@ -29,6 +29,7 @@ from codex import (  # noqa: E402
     model,
     normalize_event,
     normalize_item,
+    search_matches,
     safe_failure_summary,
     session,
     status,
@@ -119,6 +120,9 @@ class FakeCodex:
                 if thread_id in self.active
                 else {"type": "idle"},
         }
+
+    async def search_thread(self, thread_id: str) -> dict[str, Any]:
+        return await self.read_thread(thread_id)
 
     async def start_thread(self, cwd: str) -> dict[str, Any]:
         return {
@@ -366,7 +370,14 @@ class MappingTests(unittest.TestCase):
         )
         self.assertEqual(
             compact_session_title(prompt),
-            "Build Foreman’s monitoring dashboard.",
+            "Build Foreman monitoring dashboard",
+        )
+        self.assertEqual(
+            compact_session_title(
+                "Build Foreman’s monitoring dashboard. Repository:\n"
+                "/home/mkaltner/projects/foreman GitHub: https://example.test/foreman"
+            ),
+            "Build Foreman monitoring dashboard",
         )
         self.assertEqual(
             compact_session_title("# Fix reconnect behavior\n\nDetails"),
@@ -377,6 +388,37 @@ class MappingTests(unittest.TestCase):
             "Fix api.example.com error handling",
         )
         self.assertLessEqual(len(compact_session_title("x" * 100)), 72)
+
+    def test_searches_only_bounded_normalized_visible_text(self) -> None:
+        thread = {
+            "turns": [
+                {
+                    "id": "turn-safe",
+                    "items": [
+                        {"id": "reasoning", "type": "reasoning", "text": "private needle"},
+                        {"id": "malformed", "type": "userMessage", "content": ["needle", None]},
+                        {
+                            "id": "image",
+                            "type": "userMessage",
+                            "content": [{"type": "image", "url": "data:image/png;base64,bmVlZGxl"}],
+                        },
+                        {
+                            "id": "user",
+                            "type": "userMessage",
+                            "content": [{"type": "text", "text": "A long NEEDLE " + "x" * 500}],
+                        },
+                        {"id": "assistant", "type": "agentMessage", "text": "needle again"},
+                        {"id": "command", "type": "commandExecution", "command": "echo needle"},
+                        {"id": "extra", "type": "agentMessage", "text": "fourth needle"},
+                    ],
+                }
+            ]
+        }
+        matches = search_matches(thread, "needle")
+        self.assertEqual([item["kind"] for item in matches], ["user", "assistant", "command"])
+        self.assertTrue(all(len(item["snippet"]) <= 200 for item in matches))
+        self.assertNotIn("bmVlZGxl", str(matches))
+        self.assertEqual(search_matches(thread, "private"), [])
 
     def test_strips_the_desktop_attachment_envelope_from_android_text(self) -> None:
         wrapped = """# Files mentioned by the user:
@@ -629,6 +671,27 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lists_up_to_five_hundred_summaries_with_bounded_pages(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        requested: list[dict[str, Any]] = []
+
+        async def request(_: str, params: dict[str, Any]) -> dict[str, Any]:
+            requested.append(params)
+            offset = len(requested) - 1
+            return {
+                "data": [
+                    {**THREAD, "id": f"thread-{offset * 100 + index}"}
+                    for index in range(100)
+                ],
+                "nextCursor": f"page-{offset + 1}" if offset < 4 else None,
+            }
+
+        adapter.request = request  # type: ignore[method-assign]
+        threads = await adapter.list_threads()
+        self.assertEqual(len(threads), 500)
+        self.assertEqual(len(requested), 5)
+        self.assertTrue(all(params["limit"] == 100 for params in requested))
+
     async def test_discovers_supported_methods_from_installed_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory, "schema-codex")
@@ -840,6 +903,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hello["capabilities"]["steer"])
         self.assertTrue(hello["capabilities"]["archive"])
         self.assertTrue(hello["capabilities"]["delete"])
+        self.assertTrue(hello["capabilities"]["search"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
@@ -960,6 +1024,133 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(deleted["deleted"])
         self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_authenticated_bounded_session_search_composes_filters(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Search test"},
+        )
+        repository_path = str(self.repository / "src")
+
+        async def search_threads() -> list[dict[str, Any]]:
+            return [
+                {**THREAD, "cwd": repository_path},
+                {
+                    **THREAD,
+                    "id": "thread-workspace",
+                    "cwd": "/home/operator",
+                    "preview": "Other workspace",
+                    "recencyAt": 125,
+                },
+            ]
+
+        self.app.codex.list_threads = search_threads
+        title = await self.request("session.search", {"query": "foreman"})
+        self.assertEqual(title["results"][0]["matches"][0]["kind"], "title")
+        transcript = await self.request(
+            "session.search",
+            {
+                "query": "hi",
+                "repository": str(self.repository),
+                "statuses": ["completed"],
+                "dateFrom": 100,
+                "dateTo": 200,
+                "limit": 1,
+            },
+        )
+        self.assertEqual(len(transcript["results"]), 1)
+        self.assertEqual(transcript["results"][0]["matches"][0]["kind"], "assistant")
+        self.assertNotIn("messages", transcript["results"][0]["session"])
+        empty = await self.request("session.search", {"query": "missing"})
+        self.assertEqual(empty["results"], [])
+        workspace = await self.request(
+            "session.search", {"query": "", "repository": "/home/operator"}
+        )
+        self.assertEqual(workspace["results"][0]["session"]["id"], "thread-workspace")
+        no_query = await self.request("session.search", {"query": "", "statuses": ["completed"]})
+        self.assertEqual(len(no_query["results"]), 2)
+
+    async def test_rejects_malformed_search_and_caps_result_limit(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Search validation"},
+        )
+        malformed = await self.request_error("session.search", {"statuses": "active"})
+        self.assertIn("statuses", malformed["message"])
+        malformed = await self.request_error("session.search", {"dateFrom": 2, "dateTo": 1})
+        self.assertIn("dateFrom", malformed["message"])
+        capped = await self.request("session.search", {"query": "", "limit": 1000})
+        self.assertEqual(capped["limit"], 100)
+
+    async def test_new_search_cancels_previous_search_task(self) -> None:
+        client = Client(None, "test", authenticated=True)
+
+        async def delayed(payload: dict[str, Any]) -> dict[str, Any]:
+            if payload["query"] == "slow":
+                await asyncio.sleep(10)
+            return {"results": []}
+
+        self.app.search_sessions = delayed  # type: ignore[method-assign]
+        first = asyncio.create_task(
+            self.app.dispatch(client, {"type": "session.search", "payload": {"query": "slow"}})
+        )
+        await asyncio.sleep(0)
+        second = await self.app.dispatch(
+            client, {"type": "session.search", "payload": {"query": "new"}}
+        )
+        self.assertEqual(second, {"results": []})
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+
+    async def test_search_stays_bounded_and_does_not_block_other_requests(self) -> None:
+        threads = [
+            {
+                **THREAD,
+                "id": f"thread-{index}",
+                "preview": f"Candidate {index}",
+                "turns": [],
+            }
+            for index in range(500)
+        ]
+        reads: list[str] = []
+
+        async def list_many() -> list[dict[str, Any]]:
+            return threads
+
+        async def read_slow(thread_id: str) -> dict[str, Any]:
+            reads.append(thread_id)
+            await asyncio.sleep(0.002)
+            return {
+                **THREAD,
+                "id": thread_id,
+                "preview": thread_id,
+                "turns": THREAD["turns"],
+            }
+
+        self.app.codex.list_threads = list_many
+        self.app.codex.search_thread = read_slow
+        client = Client(None, "test", authenticated=True)
+        search = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {"type": "session.search", "payload": {"query": "not present"}},
+            )
+        )
+        await asyncio.sleep(0.01)
+        pong = await asyncio.wait_for(
+            self.app.dispatch(client, {"type": "ping", "payload": {}}),
+            timeout=0.05,
+        )
+        self.assertIn("time", pong)
+        result = await search
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["transcriptsScanned"], 100)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(reads), 100)
+
+        title_result = await self.app.search_sessions({"query": "candidate", "limit": 1000})
+        self.assertEqual(len(title_result["results"]), 100)
+        self.assertEqual(title_result["limit"], 100)
 
     async def test_persistent_token_authenticates_a_new_connection(self) -> None:
         paired = await self.request(

@@ -38,7 +38,7 @@ Implemented types:
 - `access.list`;
 - `service.status`;
 - `client.list`, `client.revoke`;
-- `session.list`, `session.read`, `session.start`, `session.resume`,
+- `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`.
 
@@ -66,6 +66,17 @@ activity, and command/tool item events. Approval and structured-input events
 identify the unsupported wait type without exposing response controls.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
+
+`session.search` is authenticated and accepts `query`, one canonical
+`repository`/workspace path or `null`, a `statuses` array, `dateFrom`, `dateTo`,
+and a requested `limit`. Search is case-insensitive plain substring matching.
+It matches compact titles, canonical workspace paths, and normalized visible
+user, assistant, command, or tool text. Reasoning, raw events, raw command
+output, images, tokens, and internal errors are not searched. Results contain
+summary projections plus at most three 200-character snippets; they never
+contain full histories or image data. The server caps results at 100 and lazy
+transcript reads at 100 candidates, cancels an older in-flight search from the
+same client, and maintains no persistent index or transcript mirror.
 
 `session.archive` moves an inactive Codex thread out of the active list and is
 reversible through Codex's `thread/unarchive` API. `session.delete` requires

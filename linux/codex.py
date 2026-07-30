@@ -25,6 +25,9 @@ APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MODEL_CACHE_SECONDS = 30
 ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
+SESSION_LIST_LIMIT = 500
+SEARCH_SNIPPET_LIMIT = 200
+SEARCH_SNIPPETS_PER_SESSION = 3
 DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
 DESKTOP_REQUEST_MARKER = "\n## My request for Codex:\n"
 SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
@@ -502,11 +505,26 @@ class Codex:
             self._stderr = self._stderr[-100:]
 
     async def list_threads(self) -> list[dict[str, Any]]:
-        result = await self.request(
-            "thread/list",
-            {"limit": 100, "sortKey": "recency_at", "sortDirection": "desc"},
-        )
-        return [self._with_route(thread) for thread in result["data"]]
+        threads: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while len(threads) < SESSION_LIST_LIMIT:
+            params: dict[str, Any] = {
+                "limit": min(100, SESSION_LIST_LIMIT - len(threads)),
+                "sortKey": "recency_at",
+                "sortDirection": "desc",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            result = await self.request("thread/list", params)
+            data = result.get("data", [])
+            threads.extend(item for item in data if isinstance(item, dict))
+            next_cursor = result.get("nextCursor")
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        return [self._with_route(thread) for thread in threads[:SESSION_LIST_LIMIT]]
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         await self.ensure_resumed(thread_id)
@@ -518,6 +536,13 @@ class Codex:
             result = await self.request(
                 "thread/read", {"threadId": thread_id, "includeTurns": False}
             )
+        return self._with_route(result["thread"])
+
+    async def search_thread(self, thread_id: str) -> dict[str, Any]:
+        """Read authoritative history without subscribing or resuming the thread."""
+        result = await self.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": True}
+        )
         return self._with_route(result["thread"])
 
     async def start_thread(
@@ -841,18 +866,74 @@ def compact_session_title(raw: Any, limit: int = 72) -> str:
     title = next((line.strip() for line in raw.splitlines() if line.strip()), "")
     title = " ".join(title.split()).strip()
     title = re.sub(r"^(?:#{1,6}|[-*+] |\d+[.)] )\s*", "", title)
+    title = re.sub(r"\bForeman[’']s\b", "Foreman", title, flags=re.IGNORECASE)
     title = re.split(
         r"\s+(?=(?:Repository|GitHub|GitLab|Goal|Requirements|Acceptance criteria):)",
         title,
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
+    title = re.sub(r"[.?!]+$", "", title).strip()
     first_sentence = re.split(r"(?<=[.!?])\s+(?=[A-Z])", title, maxsplit=1)[0]
     if first_sentence and len(first_sentence) <= limit:
         title = first_sentence
     if len(title) > limit:
         title = f"{title[:limit - 1].rstrip()}…"
     return title or "Untitled session"
+
+
+def search_matches(
+    thread: dict[str, Any],
+    query: str,
+    maximum: int = SEARCH_SNIPPETS_PER_SESSION,
+    snippet_limit: int = SEARCH_SNIPPET_LIMIT,
+) -> list[dict[str, Any]]:
+    """Search only the same normalized, user-visible projection sent to clients."""
+    needle = query.casefold()
+    if not needle:
+        return []
+    matches: list[dict[str, Any]] = []
+    for turn in thread.get("turns", []):
+        for raw_item in turn.get("items", []):
+            if not isinstance(raw_item, dict):
+                continue
+            item = normalize_item(raw_item)
+            if not item:
+                continue
+            value = item.get("text") or item.get("description")
+            if not isinstance(value, str) or needle not in value.casefold():
+                continue
+            matches.append(
+                {
+                    "kind": item["kind"],
+                    "snippet": matching_snippet(value, query, snippet_limit),
+                    "turnId": turn.get("id"),
+                    "itemId": item.get("id"),
+                }
+            )
+            if len(matches) >= maximum:
+                return matches
+    return matches
+
+
+def matching_snippet(text: str, query: str, limit: int = SEARCH_SNIPPET_LIMIT) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    index = compact.casefold().find(query.casefold())
+    if index < 0:
+        return f"{compact[:limit - 1].rstrip()}…"
+    padding = max(0, (limit - len(query)) // 2)
+    start = max(0, index - padding)
+    end = min(len(compact), start + limit)
+    if end - start < limit:
+        start = max(0, end - limit)
+    snippet = compact[start:end].strip()
+    if start:
+        snippet = f"…{snippet[1:]}"
+    if end < len(compact):
+        snippet = f"{snippet[:-1]}…"
+    return snippet
 
 
 def safe_failure_summary(raw: Any) -> str | None:
@@ -922,14 +1003,19 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
     kind = item.get("type")
     base = {"id": item.get("id", ""), "rawType": kind}
     if kind == "userMessage":
+        content = item.get("content", [])
+        if not isinstance(content, list):
+            content = []
         text = "".join(
             part.get("text", "")
-            for part in item.get("content", [])
-            if part.get("type") == "text"
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text", ""), str)
         )
         images: list[dict[str, str]] = []
         image_count = 0
-        for part in item.get("content", []):
+        for part in content:
             if not isinstance(part, dict) or part.get("type") not in (
                 "image",
                 "localImage",

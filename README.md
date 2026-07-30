@@ -81,6 +81,9 @@ as an alternative.
 - Supervise active, waiting, failed, stale, and recently terminal work from a
   live dashboard with an attention queue, oldest-turn callout, and activity feed.
 - Discover Git repositories and browse active and recent Codex sessions.
+- Search session titles and bounded, normalized visible transcript text.
+- Filter by repository/workspace, status, local date range, pins, and hidden sessions.
+- Pin important sessions or non-destructively hide noisy sessions per client.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
 - Stream live status, assistant deltas, tool activity, and progress updates.
@@ -105,6 +108,10 @@ device name in the app. Port `8765` is used when no port is given. Run
 
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
+The Sessions screen provides expandable search and a compact filter dialog for
+repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
+and Hidden management. Search choices, pins, and hidden IDs use Android's
+existing local preferences; transcripts and image data are never stored there.
 
 ## Web
 
@@ -152,6 +159,8 @@ The full web client also supports:
 - opt-in browser notifications for background tabs;
 - bounded reconnect without request replay;
 - durable session URLs with Back, Forward, and refresh restoration;
+- bookmarkable search/filter URLs, keyboard search navigation, local pins, and
+  a restorable Hidden view;
 - responsive dark/light/system themes and configurable accents.
 
 Dashboard behavior and limits:
@@ -164,6 +173,14 @@ Dashboard behavior and limits:
   Git repository.
 - Approval and structured-input waits must still be handled in another
   compatible Codex client.
+- Search uses case-insensitive plain substrings. Criteria are ANDed, selected
+  statuses are ORed, and hidden sessions stay excluded unless **Hidden
+  sessions** is selected. Pins affect ordering, not matching.
+- Transcript search reads at most 100 candidate histories per request, returns
+  at most 100 sessions and three 200-character safe snippets per session, and
+  creates no index or transcript cache. It is not fuzzy or semantic search.
+- Pins and hidden-session choices are browser-local. They do not change Codex
+  state or sync to Android.
 - Host Status can show connected and offline paired clients. Revoking one removes
   only that authentication token, disconnecting its live connections without
   affecting sessions or repositories.
@@ -213,6 +230,12 @@ rebuild the committed assets with the pinned Node version as documented in the
   <img src="docs/screenshots/web-dashboard.png" alt="Foreman monitoring dashboard with multiple active sessions, an approval wait, repository groups, and host health" width="860">
   <br>
   <em>Live multi-session supervision and host health</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/web-search.png" alt="Foreman session search with repository, status, date, pin, and hidden-session filters" width="860">
+  <br>
+  <em>Bounded transcript search and composable session filters</em>
 </p>
 
 <table>
