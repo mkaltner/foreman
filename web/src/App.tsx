@@ -859,6 +859,13 @@ function App() {
     updateRoute({ view: "overview" }, replace);
   };
 
+  const showDashboard = (replace = false) => {
+    viewRef.current = "dashboard";
+    setView("dashboard");
+    closeSelectedSession();
+    updateRoute({ view: "dashboard" }, replace);
+  };
+
   const showSessions = (replace = false) => {
     viewRef.current = "sessions";
     setView("sessions");
@@ -926,7 +933,7 @@ function App() {
       }
     }
     setError("");
-    restoreView({ view: "overview" }, false);
+    restoreView({ view: "dashboard" }, false);
     const search = next.activeHostId ? withHostInSearch("", next.activeHostId) : "";
     window.history.replaceState(null, "", `/${search}`);
   };
@@ -959,7 +966,7 @@ function App() {
       searchFiltersRef.current = filters;
       setSearchFilters(filters);
       setHostSetupOpen(false);
-      restoreView({ view: "overview" }, false);
+      restoreView({ view: "dashboard" }, false);
       window.history.pushState(null, "", `/${withHostInSearch("", saved.id)}`);
     } catch (caught) {
       setError(setupError(caught));
@@ -1061,7 +1068,7 @@ function App() {
   return (
     <div className={appShellClassName(view)}>
       <header className="topbar">
-        <button className="brand" onClick={() => showOverview()} aria-label="Dashboard">
+        <button className="brand" onClick={() => showDashboard()} aria-label="Dashboard">
           <span className="brand-mark">F</span>
           <span>Foreman</span>
         </button>
@@ -1074,8 +1081,11 @@ function App() {
           onAdd={() => setHostSetupOpen(true)}
         />
         <nav>
-          <button className={view === "overview" || view === "dashboard" ? "active" : ""} onClick={() => showOverview()}>
+          <button className={view === "dashboard" ? "active" : ""} onClick={() => showDashboard()}>
             Dashboard
+          </button>
+          <button className={view === "overview" ? "active" : ""} onClick={() => showOverview()}>
+            Hosts
           </button>
           <button className={view === "sessions" || view === "detail" ? "active" : ""} onClick={() => showSessions()}>
             Sessions

@@ -120,8 +120,8 @@ export type WebRoute =
 
 export function parseWebRoute(pathname: string): WebRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
-  if (normalized === "/") return { view: "overview" };
-  if (normalized === "/dashboard") return { view: "dashboard" };
+  if (normalized === "/hosts") return { view: "overview" };
+  if (normalized === "/" || normalized === "/dashboard") return { view: "dashboard" };
   if (normalized === "/settings") return { view: "settings" };
   if (normalized === "/sessions") return { view: "sessions" };
   const match = /^\/sessions\/([^/]+)$/.exec(normalized);
@@ -133,12 +133,12 @@ export function parseWebRoute(pathname: string): WebRoute {
       // Treat malformed URL escapes as the session list.
     }
   }
-  return { view: "overview" };
+  return { view: "dashboard" };
 }
 
 export function webRoutePath(route: WebRoute): string {
-  if (route.view === "overview") return "/";
-  if (route.view === "dashboard") return "/dashboard";
+  if (route.view === "overview") return "/hosts";
+  if (route.view === "dashboard") return "/";
   if (route.view === "settings") return "/settings";
   if (route.view === "detail") return `/sessions/${encodeURIComponent(route.sessionId)}`;
   return "/sessions";

@@ -220,14 +220,15 @@ describe("storage, appearance, and interaction helpers", () => {
   });
 
   it("uses the dashboard as the default and round-trips all browser routes", () => {
-    expect(parseWebRoute("/")).toEqual({ view: "overview" });
+    expect(parseWebRoute("/")).toEqual({ view: "dashboard" });
+    expect(parseWebRoute("/hosts")).toEqual({ view: "overview" });
     expect(parseWebRoute("/dashboard")).toEqual({ view: "dashboard" });
     expect(parseWebRoute("/settings")).toEqual({ view: "settings" });
     expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", sessionId: "thread/one" });
     expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
-    expect(parseWebRoute("/not-a-route")).toEqual({ view: "overview" });
-    expect(webRoutePath({ view: "overview" })).toBe("/");
-    expect(webRoutePath({ view: "dashboard" })).toBe("/dashboard");
+    expect(parseWebRoute("/not-a-route")).toEqual({ view: "dashboard" });
+    expect(webRoutePath({ view: "overview" })).toBe("/hosts");
+    expect(webRoutePath({ view: "dashboard" })).toBe("/");
     expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
       .toBe("/sessions/thread%2Fone");
     const deepLink = `${webRoutePath({ view: "detail", sessionId: "same" })}${withHostInSearch("", "host-work")}`;
