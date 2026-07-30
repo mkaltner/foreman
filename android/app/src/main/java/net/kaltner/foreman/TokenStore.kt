@@ -175,6 +175,7 @@ class HostStore(private val context: Context) {
             .commit()
         context.getSharedPreferences(preferenceFile(hostId), Context.MODE_PRIVATE)
             .edit().clear().commit()
+        HostOverviewStore(context).forget(hostId)
         val activeId = preferences.getString(ACTIVE_HOST_KEY, null)
         val nextActive =
             if (activeId == hostId) {

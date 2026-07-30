@@ -119,7 +119,7 @@ export type WebRoute =
 
 export function parseWebRoute(pathname: string): WebRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
-  if (normalized === "/" || normalized === "/dashboard") return { view: "dashboard" };
+  if (normalized === "/" || normalized === "/dashboard" || normalized === "/hosts") return { view: "dashboard" };
   if (normalized === "/settings") return { view: "settings" };
   if (normalized === "/sessions") return { view: "sessions" };
   const match = /^\/sessions\/([^/]+)$/.exec(normalized);

@@ -57,6 +57,36 @@ session workspaces. Lifecycle events observed during the browser session feed a
 coalesced 20-entry recent list; stale-turn observation and feed entries are not
 persisted by the service.
 
+### Multi-host overview connections
+
+The unified overview is a client-side projection. No Foreman service knows
+about another host, and every projected session uses the compound
+`hostId + sessionId` identity. Small host snapshots (counts, health, versions,
+runtime mode, timestamps, and attention metadata) are cached locally;
+transcripts and tokens are not copied into the overview cache. A disconnected
+snapshot is always labeled stale.
+
+The web client permits at most four simultaneous Foreman WebSockets: the
+selected host plus up to three overview sockets. With more than four saved
+hosts, the three background slots rotate every 60 seconds. A host rotated out
+keeps its last snapshot as stale until it is checked again. Browser suspension
+may delay rotation and reconnection.
+
+Android permits at most two simultaneous TCP connections while the activity is
+foregrounded: the normal selected-host connection plus one sequential overview
+health probe. Inactive hosts are checked at most once per 60-second pass and
+their counts are immediately presented as stale because the probe disconnects.
+The probe is cancelled in `onStop`; cached results remain available offline.
+Background turn monitoring remains scoped to its explicitly monitored active
+host and does not turn the overview into a persistent multi-host service. When
+that monitoring service can occupy the second connection, inactive-host probes
+pause and their existing stale snapshots are the fallback.
+
+Completion and attention notifications retain their existing opt-in behavior.
+They always carry both host and session IDs, but overview sockets and probes do
+not generate additional notifications. Opening a notification or a combined
+attention row selects the saved host before opening its session.
+
 Pending approvals live only in the Codex adapter. Each has an opaque Foreman ID,
 the exact upstream JSON-RPC ID and connection, and one small lock. The adapter
 registers before broadcasting, validates one response, sends it on the original

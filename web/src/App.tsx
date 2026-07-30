@@ -13,6 +13,11 @@ import {
 import ReactMarkdown from "react-markdown";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { Dashboard } from "./Dashboard";
+import { messageDraft, updateMessageDraft } from "./drafts";
+import { UnifiedDashboard } from "./UnifiedDashboard";
+import { UnifiedHostConnections } from "./unified-client";
+import { forgetHostSnapshot, loadHostSnapshots, saveHostSnapshots } from "./unified-storage";
+import { mergeHostSnapshot, projectHostSnapshot, type HostOverviewSnapshot, type UnifiedAttentionItem } from "./unified";
 import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery";
 import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
@@ -176,6 +181,8 @@ function App() {
   const [searchRevision, setSearchRevision] = useState(0);
   const [organization, setOrganization] = useState(() => loadSessionOrganization(initialHostId));
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
+  const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
+  const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
   const lastImmediateSearch = useRef(0);
@@ -195,6 +202,21 @@ function App() {
   const notificationMonitor = useRef(new TurnNotificationMonitor());
   const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
+  const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
+
+  if (!unifiedConnectionsRef.current) {
+    unifiedConnectionsRef.current = new UnifiedHostConnections((snapshot) => {
+      setHostSnapshots((previous) => {
+        const cached = previous.get(snapshot.hostId);
+        const safeSnapshot = cached && (
+          snapshot.connection !== "connected" || snapshot.foremanVersion === null
+        ) ? { ...cached, connection: snapshot.connection } : snapshot;
+        const next = mergeHostSnapshot(previous, safeSnapshot);
+        saveHostSnapshots(next);
+        return next;
+      });
+    });
+  }
 
   const persistRegistry = useCallback((next: HostRegistry) => {
     hostRegistryRef.current = next;
@@ -239,6 +261,26 @@ function App() {
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
   useEffect(() => { viewRef.current = view; }, [view]);
+  const overviewConnectionSignature = hostRegistry.hosts
+    .map(({ id, host, webPort, deviceToken }) => `${id}:${host}:${webPort}:${deviceToken}`)
+    .join("|");
+  useEffect(() => {
+    unifiedConnectionsRef.current?.start(hostRegistryRef.current.hosts, activeHostIdRef.current);
+    return () => unifiedConnectionsRef.current?.stop();
+  }, [overviewConnectionSignature, hostRegistry.activeHostId]);
+  useEffect(() => {
+    const hostId = activeHostIdRef.current;
+    if (!hostId) return;
+    setHostSnapshots((previous) => {
+      const cached = previous.get(hostId);
+      const snapshot = connection === "connected" && serviceStatus
+        ? projectHostSnapshot(hostId, sessions, approvals, serviceStatus, connection)
+        : cached ? { ...cached, connection } : projectHostSnapshot(hostId, [], [], null, connection);
+      const next = mergeHostSnapshot(previous, snapshot);
+      saveHostSnapshots(next);
+      return next;
+    });
+  }, [approvals, connection, serviceStatus, sessions]);
   useEffect(() => {
     const refreshPermission = () => setNotificationState(browserNotificationState());
     window.addEventListener("focus", refreshPermission);
@@ -863,6 +905,12 @@ function App() {
     const wasActive = activeHostIdRef.current === hostId;
     if (wasActive) client.disconnect();
     const next = forgetStoredHost(hostRegistryRef.current, hostId);
+    forgetHostSnapshot(hostId);
+    setHostSnapshots((previous) => {
+      const nextSnapshots = new Map(previous);
+      nextSnapshots.delete(hostId);
+      return nextSnapshots;
+    });
     persistRegistry(next);
     if (wasActive) {
       clearHostProjections();
@@ -943,6 +991,26 @@ function App() {
     const hostId = activeHostIdRef.current;
     if (hostId) void refreshState(hostId).catch((caught) => setError(String(caught)));
   }, [refreshState]);
+  const unifiedOpenSession = useCallback((item: UnifiedAttentionItem | { hostId: string; sessionId: string }) => {
+    const wasActive = item.hostId === activeHostIdRef.current;
+    activateHost(item.hostId, { view: "detail", sessionId: item.sessionId });
+    setFocusedApprovalId("approvalId" in item ? item.approvalId ?? null : null);
+    if (wasActive && !connectedRef.current) {
+      const host = hostRegistryRef.current.hosts.find(({ id }) => id === item.hostId);
+      if (host) void connectHost(host);
+    }
+  }, [activateHost, connectHost]);
+  const unifiedReconnect = useCallback((hostId: string) => {
+    if (hostId === activeHostIdRef.current) {
+      const host = hostRegistryRef.current.hosts.find(({ id }) => id === hostId);
+      if (host) {
+        client.disconnect();
+        void connectHost(host);
+      }
+    } else {
+      unifiedConnectionsRef.current?.reconnect(hostId);
+    }
+  }, [client, connectHost]);
   const repositoryOptions = useMemo(
     () => repositoryFilterOptions(sessions, repositories, serviceStatus?.repositoryRoot ?? ""),
     [repositories, serviceStatus?.repositoryRoot, sessions],
@@ -1057,7 +1125,20 @@ function App() {
           onForget={forget}
         />
       ) : view === "dashboard" ? (
-        <>
+        <div className="dashboard-scroll">
+          <UnifiedDashboard
+            hosts={hostRegistry.hosts}
+            activeHostId={activeHost.id}
+            snapshots={hostSnapshots}
+            onOpenHost={(hostId) => activateHost(hostId, { view: "dashboard" })}
+            onOpenSession={unifiedOpenSession}
+            onReconnect={unifiedReconnect}
+            onEdit={(hostId) => activateHost(hostId, { view: "settings" })}
+            onForget={(hostId) => {
+              const host = hostRegistryRef.current.hosts.find(({ id }) => id === hostId);
+              if (host && window.confirm(`Forget “${host.displayName}”? Its browser-local token and preferences will be removed.`)) forget(hostId);
+            }}
+          />
           <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} loading={searchLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
           {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
             {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
@@ -1086,7 +1167,7 @@ function App() {
               }
             }}
           /></>}
-        </>
+        </div>
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
@@ -1157,6 +1238,10 @@ function App() {
                 connected={connected}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
+                draft={messageDraft(messageDrafts, activeHost.id, current.id)}
+                onDraftChange={(text) => setMessageDrafts((previous) =>
+                  updateMessageDraft(previous, activeHost.id, current.id, text)
+                )}
                 onBack={() => showSessions()}
                 onRequest={(type, payload) => client.request(type, payload)}
                 onError={setError}
@@ -1382,7 +1467,7 @@ function SessionList({
   );
 }
 
-function ConversationView({
+export function ConversationView({
   session,
   approvals,
   models,
@@ -1390,6 +1475,8 @@ function ConversationView({
   connected,
   highlightItemId,
   focusedApprovalId,
+  draft,
+  onDraftChange,
   onBack,
   onRequest,
   onError,
@@ -1401,6 +1488,8 @@ function ConversationView({
   connected: boolean;
   highlightItemId: string | null;
   focusedApprovalId: string | null;
+  draft: string;
+  onDraftChange: (text: string) => void;
   onBack: () => void;
   onRequest: <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>;
   onError: (message: string) => void;
@@ -1409,7 +1498,6 @@ function ConversationView({
   const [model, setModel] = useState(initialRoute.model);
   const [effort, setEffort] = useState(initialRoute.reasoningEffort);
   const [access, setAccess] = useState(initialRoute.accessLevel);
-  const [text, setText] = useState("");
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -1452,7 +1540,7 @@ function ConversationView({
 
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
-  const canSubmit = connected && !submitting && !processing && (!!text.trim() || images.length > 0);
+  const canSubmit = connected && !submitting && !processing && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
 
@@ -1463,7 +1551,7 @@ function ConversationView({
     try {
       const base = {
         sessionId: session.id,
-        text,
+        text: draft,
         images: images.map(({ mimeType, data }) => ({ mimeType, data })),
       };
       if (active) {
@@ -1476,7 +1564,7 @@ function ConversationView({
           ...(access ? { accessLevel: access } : {}),
         });
       }
-      setText("");
+      onDraftChange("");
       setImages([]);
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "Message was not accepted");
@@ -1555,7 +1643,7 @@ function ConversationView({
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
-          <textarea value={text} onChange={(event) => setText(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+          <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
           {(session.status === "working" || session.status === "waiting") && session.activeTurnId && <button type="button" className="interrupt" disabled={!connected || submitting} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>

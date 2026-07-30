@@ -80,6 +80,10 @@ as an alternative.
 - Inspect paired browser and Android clients and revoke individual tokens.
 - Supervise active, waiting, failed, stale, and recently terminal work from a
   live dashboard with an attention queue, oldest-turn callout, and activity feed.
+- See a client-side unified overview of every saved host, with aggregate counts,
+  runtime and version health, stale offline snapshots, and compound
+  host/session attention navigation. Web uses at most four live sockets;
+  Android uses one foreground-only sequential probe alongside the active host.
 - Discover Git repositories and browse active and recent Codex sessions.
 - Search session titles and bounded, normalized visible transcript text.
 - Filter by repository/workspace, status, local date range, pins, and hidden sessions.

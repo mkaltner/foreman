@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -371,6 +372,11 @@ class MainActivity : ComponentActivity() {
         foremanViewModel.onForeground()
     }
 
+    override fun onStop() {
+        foremanViewModel.onBackground()
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -403,7 +409,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-internal enum class Screen { Setup, Sessions, Detail }
+internal enum class Screen { Setup, Overview, Sessions, Detail }
 
 internal enum class SessionAction { Archive, Delete }
 
@@ -635,6 +641,11 @@ internal data class UiState(
     val approvals: List<ApprovalRequest> = emptyList(),
     val submittingApprovalIds: Set<String> = emptySet(),
     val approvalErrors: Map<String, String> = emptyMap(),
+    val overviewSnapshots: Map<String, HostOverviewSnapshot> = emptyMap(),
+    val foremanVersion: String? = null,
+    val codexVersion: String? = null,
+    val runtimeMode: String? = null,
+    val runtimeConnected: Boolean = false,
 )
 
 private data class SyncSnapshot(
@@ -644,6 +655,10 @@ private data class SyncSnapshot(
     val models: List<ModelInfo>,
     val accessLevels: List<AccessLevelInfo>,
     val approvals: List<ApprovalRequest>,
+    val foremanVersion: String?,
+    val codexVersion: String?,
+    val runtimeMode: String?,
+    val runtimeConnected: Boolean,
 )
 
 private fun UiPreferences.searchFilters(): SessionSearchFilters =
@@ -688,10 +703,17 @@ internal fun UiState.withForgottenConnection(): UiState =
         approvals = emptyList(),
         submittingApprovalIds = emptySet(),
         approvalErrors = emptyMap(),
+        overviewSnapshots = emptyMap(),
+        foremanVersion = null,
+        codexVersion = null,
+        runtimeMode = null,
+        runtimeConnected = false,
     )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
     private val hosts = HostStore(application)
+    private val overviewStore = HostOverviewStore(application)
+    private val overviewLifecycle = AndroidOverviewLifecycle()
     private val notificationPreferencesStore = NotificationPreferenceStore(application)
     private var activeHost = hosts.active()
     private var preferences = PreferenceStore(application, activeHost?.id)
@@ -727,6 +749,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 showSearch = sessionSearchActive(savedSearchFilters),
                 pinnedSessionIds = savedPreferences.pinnedSessionIds,
                 hiddenSessionIds = savedPreferences.hiddenSessionIds,
+                overviewSnapshots = overviewStore.all().filterKeys { id -> hosts.load(id) != null },
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
@@ -739,6 +762,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var notificationApprovalId: String? = null
     private var searchJob: Job? = null
     private var lastSearchRequestKey = ""
+    private var overviewJob: Job? = null
+    private val overviewClient = ForemanClient(viewModelScope, onEvent = {}, onDisconnect = {})
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
@@ -752,6 +777,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 sessionDiscoveryQueue.clear()
             }
             state.update {
+                val hostId = it.activeHostId
+                val snapshots = if (hostId == null) it.overviewSnapshots else it.overviewSnapshots[hostId]?.let { cached ->
+                    it.overviewSnapshots + (hostId to cached.copy(connection = "disconnected"))
+                } ?: it.overviewSnapshots
                 it.copy(
                     connected = false,
                     connectionStatus = "disconnected",
@@ -766,8 +795,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         } else approval
                     },
                     submittingApprovalIds = emptySet(),
+                    overviewSnapshots = snapshots,
                 )
             }
+            updateActiveOverview()
         },
     )
 
@@ -780,6 +811,35 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+
+    fun showOverview() = state.update { it.copy(screen = Screen.Overview, selected = null, error = null) }
+
+    fun openOverviewHost(hostId: String) {
+        if (hostId == state.value.activeHostId) {
+            state.update { it.copy(screen = Screen.Sessions, selected = null) }
+        } else {
+            switchHost(hostId)
+        }
+    }
+
+    fun reconnectOverviewHost(hostId: String) {
+        if (hostId == state.value.activeHostId) reconnect() else openOverviewHost(hostId)
+    }
+
+    fun openOverviewSession(item: OverviewAttentionItem) {
+        notificationHostId = item.hostId
+        notificationSessionId = item.sessionId
+        notificationApprovalId = item.approvalId
+        if (item.hostId == state.value.activeHostId && state.value.connected) {
+            notificationHostId = null
+            notificationSessionId = null
+            openSession(item.sessionId, focusedApprovalId = item.approvalId)
+        } else if (item.hostId == state.value.activeHostId) {
+            reconnect()
+        } else {
+            switchHost(item.hostId)
+        }
+    }
 
     fun setSearchOpen(open: Boolean) {
         state.update { it.copy(showSearch = open, showSearchFilters = false) }
@@ -926,9 +986,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         preferences.setMonitorActiveTurns(enabled)
         state.update { it.copy(monitorActiveTurns = enabled, error = null) }
         if (enabled) {
+            overviewJob?.cancel()
+            overviewJob = null
+            overviewClient.close()
             state.value.selected?.let(::monitorIfActive)
+            startOverviewPolling()
         } else {
             TurnMonitorService.stopAll(getApplication())
+            refreshOverview()
         }
     }
 
@@ -1121,7 +1186,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         notificationPreferencesStore.clearHostOverride(hostId)
         val next = hosts.forget(hostId)
         if (!forgettingActive) {
-            state.update { it.copy(savedHosts = hosts.all().map { host -> host.summary() }) }
+            state.update { it.copy(savedHosts = hosts.all().map { host -> host.summary() }, overviewSnapshots = it.overviewSnapshots - hostId) }
             return
         }
         activeHost = next
@@ -1130,6 +1195,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             state.update { it.withForgottenConnection() }
             return
         }
+        state.update { it.copy(overviewSnapshots = it.overviewSnapshots - hostId) }
         activateSavedHost(next)
     }
 
@@ -1196,6 +1262,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 approvals = emptyList(),
                 submittingApprovalIds = emptySet(),
                 approvalErrors = emptyMap(),
+                foremanVersion = null,
+                codexVersion = null,
+                runtimeMode = null,
+                runtimeConnected = false,
                 themeMode = restored.themeMode,
                 accentColor = restored.accentColor,
                 followNewMessages = restored.followNewMessages,
@@ -1212,6 +1282,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun onForeground() {
+        overviewLifecycle.onForeground()
+        startOverviewPolling()
         val saved = state.value.activeHostId?.let(hosts::load) ?: return
         if (state.value.loading || reconnectJob?.isActive == true) return
         reconnectJob =
@@ -1228,6 +1300,111 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
                 reconnectSaved(saved)
             }
+    }
+
+    fun onBackground() {
+        overviewLifecycle.onBackground()
+        overviewJob?.cancel()
+        overviewJob = null
+        overviewClient.close()
+    }
+
+    fun refreshOverview() {
+        if (!overviewLifecycle.foreground) return
+        overviewJob?.cancel()
+        overviewJob = null
+        startOverviewPolling()
+    }
+
+    private fun startOverviewPolling() {
+        if (!overviewLifecycle.foreground || overviewJob?.isActive == true) return
+        overviewJob = viewModelScope.launch {
+            while (overviewLifecycle.foreground) {
+                refreshInactiveHostOverviews()
+                delay(ANDROID_OVERVIEW_POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun refreshInactiveHostOverviews() {
+        // The foreground monitoring service may already own the second socket.
+        // In that mode, cached inactive-host snapshots are the battery-safe fallback.
+        if (state.value.monitorActiveTurns) return
+        hosts.all().filterNot { it.id == state.value.activeHostId }.forEach { host ->
+            if (!overviewLifecycle.beginProbe()) return
+            try {
+                val snapshot = runCatching {
+                    overviewClient.authenticate(host.tcpEndpoint(), host.deviceToken)
+                    val sessions = overviewClient.request("session.list").payload.getValue("sessions").jsonArray
+                        .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                    val approvals = if ("approvals" in overviewClient.capabilities) {
+                        overviewClient.request("approval.list").payload.getValue("approvals").jsonArray
+                            .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
+                    } else emptyList()
+                    val service = overviewClient.request("service.status").payload
+                    val codex = service["codex"]?.jsonObject
+                    hosts.updateConnection(
+                        host.id,
+                        "disconnected",
+                        runtimeMode = overviewClient.runtimeMode,
+                        connectedAt = System.currentTimeMillis(),
+                    )
+                    projectHostOverview(
+                        host.id,
+                        sessions,
+                        approvals,
+                        connection = "checked",
+                        foremanVersion = service["foremanVersion"]?.jsonPrimitive?.content,
+                        codexVersion = codex?.get("version")?.jsonPrimitive?.content,
+                        runtimeMode = codex?.get("mode")?.jsonPrimitive?.content,
+                        runtimeConnected = codex?.get("connected")?.jsonPrimitive?.content == "true",
+                    )
+                }.getOrElse {
+                    state.value.overviewSnapshots[host.id]?.copy(connection = "disconnected")
+                        ?: HostOverviewSnapshot(host.id, System.currentTimeMillis(), "disconnected")
+                }
+                overviewStore.save(snapshot)
+                state.update { current ->
+                    current.copy(
+                        overviewSnapshots = current.overviewSnapshots + (host.id to snapshot),
+                        savedHosts = hosts.all().map(SavedHost::summary),
+                    )
+                }
+            } finally {
+                overviewClient.close()
+                overviewLifecycle.endProbe()
+            }
+        }
+    }
+
+    private fun updateActiveOverview() {
+        val current = state.value
+        val hostId = current.activeHostId ?: return
+        val previous = current.overviewSnapshots[hostId]
+        val snapshot = if (current.connected) {
+            val projectedSessions = current.selected?.let { selected ->
+                if (current.sessions.any { it.id == selected.id }) {
+                    current.sessions.map { if (it.id == selected.id) selected else it }
+                } else {
+                    listOf(selected) + current.sessions
+                }
+            } ?: current.sessions
+            projectHostOverview(
+                hostId,
+                projectedSessions,
+                current.approvals,
+                connection = "connected",
+                foremanVersion = current.foremanVersion,
+                codexVersion = current.codexVersion,
+                runtimeMode = current.runtimeMode,
+                runtimeConnected = current.runtimeConnected,
+            )
+        } else {
+            previous?.copy(connection = "disconnected")
+                ?: HostOverviewSnapshot(hostId, System.currentTimeMillis(), "disconnected")
+        }
+        overviewStore.save(snapshot)
+        state.update { it.copy(overviewSnapshots = it.overviewSnapshots + (hostId to snapshot)) }
     }
 
     private fun launchReconnect(saved: SavedHost) {
@@ -1333,9 +1510,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
-                val repositoryRoot =
-                    serviceStatusRequest.await().payload["repositoryRoot"]
-                        ?.jsonPrimitive?.content.orEmpty()
+                val serviceStatus = serviceStatusRequest.await().payload
+                val codexStatus = serviceStatus["codex"]?.jsonObject
+                val repositoryRoot = serviceStatus["repositoryRoot"]?.jsonPrimitive?.content.orEmpty()
                 val models =
                     modelsRequest.await()?.payload?.get("models")?.jsonArray
                         ?.map { json.decodeFromJsonElement<ModelInfo>(it) }
@@ -1349,7 +1526,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     approvalsRequest.await()?.payload?.get("approvals")?.jsonArray
                         ?.map { json.decodeFromJsonElement<ApprovalRequest>(it) }
                         ?: emptyList()
-                SyncSnapshot(sessions, repositories, repositoryRoot, models, accessLevels, approvals)
+                SyncSnapshot(
+                    sessions,
+                    repositories,
+                    repositoryRoot,
+                    models,
+                    accessLevels,
+                    approvals,
+                    serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
+                    codexStatus?.get("version")?.jsonPrimitive?.content,
+                    codexStatus?.get("mode")?.jsonPrimitive?.content,
+                    codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
+                )
             }
         val sessions = snapshot.sessions
         val selected = selectedSessionId?.let { readSession(it) }
@@ -1365,6 +1553,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     approvals = snapshot.approvals,
                     submittingApprovalIds = emptySet(),
                     approvalErrors = emptyMap(),
+                    foremanVersion = snapshot.foremanVersion,
+                    codexVersion = snapshot.codexVersion,
+                    runtimeMode = snapshot.runtimeMode,
+                    runtimeConnected = snapshot.runtimeConnected,
                 )
                 .withModelsAndSessionRoute(snapshot.models, selected)
                 .withAccessLevelsAndSessionAccess(snapshot.accessLevels, selected)
@@ -1379,6 +1571,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         scheduleSearch(0)
         selected?.let(::monitorIfActive)
+        updateActiveOverview()
     }
 
     private suspend fun listSessions(): List<SessionSummary> =
@@ -1706,6 +1899,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 focusedApprovalId = it.focusedApprovalId.takeUnless { id -> id == approval.id },
             ) }
         }
+        updateActiveOverview()
         return true
     }
 
@@ -1730,6 +1924,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         hiddenSessionIds = hidden,
                     )
                 }
+                updateActiveOverview()
                 return
             }
             val projected = event["session"]?.let {
@@ -1740,6 +1935,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     current.copy(sessions = listOf(projected) + current.sessions.filterNot { it.id == projected.id })
                 }
                 scheduleSearch(0)
+                updateActiveOverview()
                 return
             }
         }
@@ -1942,6 +2138,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (kind == "status" && state.value.searchFilters.query.isNotBlank()) {
             scheduleSearch(0)
         }
+        updateActiveOverview()
     }
 
     private fun fail(error: Throwable) {
@@ -1985,6 +2182,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     override fun onCleared() {
+        overviewJob?.cancel()
+        overviewClient.close()
         client.close()
     }
 }
@@ -2018,6 +2217,7 @@ private fun ForemanApp(
         ) {
             when (state.screen) {
                 Screen.Setup -> SetupScreen(state, viewModel, requestTurnMonitoring)
+                Screen.Overview -> UnifiedOverviewScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Sessions -> SessionsScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Detail -> SessionDetailScreen(state, viewModel, requestTurnMonitoring)
             }
@@ -2139,6 +2339,188 @@ private fun SetupScreen(
     }
 }
 
+private fun overviewAge(timestamp: Long?, now: Long = System.currentTimeMillis()): String {
+    if (timestamp == null) return "never"
+    val elapsed = (now - timestamp).coerceAtLeast(0)
+    return when {
+        elapsed < 60_000 -> "just now"
+        elapsed < 3_600_000 -> "${elapsed / 60_000}m ago"
+        elapsed < 86_400_000 -> "${elapsed / 3_600_000}h ago"
+        else -> "${elapsed / 86_400_000}d ago"
+    }
+}
+
+private fun overviewElapsed(timestamp: Long?, now: Long = System.currentTimeMillis()): String {
+    if (timestamp == null) return "—"
+    val elapsed = (now - timestamp).coerceAtLeast(0)
+    val hours = elapsed / 3_600_000
+    val minutes = (elapsed % 3_600_000) / 60_000
+    return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UnifiedOverviewScreen(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
+) {
+    val totals = aggregateHostOverviews(state.savedHosts.map { it.id }, state.overviewSnapshots)
+    val attention = state.savedHosts.flatMap { host ->
+        state.overviewSnapshots[host.id]?.attention.orEmpty().map { host to it }
+    }.sortedBy { it.second.startedAt ?: Long.MAX_VALUE }
+    var renameHost by remember { mutableStateOf<SavedHostSummary?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var forgetHost by remember { mutableStateOf<SavedHostSummary?>(null) }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Unified overview", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    Image(
+                        painter = painterResource(R.drawable.foreman_logo),
+                        contentDescription = null,
+                        modifier = Modifier.padding(start = 12.dp).size(36.dp).clip(RoundedCornerShape(9.dp)),
+                    )
+                },
+                actions = {
+                    IconButton(onClick = viewModel::refreshOverview) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh all hosts")
+                    }
+                    UiSettingsMenu(state, viewModel, requestTurnMonitoring)
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.padding(padding).fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                Text("ALL SAVED HOSTS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text("Status is aggregated on this device; hosts remain independently paired.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (totals.staleHosts > 0) Text("Aggregate counts include ${totals.staleHosts} stale host snapshot${if (totals.staleHosts == 1) "" else "s"}.", color = Color(0xFFF79009), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverviewMetric("Hosts online", "${totals.connectedHosts}/${totals.hosts}", Modifier.weight(1f))
+                        OverviewMetric("Active", totals.active.toString(), Modifier.weight(1f))
+                        OverviewMetric("Waiting", totals.waiting.toString(), Modifier.weight(1f))
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverviewMetric("Failed", totals.failed.toString(), Modifier.weight(1f))
+                        OverviewMetric("Longest", overviewElapsed(totals.oldestTurn?.timestamp), Modifier.weight(1f))
+                        OverviewMetric("Latest", overviewAge(totals.latestCompletion?.timestamp), Modifier.weight(1f))
+                    }
+                }
+            }
+            item { Text("Saved hosts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            items(state.savedHosts, key = { it.id }) { host ->
+                val snapshot = state.overviewSnapshots[host.id]
+                HostOverviewCard(
+                    host,
+                    snapshot,
+                    onOpen = { viewModel.openOverviewHost(host.id) },
+                    onReconnect = { viewModel.reconnectOverviewHost(host.id) },
+                    onRename = { renameHost = host; renameValue = host.displayName },
+                    onForget = { forgetHost = host },
+                )
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Needs attention", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(attention.size.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (attention.isEmpty()) {
+                item { Text("Nothing in the latest host snapshots needs attention.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            } else {
+                items(attention, key = { (host, item) -> "${host.id}:${item.sessionId}:${item.approvalId ?: item.type}" }) { (host, item) ->
+                    val stale = state.overviewSnapshots[host.id]?.connection != "connected"
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(item.type.uppercase(), color = if (item.type == "failed") MaterialTheme.colorScheme.error else Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                Text(overviewAge(item.startedAt) + if (stale) " · STALE" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(item.sessionTitle, fontWeight = FontWeight.Bold)
+                            Text("${host.displayName} · ${item.repository.substringAfterLast('/').ifBlank { "Workspace" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Button(onClick = { viewModel.openOverviewSession(item) }, modifier = Modifier.align(Alignment.End)) { Text("Open") }
+                        }
+                    }
+                }
+            }
+            item { Text("Android uses one active-host connection plus one sequential foreground health probe. Inactive snapshots are always marked stale; probes stop in the background.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+    renameHost?.let { host ->
+        AlertDialog(
+            onDismissRequest = { renameHost = null },
+            title = { Text("Rename ${host.displayName}") },
+            text = { OutlinedTextField(renameValue, { renameValue = it }, label = { Text("Display name") }, singleLine = true) },
+            dismissButton = { TextButton(onClick = { renameHost = null }) { Text("Cancel") } },
+            confirmButton = { TextButton(enabled = renameValue.isNotBlank(), onClick = { viewModel.renameHost(host.id, renameValue); renameHost = null }) { Text("Save") } },
+        )
+    }
+    forgetHost?.let { host ->
+        AlertDialog(
+            onDismissRequest = { forgetHost = null },
+            title = { Text("Forget ${host.displayName}?") },
+            text = { Text("This removes this host and its encrypted token from this device.") },
+            dismissButton = { TextButton(onClick = { forgetHost = null }) { Text("Cancel") } },
+            confirmButton = { TextButton(onClick = { viewModel.forgetHost(host.id); forgetHost = null }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Forget") } },
+        )
+    }
+}
+
+@Composable
+private fun OverviewMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(12.dp), tonalElevation = 2.dp) {
+        Column(Modifier.padding(12.dp)) {
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun HostOverviewCard(
+    host: SavedHostSummary,
+    snapshot: HostOverviewSnapshot?,
+    onOpen: () -> Unit,
+    onReconnect: () -> Unit,
+    onRename: () -> Unit,
+    onForget: () -> Unit,
+) {
+    val live = snapshot?.connection == "connected"
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(host.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("${host.host}:${host.tcpPort}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(snapshot?.connection ?: host.lastKnownStatus, color = if (live) Color(0xFF17B26A) else Color(0xFFF79009), style = MaterialTheme.typography.labelMedium)
+            }
+            if (!live) Text("STALE · Last connected ${overviewAge(host.lastConnectedAt)} · checked ${overviewAge(snapshot?.observedAt)}", color = Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            Text("Foreman ${snapshot?.foremanVersion ?: "—"} · Codex ${snapshot?.codexVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
+            Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Fallback runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
+            Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
+            Text("Oldest ${overviewElapsed(snapshot?.oldestTurn?.timestamp)} · Latest activity ${overviewAge(snapshot?.latestActivity)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Button(onClick = onOpen) { Text("View dashboard") }
+                if (!live) FilledTonalButton(onClick = onReconnect) { Text("Reconnect") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = onRename) { Text("Edit") }
+                TextButton(onClick = onForget, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Forget") }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SessionsScreen(
@@ -2161,6 +2543,9 @@ private fun SessionsScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = viewModel::showOverview) {
+                        Icon(Icons.Default.Home, contentDescription = "Unified overview")
+                    }
                     IconButton(onClick = { viewModel.setSearchOpen(!state.showSearch) }) {
                         Icon(
                             if (state.showSearch) Icons.Default.Close else Icons.Default.Search,
@@ -3360,6 +3745,12 @@ private fun HostSelectorMenu(
             )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Unified overview") },
+                leadingIcon = { Icon(Icons.Default.Home, contentDescription = null) },
+                onClick = { expanded = false; viewModel.showOverview() },
+            )
+            HorizontalDivider()
             Text(
                 "Saved hosts",
                 style = MaterialTheme.typography.labelLarge,
