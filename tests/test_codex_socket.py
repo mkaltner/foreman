@@ -105,6 +105,8 @@ class FakeSocketServer:
         self.server: Any | None = None
         self.connections: set[Any] = set()
         self.methods: list[str] = []
+        self.messages: list[dict[str, Any]] = []
+        self.server_responses: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     async def start(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,9 +117,15 @@ class FakeSocketServer:
         try:
             async for raw in websocket:
                 message = json.loads(raw)
+                self.messages.append(message)
+                if "id" in message and ("result" in message or "error" in message):
+                    future = self.server_responses.get(json.dumps(message["id"]))
+                    if future and not future.done():
+                        future.set_result(message)
+                    continue
                 method = message.get("method", "")
                 self.methods.append(method)
-                if "id" in message:
+                if "id" in message and "method" in message:
                     await websocket.send(
                         json.dumps(
                             {
@@ -132,6 +140,19 @@ class FakeSocketServer:
     async def emit(self, method: str, params: dict[str, Any]) -> None:
         payload = json.dumps({"method": method, "params": params})
         await asyncio.gather(*(item.send(payload) for item in self.connections))
+
+    async def request(
+        self, request_id: Any, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        key = json.dumps(request_id)
+        future = asyncio.get_running_loop().create_future()
+        self.server_responses[key] = future
+        payload = json.dumps({"id": request_id, "method": method, "params": params})
+        await asyncio.gather(*(item.send(payload) for item in self.connections))
+        try:
+            return await asyncio.wait_for(future, 2)
+        finally:
+            self.server_responses.pop(key, None)
 
     async def stop(self) -> None:
         if not self.server:
@@ -479,6 +500,186 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         completed = protocol.decode(await asyncio.wait_for(reader.readline(), 2))
         self.assertEqual(completed["payload"]["event"]["status"], "completed")
+
+        writer.close()
+        await writer.wait_closed()
+        await app.stop()
+        await server.stop()
+
+    async def test_full_approval_round_trip_and_desktop_resolution(self) -> None:
+        server = FakeSocketServer(self.socket_path)
+        await server.start()
+        repository_root = self.base / "projects"
+        repository = repository_root / "example"
+        repository.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        state = State(self.base / "state")
+        pairing_key, _ = state.create_pairing()
+
+        def factory(executable: str, event: Any) -> Codex:
+            return Codex(executable, event, self.socket_path, self.fallback_socket_path)
+
+        app = Foreman(
+            "127.0.0.1", 0, repository_root, state, "missing-codex", codex_factory=factory
+        )
+        await app.start()
+        listener = app.server.sockets[0]
+        reader, writer = await asyncio.open_connection(*listener.getsockname()[:2])
+        sequence = 0
+        unsolicited: list[dict[str, Any]] = []
+
+        async def client_request(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            nonlocal sequence
+            sequence += 1
+            identifier = f"client-{sequence}"
+            writer.write(
+                protocol.encode(
+                    {"version": 1, "id": identifier, "type": kind, "payload": payload}
+                )
+            )
+            await writer.drain()
+            while True:
+                message = protocol.decode(await asyncio.wait_for(reader.readline(), 2))
+                if message.get("id") == identifier:
+                    self.assertNotEqual(message["type"], "error", message)
+                    return message["payload"]
+                unsolicited.append(message)
+
+        async def next_event(kind: str) -> dict[str, Any]:
+            for index, message in enumerate(unsolicited):
+                if message.get("type") == kind:
+                    return unsolicited.pop(index)
+            while True:
+                message = protocol.decode(await asyncio.wait_for(reader.readline(), 2))
+                if message.get("type") == kind:
+                    return message
+                unsolicited.append(message)
+
+        await client_request(
+            "pair", {"pairingKey": pairing_key, "deviceName": "Approval phone"}
+        )
+        await client_request(
+            "session.subscribe", {"sessionId": "thread-shared"}
+        )
+        scenarios = [
+            (
+                "command-upstream",
+                "item/commandExecution/requestApproval",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-command",
+                    "itemId": "command-item",
+                    "startedAtMs": 1_720_000_000_000,
+                    "reason": "Run a safe check",
+                    "command": "printf safe",
+                    "cwd": "/projects/example",
+                    "availableDecisions": ["accept", "decline", "cancel"],
+                },
+                {"type": "accept"},
+                {"decision": "accept"},
+            ),
+            (
+                "file-upstream",
+                "item/fileChange/requestApproval",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-file",
+                    "itemId": "file-item",
+                    "startedAtMs": 1_720_000_001_000,
+                    "reason": "Review the proposed edit",
+                },
+                {"type": "decline"},
+                {"decision": "decline"},
+            ),
+            (
+                "permission-upstream",
+                "item/permissions/requestApproval",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-permission",
+                    "itemId": "permission-item",
+                    "startedAtMs": 1_720_000_002_000,
+                    "cwd": "/projects/example",
+                    "permissions": {
+                        "fileSystem": {"write": ["/projects/example", "/tmp/safe"]},
+                        "network": {"enabled": True},
+                    },
+                },
+                {
+                    "type": "grant",
+                    "scope": "turn",
+                    "permissions": {"fileSystem": {"write": ["/projects/example"]}},
+                },
+                {
+                    "permissions": {"fileSystem": {"write": ["/projects/example"]}},
+                    "scope": "turn",
+                },
+            ),
+        ]
+        for upstream_id, method, params, decision, expected in scenarios:
+            if method == "item/fileChange/requestApproval":
+                await server.emit(
+                    "item/started",
+                    {
+                        "threadId": "thread-shared",
+                        "turnId": params["turnId"],
+                        "item": {
+                            "id": params["itemId"],
+                            "type": "fileChange",
+                            "status": "inProgress",
+                            "changes": [
+                                {
+                                    "path": "/projects/example/safe.txt",
+                                    "kind": "update",
+                                    "diff": "-old\n+new",
+                                }
+                            ],
+                        },
+                    },
+                )
+                await next_event("session.event")
+            upstream = asyncio.create_task(server.request(upstream_id, method, params))
+            requested = await next_event("approval.requested")
+            approval = requested["payload"]["approval"]
+            self.assertNotEqual(approval["id"], upstream_id)
+            listed = await client_request("approval.list", {})
+            self.assertTrue(any(item["id"] == approval["id"] for item in listed["approvals"]))
+            await client_request(
+                "approval.respond",
+                {"approvalId": approval["id"], "decision": decision},
+            )
+            self.assertEqual((await upstream)["result"], expected)
+            await server.emit(
+                "serverRequest/resolved",
+                {"threadId": "thread-shared", "requestId": upstream_id},
+            )
+            resolved = await next_event("approval.resolved")
+            self.assertEqual(resolved["payload"]["approval"]["status"], "resolved")
+
+        desktop = asyncio.create_task(
+            server.request(
+                "desktop-first",
+                "item/commandExecution/requestApproval",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-desktop",
+                    "itemId": "desktop-command",
+                    "startedAtMs": 1_720_000_003_000,
+                    "availableDecisions": ["accept", "decline"],
+                },
+            )
+        )
+        requested = await next_event("approval.requested")
+        desktop_approval_id = requested["payload"]["approval"]["id"]
+        await server.emit(
+            "serverRequest/resolved",
+            {"threadId": "thread-shared", "requestId": "desktop-first"},
+        )
+        resolved = await next_event("approval.resolved")
+        self.assertEqual(resolved["payload"]["approval"]["resolution"], "resolvedElsewhere")
+        self.assertNotIn(desktop_approval_id, [item["id"] for item in app.codex.list_approvals()])
+        desktop.cancel()
+        await asyncio.gather(desktop, return_exceptions=True)
 
         writer.close()
         await writer.wait_closed()

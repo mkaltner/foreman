@@ -174,7 +174,18 @@ internal fun safeMarkdownUrl(raw: String): String? =
     }.getOrNull()
 
 private val InlineToken =
-    Regex("\\[([^]\\n]+)]\\(([^)\\s]+)\\)|\\*\\*([^*\\n]+)\\*\\*|__([^_\\n]+)__|`([^`\\n]+)`|\\*([^*\\n]+)\\*|_([^_\\n]+)_")
+    Regex("\\[([^]\\n]+)]\\(([^)\\s]+)\\)|\\*\\*([^*\\n]+)\\*\\*|__([^_\\n]+)__|`([^`\\n]+)`|\\*([^*\\n]+)\\*|_([^_\\n]+)_|\\b(https?://[^\\s<>\"']+)", RegexOption.IGNORE_CASE)
+
+internal fun trimTrailingUrlPunctuation(raw: String): String {
+    var value = raw.trimEnd('.', ',', ';', ':', '!', '?')
+    fun unbalanced(open: Char, close: Char): Boolean = value.count { it == close } > value.count { it == open }
+    while (
+        (value.endsWith(')') && unbalanced('(', ')')) ||
+            (value.endsWith(']') && unbalanced('[', ']')) ||
+            (value.endsWith('}') && unbalanced('{', '}'))
+    ) value = value.dropLast(1)
+    return value
+}
 
 @Composable
 internal fun inlineMarkdown(text: String, color: Color): AnnotatedString =
@@ -229,10 +240,34 @@ internal fun styledInlineMarkdown(
                     append(groups[5])
                     pop()
                 }
-                else -> {
+                groups[6].isNotEmpty() || groups[7].isNotEmpty() -> {
                     pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
                     append(groups[6].ifEmpty { groups[7] })
                     pop()
+                }
+                else -> {
+                    val raw = groups[8]
+                    val candidate = trimTrailingUrlPunctuation(raw)
+                    val safeUrl = safeMarkdownUrl(candidate)
+                    if (safeUrl == null) {
+                        append(raw)
+                    } else {
+                        pushLink(
+                            LinkAnnotation.Url(
+                                safeUrl,
+                                TextLinkStyles(
+                                    style =
+                                        SpanStyle(
+                                            color = linkColor,
+                                            textDecoration = TextDecoration.Underline,
+                                        ),
+                                ),
+                            ),
+                        )
+                        append(candidate)
+                        pop()
+                        append(raw.substring(candidate.length))
+                    }
                 }
             }
             cursor = match.range.last + 1

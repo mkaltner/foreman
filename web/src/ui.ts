@@ -21,6 +21,55 @@ export function createSubmissionGuard() {
   };
 }
 
+export interface PlainTextLinkSegment {
+  text: string;
+  href?: string;
+}
+
+const BARE_WEB_URL = /\bhttps?:\/\/[^\s<>"']+/gi;
+
+export function linkifyPlainText(text: string): PlainTextLinkSegment[] {
+  const segments: PlainTextLinkSegment[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(BARE_WEB_URL)) {
+    const index = match.index;
+    if (index > cursor) segments.push({ text: text.slice(cursor, index) });
+    const raw = match[0];
+    const href = trimTrailingUrlPunctuation(raw);
+    if (isSafeWebUrl(href)) {
+      segments.push({ text: href, href });
+      if (href.length < raw.length) segments.push({ text: raw.slice(href.length) });
+    } else {
+      segments.push({ text: raw });
+    }
+    cursor = index + raw.length;
+  }
+  if (cursor < text.length) segments.push({ text: text.slice(cursor) });
+  return segments.length ? segments : [{ text }];
+}
+
+function trimTrailingUrlPunctuation(raw: string): string {
+  let value = raw.replace(/[.,;:!?]+$/, "");
+  const unbalanced = (open: string, close: string) =>
+    [...value].filter((character) => character === close).length >
+      [...value].filter((character) => character === open).length;
+  while (
+    (value.endsWith(")") && unbalanced("(", ")")) ||
+    (value.endsWith("]") && unbalanced("[", "]")) ||
+    (value.endsWith("}") && unbalanced("{", "}"))
+  ) value = value.slice(0, -1);
+  return value;
+}
+
+function isSafeWebUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return ["http:", "https:"].includes(url.protocol) && !!url.hostname;
+  } catch {
+    return false;
+  }
+}
+
 export function confirmSessionAction(
   action: "archive" | "delete",
   title: string,

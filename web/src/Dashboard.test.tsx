@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Dashboard, ElapsedTime } from "./Dashboard";
-import type { ServiceStatus, SessionSummary } from "./protocol";
+import type { ApprovalRequest, ServiceStatus, SessionSummary } from "./protocol";
 
 const now = 1_720_000_000_000;
 const status: ServiceStatus = {
@@ -72,9 +72,30 @@ describe("monitoring dashboard", () => {
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
     expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
     expect(screen.getByText("Tests failed safely")).toBeInTheDocument();
-    expect(screen.getByText(/approval and structured input must currently/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active work" })).toBeInTheDocument();
     expect(screen.getAllByText("foreman").length).toBeGreaterThan(0);
+  });
+
+  it("renders concrete approval attention once and opens the exact approval", () => {
+    const onOpenApproval = vi.fn();
+    const approval: ApprovalRequest = {
+      id: "apr-safe",
+      sessionId: "waiting",
+      turnId: "turn-2",
+      itemId: "command-1",
+      type: "command",
+      title: "Approval required",
+      createdAt: now / 1000,
+      reason: "Run the safe verification command",
+      status: "pending",
+      availableDecisions: [{ type: "accept", label: "Allow once", optionId: "decision-0" }],
+    };
+    render(<Dashboard sessions={sessions} approvals={[approval]} serviceStatus={status} connection="connected" disabled={false} onOpen={vi.fn()} onOpenApproval={onOpenApproval} onInterrupt={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getAllByText("Waiting for command approval")).toHaveLength(1);
+    expect(screen.queryByText("Waiting for approval")).not.toBeInTheDocument();
+    expect(screen.getByText("Run the safe verification command")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open approval" }));
+    expect(onOpenApproval).toHaveBeenCalledWith(approval);
   });
 
   it("filters locally and dismisses failures without deleting a session", () => {

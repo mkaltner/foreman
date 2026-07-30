@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -37,6 +38,9 @@ internal fun monitorOutcome(status: String): MonitorOutcome? =
         "idle" -> MonitorOutcome("Foreman turn is no longer active", "Tap to open the session.")
         else -> null
     }
+
+internal fun approvalNotificationText(): MonitorOutcome =
+    MonitorOutcome("Foreman needs your attention", "A monitored session has an approval request.")
 
 internal class MonitorLifecycle(
     private val initialReconnectDelay: Long = 2_000L,
@@ -62,7 +66,7 @@ internal class MonitorLifecycle(
         }
         if (monitored[sessionId] != true) return null
         val outcome = monitorOutcome(status) ?: return null
-        monitored.remove(sessionId)
+        if (status != "waiting") monitored.remove(sessionId)
         return outcome
     }
 
@@ -101,6 +105,7 @@ class TurnMonitorService : Service() {
     private val lifecycle = MonitorLifecycle()
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
+    private val approvalNotifications = linkedMapOf<String, String>()
     @Volatile private var connected = false
 
     override fun onCreate() {
@@ -183,12 +188,32 @@ class TurnMonitorService : Service() {
                 val status = session["status"]?.jsonPrimitive?.content ?: return@forEach
                 lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
             }
+            if ("approvals" in client.capabilities) {
+                client.request("approval.list").payload["approvals"]?.jsonArray?.forEach { raw ->
+                    val approval = raw.jsonObject
+                    val approvalId = approval["id"]?.jsonPrimitive?.content ?: return@forEach
+                    val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return@forEach
+                    notifyApproval(sessionId, approvalId)
+                }
+            }
             lifecycle.resetReconnectDelay()
             if (!lifecycle.isEmpty()) showForeground(reconnecting = false)
         }
     }
 
     private fun handleEvent(message: WireMessage) {
+        if (message.type in setOf("approval.requested", "approval.updated", "approval.resolved")) {
+            val approval = message.payload["approval"]?.jsonObject ?: return
+            val approvalId = approval["id"]?.jsonPrimitive?.content ?: return
+            val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return
+            if (message.type == "approval.resolved" || approval["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
+                approvalNotifications.remove(approvalId)
+                notificationManager.cancel(approvalNotificationId(approvalId))
+            } else {
+                notifyApproval(sessionId, approvalId)
+            }
+            return
+        }
         if (message.type != "session.event") return
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         if (!lifecycle.contains(sessionId)) return
@@ -196,6 +221,7 @@ class TurnMonitorService : Service() {
         if (event["kind"]?.jsonPrimitive?.content != "status") return
         val status = event["status"]?.jsonPrimitive?.content ?: return
         lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
+        if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionId)
     }
 
     @Synchronized
@@ -222,6 +248,34 @@ class TurnMonitorService : Service() {
             stopMonitoring()
         } else {
             showForeground(reconnecting = false)
+        }
+    }
+
+    @Synchronized
+    private fun notifyApproval(sessionId: String, approvalId: String) {
+        if (!lifecycle.contains(sessionId) || approvalId in approvalNotifications) return
+        approvalNotifications[approvalId] = sessionId
+        notificationManager.cancel(resultNotificationId(sessionId))
+        val outcome = approvalNotificationText()
+        val notification =
+            notificationBuilder(RESULT_CHANNEL)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(outcome.title)
+                .setContentText(outcome.detail)
+                .setContentIntent(openSessionIntent(sessionId, approvalId))
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+                .build()
+        notificationManager.notify(approvalNotificationId(approvalId), notification)
+    }
+
+    @Synchronized
+    private fun clearApprovalNotifications(sessionId: String) {
+        val ids = approvalNotifications.filterValues { it == sessionId }.keys.toList()
+        ids.forEach {
+            approvalNotifications.remove(it)
+            notificationManager.cancel(approvalNotificationId(it))
         }
     }
 
@@ -274,6 +328,7 @@ class TurnMonitorService : Service() {
             .setContentTitle(outcome.title)
             .setContentText(outcome.detail)
             .setContentIntent(openSessionIntent(sessionId))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .build()
 
@@ -294,12 +349,13 @@ class TurnMonitorService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun openSessionIntent(sessionId: String): PendingIntent =
+    private fun openSessionIntent(sessionId: String, approvalId: String? = null): PendingIntent =
         PendingIntent.getActivity(
             this,
             sessionId.hashCode(),
             Intent(this, MainActivity::class.java)
                 .putExtra(EXTRA_SESSION_ID, sessionId)
+                .apply { approvalId?.let { putExtra(EXTRA_APPROVAL_ID, it) } }
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -350,6 +406,7 @@ class TurnMonitorService : Service() {
 
     companion object {
         const val EXTRA_SESSION_ID = "net.kaltner.foreman.extra.SESSION_ID"
+        const val EXTRA_APPROVAL_ID = "net.kaltner.foreman.extra.APPROVAL_ID"
         private const val EXTRA_ACTIVE = "net.kaltner.foreman.extra.ACTIVE"
         private const val ACTION_MONITOR = "net.kaltner.foreman.action.MONITOR"
         private const val ACTION_CANCEL = "net.kaltner.foreman.action.CANCEL_MONITOR"
@@ -385,5 +442,8 @@ class TurnMonitorService : Service() {
 
         private fun resultNotificationId(sessionId: String): Int =
             2_000 + (sessionId.hashCode() and 0x00ffffff)
+
+        private fun approvalNotificationId(approvalId: String): Int =
+            30_000_000 + (approvalId.hashCode() and 0x00ffffff)
     }
 }

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { RouteSelect, SetupView } from "./App";
+import { LinkedUserText, RouteSelect, SetupView } from "./App";
 import { inferPagePort } from "./client";
 
 describe("Foreman setup", () => {
@@ -25,6 +25,17 @@ describe("Foreman setup", () => {
       },
       "123456",
     );
+  });
+});
+
+describe("user message links", () => {
+  it("opens safe bare links without interpreting other message text as markup", () => {
+    render(<LinkedUserText text={'Review <b>literal</b> at https://example.com/pr/11.'} />);
+    expect(screen.getByText("<b>literal</b>", { exact: false })).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "https://example.com/pr/11" });
+    expect(link).toHaveAttribute("href", "https://example.com/pr/11");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noreferrer noopener");
   });
 });
 

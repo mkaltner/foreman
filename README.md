@@ -87,6 +87,10 @@ as an alternative.
 - List, read, start, resume, archive, and delete sessions.
 - Prompt, steer, and interrupt active work.
 - Stream live status, assistant deltas, tool activity, and progress updates.
+- Review command, file-change, and permission approvals inline, including
+  schema-advertised session and policy-amendment choices.
+- Resolve an approval from Android, web, or Codex Desktop and clear every
+  Foreman client live when Codex confirms the result.
 - Show current reasoning, plans, commands, tool names, and other meaningful
   live activity while Codex works.
 - Select installed models, Android-style reasoning levels, and Codex access
@@ -112,6 +116,10 @@ The Sessions screen provides expandable search and a compact filter dialog for
 repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
 and Hidden management. Search choices, pins, and hidden IDs use Android's
 existing local preferences; transcripts and image data are never stored there.
+Approval cards stay inside the existing conversation. Permission cards grant
+only selected requested access, and reconnect reloads only currently pending
+requests. Background approval notifications contain generic text and open the
+exact session/card without exposing commands or paths on the lock screen.
 
 ## Web
 
@@ -155,6 +163,7 @@ The full web client also supports:
 - starting sessions and sending prompts, steers, or interrupts;
 - model, reasoning-effort, and access selection;
 - file-picker and clipboard image attachments;
+- inline command, file-change, and permission approval cards;
 - archive and delete actions;
 - opt-in browser notifications for background tabs;
 - bounded reconnect without request replay;
@@ -171,8 +180,10 @@ Dashboard behavior and limits:
 - Recent completion and feed data are not a permanent audit history.
 - **Other workspaces** contains session roots that do not map to a discovered
   Git repository.
-- Approval and structured-input waits must still be handled in another
-  compatible Codex client.
+- Concrete approvals appear once in **Needs attention** and open the associated
+  inline card. General structured user-input and arbitrary MCP forms still need
+  another compatible Codex client unless Codex advertises a valid decline or
+  cancel response.
 - Search uses case-insensitive plain substrings. Criteria are ANDed, selected
   statuses are ORed, and hidden sessions stay excluded unless **Hidden
   sessions** is selected. Pins affect ordering, not matching.
@@ -225,6 +236,12 @@ rebuild the committed assets with the pinned Node version as documented in the
 </table>
 
 ### Web
+
+<p align="center">
+  <img src="docs/screenshots/web-approval.png" alt="Foreman web command approval with safe example values" width="860">
+  <br>
+  <em>Schema-exact approval decisions in the active conversation</em>
+</p>
 
 <p align="center">
   <img src="docs/screenshots/web-dashboard.png" alt="Foreman monitoring dashboard with multiple active sessions, an approval wait, repository groups, and host health" width="860">
@@ -289,8 +306,10 @@ CORS is not enabled.
 
 A paired client can control Codex with the access level selected for a turn, so
 treat its token and network access as sensitive. Foreman does not expose a
-standalone shell, Git-write, approval, or structured-input endpoint, but Codex
-can still run tools and modify files according to its selected access profile.
+standalone shell, Git-write, or structured-input endpoint. Its authenticated
+approval endpoint only returns a validated decision to the pending Codex
+request; it never executes command text itself. Codex can still run tools and
+modify files according to its selected access profile.
 Any authenticated Foreman client may revoke another paired token. Client lists
 contain only the saved label, client type, pairing time, and live connection
 state—never token values, token hashes, pairing codes, or source addresses.
@@ -308,8 +327,7 @@ does not stop Desktop's Codex runtime.
 
 ## Known limitations
 
-- Approval requests cannot yet be answered through Foreman.
-- Structured user-input requests are not yet supported.
+- General structured user-input and arbitrary MCP forms are not yet supported.
 - Direct TCP and HTTP transport is not encrypted.
 - Desktop live co-presence requires successful shared-socket attachment.
 - Android distribution is currently sideloaded.
