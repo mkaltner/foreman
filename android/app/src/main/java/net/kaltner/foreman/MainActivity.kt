@@ -1758,7 +1758,7 @@ private fun SessionsScreen(
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        Column(Modifier.padding(padding).fillMaxSize().imePadding()) {
             if (!state.connected) {
                 ConnectionBanner(state.error, viewModel::reconnect)
             } else {
@@ -1766,7 +1766,7 @@ private fun SessionsScreen(
             }
             if (state.showSearch) {
                 Row(
-                    Modifier.fillMaxWidth().imePadding().padding(horizontal = 16.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
