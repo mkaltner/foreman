@@ -8,6 +8,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
+import java.util.Calendar
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
@@ -660,6 +661,78 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun notificationPreferencesCoverDefaultsEveryToggleAndRepositoryInheritance() {
+        val defaults = NotificationPreferences()
+        assertTrue(defaults.eventEnabled(NotificationEvent.Approval, "/repo"))
+        assertTrue(defaults.eventEnabled(NotificationEvent.Failure, "/repo"))
+        assertTrue(defaults.eventEnabled(NotificationEvent.Completion, "/repo"))
+        assertFalse(defaults.eventEnabled(NotificationEvent.Interruption, "/repo"))
+        assertFalse(defaults.eventEnabled(NotificationEvent.LongRunning, "/repo"))
+
+        val toggled = defaults.copy(
+            notifyApprovals = false,
+            notifyFailures = false,
+            notifyCompletions = false,
+            notifyInterruptions = true,
+            notifyLongRunning = true,
+            repositoryOverrides = mapOf(
+                "/repo" to RepositoryNotificationOverride(
+                    notifyCompletions = true,
+                    notifyInterruptions = false,
+                ),
+            ),
+        )
+        assertFalse(toggled.eventEnabled(NotificationEvent.Approval, "/other"))
+        assertFalse(toggled.eventEnabled(NotificationEvent.Failure, "/other"))
+        assertFalse(toggled.eventEnabled(NotificationEvent.Completion, "/other"))
+        assertTrue(toggled.eventEnabled(NotificationEvent.Interruption, "/other"))
+        assertTrue(toggled.eventEnabled(NotificationEvent.LongRunning, "/other"))
+        assertTrue(toggled.eventEnabled(NotificationEvent.Completion, "/repo"))
+        assertFalse(toggled.eventEnabled(NotificationEvent.Interruption, "/repo"))
+    }
+
+    @Test
+    fun notificationQuietHoursSupportOvernightRangesAndCriticalBypass() {
+        val preferences = NotificationPreferences(
+            quietHoursEnabled = true,
+            quietStart = "22:00",
+            quietEnd = "07:00",
+            notifyInterruptions = true,
+        )
+        val late = Calendar.getInstance().apply {
+            set(2026, Calendar.JULY, 30, 23, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val morning = Calendar.getInstance().apply {
+            set(2026, Calendar.JULY, 31, 7, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        assertTrue(preferences.isQuietTime(late))
+        assertFalse(preferences.isQuietTime(morning))
+        assertFalse(preferences.shouldNotify(NotificationEvent.Failure, "/repo", late))
+        val bypass = preferences.copy(criticalBypassQuietHours = true)
+        assertTrue(bypass.shouldNotify(NotificationEvent.Approval, "/repo", late))
+        assertTrue(bypass.shouldNotify(NotificationEvent.Failure, "/repo", late))
+        assertFalse(bypass.shouldNotify(NotificationEvent.Interruption, "/repo", late))
+    }
+
+    @Test
+    fun notificationPreferencesSurviveProcessRecreationSerialization() {
+        val saved = NotificationPreferences(
+            notifyInterruptions = true,
+            notifyLongRunning = true,
+            longRunningMinutes = 27,
+            quietHoursEnabled = true,
+            repositoryOverrides = mapOf(
+                "/workspace/foreman" to RepositoryNotificationOverride(notifyCompletions = false),
+            ),
+        )
+        val restored = decodeNotificationPreferences(encodeNotificationPreferences(saved))
+        assertEquals(saved, restored)
+        assertEquals(NotificationPreferences(), decodeNotificationPreferences("corrupt"))
+    }
+
+    @Test
     fun monitorLifecycleRequiresActiveConfirmationBeforeCompleting() {
         val lifecycle = MonitorLifecycle()
 
@@ -745,7 +818,7 @@ class ForemanConnectionTest {
         assertEquals("Waiting for permission grant", approvalAttentionLabel("permission"))
         val notification = approvalNotificationText()
         assertEquals("Foreman needs your attention", notification.title)
-        assertEquals("A monitored session has an approval request.", notification.detail)
+        assertEquals("A monitored session needs approval or input.", notification.detail)
         assertFalse(notification.detail.contains("/private"))
         assertFalse(notification.detail.contains("command"))
     }

@@ -27,20 +27,31 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-internal data class MonitorOutcome(val title: String, val detail: String)
+internal data class MonitorOutcome(
+    val title: String,
+    val detail: String,
+    val event: NotificationEvent,
+)
 
 internal fun monitorOutcome(status: String): MonitorOutcome? =
     when (status) {
-        "waiting" -> MonitorOutcome("Foreman needs your attention", "A monitored session is waiting for you.")
-        "completed" -> MonitorOutcome("Foreman turn completed", "A monitored turn finished successfully.")
-        "failed" -> MonitorOutcome("Foreman turn failed", "A monitored turn failed.")
-        "interrupted" -> MonitorOutcome("Foreman turn interrupted", "A monitored turn was interrupted.")
-        "idle" -> MonitorOutcome("Foreman turn is no longer active", "Tap to open the session.")
+        "waiting" -> MonitorOutcome("Foreman needs your attention", "A monitored session needs approval or input.", NotificationEvent.Approval)
+        "completed" -> MonitorOutcome("Foreman turn completed", "A monitored turn finished successfully.", NotificationEvent.Completion)
+        "failed" -> MonitorOutcome("Foreman turn failed", "A monitored turn failed. Open Foreman for details.", NotificationEvent.Failure)
+        "interrupted" -> MonitorOutcome("Foreman turn interrupted", "A monitored turn was interrupted.", NotificationEvent.Interruption)
+        "idle" -> MonitorOutcome("Foreman turn completed", "A monitored turn is no longer active.", NotificationEvent.Completion)
         else -> null
     }
 
 internal fun approvalNotificationText(): MonitorOutcome =
-    MonitorOutcome("Foreman needs your attention", "A monitored session has an approval request.")
+    MonitorOutcome("Foreman needs your attention", "A monitored session needs approval or input.", NotificationEvent.Approval)
+
+internal fun longRunningNotificationText(): MonitorOutcome =
+    MonitorOutcome(
+        "Foreman turn is still running",
+        "A monitored turn passed your long-running threshold.",
+        NotificationEvent.LongRunning,
+    )
 
 internal class MonitorLifecycle(
     private val initialReconnectDelay: Long = 2_000L,
@@ -106,8 +117,17 @@ class TurnMonitorService : Service() {
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
     private val approvalNotifications = linkedMapOf<String, String>()
+    private val repositoryIdentities = linkedMapOf<String, String>()
+    private val activeTurns = linkedMapOf<String, ActiveTurn>()
+    private val longRunningJobs = linkedMapOf<String, Job>()
+    private val longRunningNotified = linkedSetOf<String>()
     private var monitoredHostId: String? = null
     @Volatile private var connected = false
+
+    private data class ActiveTurn(
+        val turnKey: String,
+        val startedAtMillis: Long,
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -126,12 +146,25 @@ class TurnMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_ALL) {
             lifecycle.clear()
+            clearLongRunningState()
             stopMonitoring()
             return START_NOT_STICKY
         }
 
+        if (intent?.action == ACTION_REFRESH_PREFERENCES) {
+            if (lifecycle.isEmpty()) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            activeTurns.keys.forEach(::scheduleLongRunning)
+            return START_REDELIVER_INTENT
+        }
+
         if (intent?.action == ACTION_CANCEL) {
-            intent.getStringExtra(EXTRA_SESSION_ID)?.let(lifecycle::cancel)
+            intent.getStringExtra(EXTRA_SESSION_ID)?.let {
+                lifecycle.cancel(it)
+                clearTurnState(it)
+            }
             if (lifecycle.isEmpty()) stopMonitoring() else showForeground(reconnecting = false)
             return START_NOT_STICKY
         }
@@ -146,19 +179,28 @@ class TurnMonitorService : Service() {
         if (monitoredHostId != null && monitoredHostId != hostId) {
             lifecycle.clear()
             approvalNotifications.clear()
+            clearLongRunningState()
             client.close()
             connected = false
         }
         monitoredHostId = hostId
 
         val active = intent.getBooleanExtra(EXTRA_ACTIVE, false)
+        intent.getStringExtra(EXTRA_REPOSITORY_ID)?.let { repositoryIdentities[sessionId] = it }
         lifecycle.monitor(sessionId, active)
+        if (active) {
+            recordActiveTurn(
+                sessionId,
+                intent.getStringExtra(EXTRA_TURN_ID),
+                intent.getLongExtra(EXTRA_STARTED_AT, 0L).takeIf { it > 0L },
+            )
+        }
         showForeground(reconnecting = false)
         scope.launch {
             runCatching { connectAndSync(setOf(sessionId)) }
                 .onFailure { scheduleReconnect() }
         }
-        return START_NOT_STICKY
+        return START_REDELIVER_INTENT
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -196,6 +238,18 @@ class TurnMonitorService : Service() {
                     )
                 val session = response.payload["session"]?.jsonObject ?: return@forEach
                 val status = session["status"]?.jsonPrimitive?.content ?: return@forEach
+                session["repository"]?.jsonPrimitive?.content?.let {
+                    if (repositoryIdentities[sessionId].isNullOrBlank()) {
+                        repositoryIdentities[sessionId] = normalizeRepositoryIdentity(it)
+                    }
+                }
+                if (status == "working") {
+                    recordActiveTurn(
+                        sessionId,
+                        session["activeTurnId"]?.jsonPrimitive?.content,
+                        session["activeTurnStartedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
+                    )
+                }
                 lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
             }
             if ("approvals" in client.capabilities) {
@@ -230,6 +284,13 @@ class TurnMonitorService : Service() {
         val event = message.eventObject()
         if (event["kind"]?.jsonPrimitive?.content != "status") return
         val status = event["status"]?.jsonPrimitive?.content ?: return
+        if (status == "working") {
+            recordActiveTurn(
+                sessionId,
+                event["turnId"]?.jsonPrimitive?.content,
+                event["startedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
+            )
+        }
         lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
         if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionId)
     }
@@ -253,8 +314,18 @@ class TurnMonitorService : Service() {
 
     private fun finishMonitoring(sessionId: String, outcome: MonitorOutcome, detail: String? = null) {
         val hostId = monitoredHostId ?: return
-        val notification = resultNotification(hostId, sessionId, outcome.copy(detail = detail ?: outcome.detail))
-        notificationManager.notify(resultNotificationId(hostId, sessionId), notification)
+        val repositoryId = repositoryIdentities[sessionId].orEmpty()
+        if (outcome.event == NotificationEvent.Approval) {
+            longRunningJobs.remove(sessionId)?.cancel()
+            if (approvalNotifications.containsValue(sessionId)) return
+        } else {
+            clearTurnState(sessionId)
+        }
+        val preferences = NotificationPreferenceStore(this).load(hostId)
+        if (preferences.shouldNotify(outcome.event, repositoryId)) {
+            val notification = resultNotification(hostId, sessionId, outcome.copy(detail = detail ?: outcome.detail))
+            notificationManager.notify(resultNotificationId(hostId, sessionId), notification)
+        }
         if (lifecycle.isEmpty()) {
             stopMonitoring()
         } else {
@@ -267,6 +338,8 @@ class TurnMonitorService : Service() {
         if (!lifecycle.contains(sessionId) || approvalId in approvalNotifications) return
         val hostId = monitoredHostId ?: return
         approvalNotifications[approvalId] = sessionId
+        val preferences = NotificationPreferenceStore(this).load(hostId)
+        if (!preferences.shouldNotify(NotificationEvent.Approval, repositoryIdentities[sessionId].orEmpty())) return
         notificationManager.cancel(resultNotificationId(hostId, sessionId))
         val outcome = approvalNotificationText()
         val notification =
@@ -289,6 +362,65 @@ class TurnMonitorService : Service() {
             approvalNotifications.remove(it)
             monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
         }
+    }
+
+    @Synchronized
+    private fun recordActiveTurn(sessionId: String, turnId: String?, rawStartedAt: Long?) {
+        val startedAt = timestampMillis(rawStartedAt) ?: return
+        val turnKey = "$sessionId:${turnId ?: startedAt}"
+        val existing = activeTurns[sessionId]
+        if (existing?.turnKey != turnKey) {
+            longRunningJobs.remove(sessionId)?.cancel()
+            existing?.let { longRunningNotified.remove(it.turnKey) }
+            activeTurns[sessionId] = ActiveTurn(turnKey, startedAt)
+        }
+        scheduleLongRunning(sessionId)
+    }
+
+    @Synchronized
+    private fun scheduleLongRunning(sessionId: String) {
+        longRunningJobs.remove(sessionId)?.cancel()
+        val active = activeTurns[sessionId] ?: return
+        if (active.turnKey in longRunningNotified) return
+        val hostId = monitoredHostId ?: return
+        val repositoryId = repositoryIdentities[sessionId].orEmpty()
+        val preferences = NotificationPreferenceStore(this).load(hostId)
+        if (!preferences.eventEnabled(NotificationEvent.LongRunning, repositoryId)) return
+        val dueAt = active.startedAtMillis + preferences.longRunningMinutes * 60_000L
+        longRunningJobs[sessionId] = scope.launch {
+            delay((dueAt - System.currentTimeMillis()).coerceAtLeast(0L))
+            val stillActive = synchronized(this@TurnMonitorService) {
+                activeTurns[sessionId]?.turnKey == active.turnKey && lifecycle.contains(sessionId)
+            }
+            if (!stillActive) return@launch
+            synchronized(this@TurnMonitorService) {
+                longRunningJobs.remove(sessionId)
+                longRunningNotified.add(active.turnKey)
+            }
+            val current = NotificationPreferenceStore(this@TurnMonitorService).load(hostId)
+            if (!current.shouldNotify(NotificationEvent.LongRunning, repositoryId)) return@launch
+            notificationManager.notify(
+                longRunningNotificationId(hostId, sessionId),
+                resultNotification(hostId, sessionId, longRunningNotificationText()),
+            )
+        }
+    }
+
+    @Synchronized
+    private fun clearTurnState(sessionId: String) {
+        longRunningJobs.remove(sessionId)?.cancel()
+        activeTurns.remove(sessionId)?.let { longRunningNotified.remove(it.turnKey) }
+        repositoryIdentities.remove(sessionId)
+        monitoredHostId?.let { notificationManager.cancel(longRunningNotificationId(it, sessionId)) }
+    }
+
+    @Synchronized
+    private fun clearLongRunningState() {
+        longRunningJobs.values.forEach(Job::cancel)
+        longRunningJobs.clear()
+        activeTurns.clear()
+        longRunningNotified.clear()
+        repositoryIdentities.clear()
     }
 
     private fun failMonitoring(sessionId: String, detail: String) {
@@ -423,20 +555,37 @@ class TurnMonitorService : Service() {
         const val EXTRA_HOST_ID = "net.kaltner.foreman.extra.HOST_ID"
         const val EXTRA_APPROVAL_ID = "net.kaltner.foreman.extra.APPROVAL_ID"
         private const val EXTRA_ACTIVE = "net.kaltner.foreman.extra.ACTIVE"
+        private const val EXTRA_REPOSITORY_ID = "net.kaltner.foreman.extra.REPOSITORY_ID"
+        private const val EXTRA_TURN_ID = "net.kaltner.foreman.extra.TURN_ID"
+        private const val EXTRA_STARTED_AT = "net.kaltner.foreman.extra.STARTED_AT"
         private const val ACTION_MONITOR = "net.kaltner.foreman.action.MONITOR"
         private const val ACTION_CANCEL = "net.kaltner.foreman.action.CANCEL_MONITOR"
         private const val ACTION_STOP_ALL = "net.kaltner.foreman.action.STOP_MONITORING"
+        private const val ACTION_REFRESH_PREFERENCES = "net.kaltner.foreman.action.REFRESH_NOTIFICATION_PREFERENCES"
         private const val MONITOR_CHANNEL = "foreman_monitoring"
         private const val RESULT_CHANNEL = "foreman_turn_updates"
         private const val FOREGROUND_NOTIFICATION_ID = 1001
 
-        fun monitor(context: Context, hostId: String, sessionId: String, active: Boolean = true) {
+        fun monitor(
+            context: Context,
+            hostId: String,
+            sessionId: String,
+            active: Boolean = true,
+            repositoryId: String = "",
+            turnId: String? = null,
+            startedAt: Long? = null,
+        ) {
             val intent =
                 Intent(context, TurnMonitorService::class.java)
                     .setAction(ACTION_MONITOR)
                     .putExtra(EXTRA_HOST_ID, hostId)
                     .putExtra(EXTRA_SESSION_ID, sessionId)
                     .putExtra(EXTRA_ACTIVE, active)
+                    .putExtra(EXTRA_REPOSITORY_ID, repositoryId)
+                    .apply {
+                        turnId?.let { putExtra(EXTRA_TURN_ID, it) }
+                        startedAt?.let { putExtra(EXTRA_STARTED_AT, it) }
+                    }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -456,10 +605,26 @@ class TurnMonitorService : Service() {
             context.stopService(Intent(context, TurnMonitorService::class.java))
         }
 
+        fun refreshPreferences(context: Context) {
+            context.startService(
+                Intent(context, TurnMonitorService::class.java)
+                    .setAction(ACTION_REFRESH_PREFERENCES),
+            )
+        }
+
         private fun resultNotificationId(hostId: String, sessionId: String): Int =
             2_000 + ("$hostId:$sessionId".hashCode() and 0x00ffffff)
 
         private fun approvalNotificationId(hostId: String, approvalId: String): Int =
             30_000_000 + ("$hostId:$approvalId".hashCode() and 0x00ffffff)
+
+        private fun longRunningNotificationId(hostId: String, sessionId: String): Int =
+            60_000_000 + ("$hostId:$sessionId".hashCode() and 0x00ffffff)
     }
 }
+
+private fun timestampMillis(value: Long?): Long? =
+    value?.takeIf { it > 0L }?.let { if (it < 10_000_000_000L) it * 1_000L else it }
+
+private fun normalizeRepositoryIdentity(value: String): String =
+    value.trim().replace(Regex("/+"), "/").trimEnd('/').ifBlank { "/" }
