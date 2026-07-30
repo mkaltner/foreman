@@ -260,6 +260,14 @@ class TurnMonitorService : Service() {
                     notifyApproval(sessionId, approvalId)
                 }
             }
+            if ("structuredInput" in client.capabilities) {
+                client.request("input.list").payload["inputs"]?.jsonArray?.forEach { raw ->
+                    val input = raw.jsonObject
+                    val inputId = input["id"]?.jsonPrimitive?.content ?: return@forEach
+                    val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return@forEach
+                    notifyApproval(sessionId, inputId)
+                }
+            }
             lifecycle.resetReconnectDelay()
             if (!lifecycle.isEmpty()) showForeground(reconnecting = false)
         }
@@ -275,6 +283,18 @@ class TurnMonitorService : Service() {
                 monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, approvalId)) }
             } else {
                 notifyApproval(sessionId, approvalId)
+            }
+            return
+        }
+        if (message.type in setOf("input.requested", "input.updated", "input.resolved")) {
+            val input = message.payload["input"]?.jsonObject ?: return
+            val inputId = input["id"]?.jsonPrimitive?.content ?: return
+            val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return
+            if (message.type == "input.resolved" || input["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
+                approvalNotifications.remove(inputId)
+                monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, inputId)) }
+            } else {
+                notifyApproval(sessionId, inputId)
             }
             return
         }

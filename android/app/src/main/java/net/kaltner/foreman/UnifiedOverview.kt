@@ -72,9 +72,11 @@ internal fun projectHostOverview(
     runtimeMode: String? = null,
     runtimeConnected: Boolean = false,
     observedAt: Long = System.currentTimeMillis(),
+    inputs: List<InputRequest> = emptyList(),
 ): HostOverviewSnapshot {
     val pending = approvals.filter { it.status == "pending" || it.status == "submitting" }
-    val approvalSessions = pending.mapTo(mutableSetOf()) { it.sessionId }
+    val pendingInputs = inputs.filter { it.status == "pending" || it.status == "submitting" }
+    val requestSessions = (pending.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet()
     val active = sessions.filter { it.status == "working" }
     val waiting = sessions.filter { it.status == "waiting" || it.attention }
     val failed = sessions.filter { it.status == "failed" }
@@ -94,12 +96,26 @@ internal fun projectHostOverview(
                     approval.id,
                     session?.title ?: "Codex session",
                     session?.repository.orEmpty(),
-                    if (approval.type.startsWith("unsupported")) "input" else "approval",
+                    "approval",
                     epochMillis(approval.startedAt ?: approval.createdAt),
                 ),
             )
         }
-        waiting.filterNot { it.id in approvalSessions }.forEach { session ->
+        pendingInputs.forEach { input ->
+            val session = sessions.firstOrNull { it.id == input.sessionId }
+            add(
+                OverviewAttentionItem(
+                    hostId,
+                    input.sessionId,
+                    input.id,
+                    session?.title ?: "Codex session",
+                    session?.repository.orEmpty(),
+                    "input",
+                    epochMillis(input.createdAt),
+                ),
+            )
+        }
+        waiting.filterNot { it.id in requestSessions }.forEach { session ->
             add(
                 OverviewAttentionItem(
                     hostId,

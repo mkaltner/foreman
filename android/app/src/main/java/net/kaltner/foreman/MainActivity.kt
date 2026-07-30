@@ -641,6 +641,9 @@ internal data class UiState(
     val approvals: List<ApprovalRequest> = emptyList(),
     val submittingApprovalIds: Set<String> = emptySet(),
     val approvalErrors: Map<String, String> = emptyMap(),
+    val inputs: List<InputRequest> = emptyList(),
+    val submittingInputIds: Set<String> = emptySet(),
+    val inputErrors: Map<String, String> = emptyMap(),
     val overviewSnapshots: Map<String, HostOverviewSnapshot> = emptyMap(),
     val foremanVersion: String? = null,
     val codexVersion: String? = null,
@@ -655,6 +658,7 @@ private data class SyncSnapshot(
     val models: List<ModelInfo>,
     val accessLevels: List<AccessLevelInfo>,
     val approvals: List<ApprovalRequest>,
+    val inputs: List<InputRequest>,
     val foremanVersion: String?,
     val codexVersion: String?,
     val runtimeMode: String?,
@@ -703,6 +707,9 @@ internal fun UiState.withForgottenConnection(): UiState =
         approvals = emptyList(),
         submittingApprovalIds = emptySet(),
         approvalErrors = emptyMap(),
+        inputs = emptyList(),
+        submittingInputIds = emptySet(),
+        inputErrors = emptyMap(),
         overviewSnapshots = emptyMap(),
         foremanVersion = null,
         codexVersion = null,
@@ -1102,6 +1109,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         approvals = emptyList(),
                         submittingApprovalIds = emptySet(),
                         approvalErrors = emptyMap(),
+                        inputs = emptyList(),
+                        submittingInputIds = emptySet(),
+                        inputErrors = emptyMap(),
                         repositoryRoot = "",
                         searchFilters = filters,
                         searchResults = emptyList(),
@@ -1262,6 +1272,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 approvals = emptyList(),
                 submittingApprovalIds = emptySet(),
                 approvalErrors = emptyMap(),
+                inputs = emptyList(),
+                submittingInputIds = emptySet(),
+                inputErrors = emptyMap(),
                 foremanVersion = null,
                 codexVersion = null,
                 runtimeMode = null,
@@ -1341,6 +1354,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         overviewClient.request("approval.list").payload.getValue("approvals").jsonArray
                             .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
                     } else emptyList()
+                    val inputs = if ("structuredInput" in overviewClient.capabilities) {
+                        overviewClient.request("input.list").payload.getValue("inputs").jsonArray
+                            .map { json.decodeFromJsonElement<InputRequest>(it) }
+                    } else emptyList()
                     val service = overviewClient.request("service.status").payload
                     val codex = service["codex"]?.jsonObject
                     hosts.updateConnection(
@@ -1358,6 +1375,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         codexVersion = codex?.get("version")?.jsonPrimitive?.content,
                         runtimeMode = codex?.get("mode")?.jsonPrimitive?.content,
                         runtimeConnected = codex?.get("connected")?.jsonPrimitive?.content == "true",
+                        inputs = inputs,
                     )
                 }.getOrElse {
                     state.value.overviewSnapshots[host.id]?.copy(connection = "disconnected")
@@ -1398,6 +1416,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 codexVersion = current.codexVersion,
                 runtimeMode = current.runtimeMode,
                 runtimeConnected = current.runtimeConnected,
+                inputs = current.inputs,
             )
         } else {
             previous?.copy(connection = "disconnected")
@@ -1488,6 +1507,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     async {
                         if ("approvals" in client.capabilities) client.request("approval.list") else null
                     }
+                val inputsRequest =
+                    async {
+                        if ("structuredInput" in client.capabilities) client.request("input.list") else null
+                    }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val serviceStatusRequest = async { client.request("service.status") }
                 val modelsRequest =
@@ -1526,17 +1549,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     approvalsRequest.await()?.payload?.get("approvals")?.jsonArray
                         ?.map { json.decodeFromJsonElement<ApprovalRequest>(it) }
                         ?: emptyList()
+                val inputs =
+                    inputsRequest.await()?.payload?.get("inputs")?.jsonArray
+                        ?.map { json.decodeFromJsonElement<InputRequest>(it) }
+                        ?: emptyList()
                 SyncSnapshot(
-                    sessions,
-                    repositories,
-                    repositoryRoot,
-                    models,
-                    accessLevels,
-                    approvals,
-                    serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
-                    codexStatus?.get("version")?.jsonPrimitive?.content,
-                    codexStatus?.get("mode")?.jsonPrimitive?.content,
-                    codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
+                    sessions = sessions,
+                    repositories = repositories,
+                    repositoryRoot = repositoryRoot,
+                    models = models,
+                    accessLevels = accessLevels,
+                    approvals = approvals,
+                    inputs = inputs,
+                    foremanVersion = serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
+                    codexVersion = codexStatus?.get("version")?.jsonPrimitive?.content,
+                    runtimeMode = codexStatus?.get("mode")?.jsonPrimitive?.content,
+                    runtimeConnected = codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
                 )
             }
         val sessions = snapshot.sessions
@@ -1553,6 +1581,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     approvals = snapshot.approvals,
                     submittingApprovalIds = emptySet(),
                     approvalErrors = emptyMap(),
+                    inputs = snapshot.inputs,
+                    submittingInputIds = emptySet(),
+                    inputErrors = emptyMap(),
                     foremanVersion = snapshot.foremanVersion,
                     codexVersion = snapshot.codexVersion,
                     runtimeMode = snapshot.runtimeMode,
@@ -1903,8 +1934,80 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         return true
     }
 
+    fun respondToInput(input: InputRequest, response: JsonObject) {
+        val current = state.value
+        if (!current.connected || input.id in current.submittingInputIds || input.status != "pending") return
+        state.update {
+            it.copy(
+                submittingInputIds = it.submittingInputIds + input.id,
+                inputErrors = it.inputErrors - input.id,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "input.respond",
+                    buildJsonObject {
+                        put("inputId", input.id)
+                        put("response", response)
+                    },
+                )
+                state.update { currentState ->
+                    currentState.copy(
+                        inputs = currentState.inputs.map {
+                            if (it.id == input.id) it.copy(status = "submitting") else it
+                        },
+                    )
+                }
+            }.onFailure { failure ->
+                val message = failure.message ?: "Input response failed"
+                state.update {
+                    it.copy(
+                        submittingInputIds = it.submittingInputIds - input.id,
+                        inputErrors = it.inputErrors +
+                            (input.id to if (message.contains("already resolved", true)) "Already resolved in another client." else message),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun handleInputEvent(message: WireMessage): Boolean {
+        if (message.type !in setOf("input.requested", "input.updated", "input.resolved")) return false
+        val raw = message.payload["input"] ?: return true
+        val input = runCatching { json.decodeFromJsonElement<InputRequest>(raw) }.getOrNull() ?: return true
+        val terminal = input.status == "resolved" || input.status == "expired"
+        if (state.value.sessions.none { it.id == input.sessionId }) discoverSession(input.sessionId)
+        state.update { current ->
+            fun updateSession(session: SessionSummary): SessionSummary =
+                if (session.id != input.sessionId) session else session.copy(
+                    status = if (terminal && session.status == "waiting") "working" else "waiting",
+                    attention = !terminal,
+                    activeTurnId = input.turnId ?: session.activeTurnId,
+                    activityLabel = if (terminal) "Input request resolved" else inputAttentionLabel(input),
+                    activityText = "",
+                )
+            current.copy(
+                inputs = if (current.inputs.any { it.id == input.id }) {
+                    current.inputs.map { if (it.id == input.id) input else it }
+                } else current.inputs + input,
+                sessions = current.sessions.map(::updateSession),
+                selected = current.selected?.let(::updateSession),
+                submittingInputIds = if (terminal) current.submittingInputIds - input.id else current.submittingInputIds,
+                inputErrors = if (terminal) current.inputErrors - input.id else current.inputErrors,
+            )
+        }
+        if (terminal) viewModelScope.launch {
+            delay(5_000)
+            state.update { it.copy(inputs = it.inputs.filterNot { item -> item.id == input.id }) }
+        }
+        updateActiveOverview()
+        return true
+    }
+
     private fun handleEvent(message: WireMessage) {
         if (handleApprovalEvent(message)) return
+        if (handleInputEvent(message)) return
         if (message.type != "session.event") return
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val event = message.eventObject()
@@ -2937,6 +3040,7 @@ private fun SessionDetailScreen(
 ) {
     val selected = state.selected
     val selectedApprovals = state.approvals.filter { it.sessionId == selected?.id }
+    val selectedInputs = state.inputs.filter { it.sessionId == selected?.id }
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
     val hapticFeedback = LocalHapticFeedback.current
@@ -2961,7 +3065,9 @@ private fun SessionDetailScreen(
 
     LaunchedEffect(selected?.id, state.focusedApprovalId, selectedApprovals.size) {
         selected?.let {
-            val focusedItemId = selectedApprovals.firstOrNull { approval -> approval.id == state.focusedApprovalId }?.itemId
+            val focusedItemId =
+                selectedApprovals.firstOrNull { approval -> approval.id == state.focusedApprovalId }?.itemId
+                    ?: selectedInputs.firstOrNull { input -> input.id == state.focusedApprovalId }?.itemId
             val matchedIndex = it.messages.indexOfFirst { item -> item.id == (focusedItemId ?: state.highlightedItemId) }
             listState.scrollToItem(
                 if (matchedIndex >= 0) matchedIndex + 1
@@ -2978,6 +3084,7 @@ private fun SessionDetailScreen(
         selected?.activityLabel,
         selected?.activityText,
         selectedApprovals.size,
+        selectedInputs.size,
     ) {
         if (state.followNewMessages && state.highlightedItemId == null) {
             selected?.let {
@@ -3042,7 +3149,7 @@ private fun SessionDetailScreen(
         bottomBar = {
             if (selected != null) PromptBox(
                 working = selected.status == "working",
-                enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" },
+                enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" } && selectedInputs.none { it.status == "pending" || it.status == "submitting" },
                 accessLevels = state.accessLevels,
                 accessLevelId = state.composerAccessLevel,
                 models = state.models,
@@ -3094,6 +3201,15 @@ private fun SessionDetailScreen(
                                     onRespond = { viewModel.respondToApproval(approval, it) },
                                 )
                             }
+                            selectedInputs.filter { it.itemId == item.id }.forEach { input ->
+                                InputRequestCard(
+                                    input = input,
+                                    connected = state.connected,
+                                    submitting = input.id in state.submittingInputIds,
+                                    error = state.inputErrors[input.id],
+                                    onRespond = { viewModel.respondToInput(input, it) },
+                                )
+                            }
                         }
                     }
                     items(
@@ -3106,6 +3222,18 @@ private fun SessionDetailScreen(
                             submitting = approval.id in state.submittingApprovalIds,
                             error = state.approvalErrors[approval.id],
                             onRespond = { viewModel.respondToApproval(approval, it) },
+                        )
+                    }
+                    items(
+                        selectedInputs.filter { input -> input.itemId == null || selected.messages.none { it.id == input.itemId } },
+                        key = { "input-${it.id}" },
+                    ) { input ->
+                        InputRequestCard(
+                            input = input,
+                            connected = state.connected,
+                            submitting = input.id in state.submittingInputIds,
+                            error = state.inputErrors[input.id],
+                            onRespond = { viewModel.respondToInput(input, it) },
                         )
                     }
                     if (selected.status == "working") {

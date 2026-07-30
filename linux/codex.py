@@ -27,6 +27,7 @@ from approvals import (
     approval_key,
     bounded_approval_params,
 )
+from inputs import INPUT_METHODS, PendingInput, bounded_input_params
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
@@ -100,6 +101,9 @@ class Codex:
         self._approvals: dict[str, PendingApproval] = {}
         self._approval_requests: dict[str, str] = {}
         self._approval_tombstones: dict[str, str] = {}
+        self._inputs: dict[str, PendingInput] = {}
+        self._input_requests: dict[str, str] = {}
+        self._input_tombstones: dict[str, str] = {}
         self._items: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -372,6 +376,7 @@ class Codex:
             self._reader_task = None
         self._fail_pending("Codex app-server disconnected")
         await self._expire_approvals("disconnected")
+        await self._expire_inputs("disconnected")
         await self._retire_owned_process()
 
     async def _retire_owned_process(self) -> None:
@@ -404,6 +409,7 @@ class Codex:
             self._reader_task = None
         self._fail_pending("Codex app-server disconnected")
         await self._expire_approvals("disconnected", connection=websocket)
+        await self._expire_inputs("disconnected", connection=websocket)
 
     async def _socket_accepts_connections(self) -> bool:
         try:
@@ -485,7 +491,7 @@ class Codex:
                 self.last_event = time.time()
                 self._remember_settings_event(message)
                 self._remember_item_event(message)
-                await self._approval_lifecycle(message)
+                await self._server_request_lifecycle(message)
                 await self.on_event(message)
         except Exception as error:
             failure = error
@@ -496,6 +502,7 @@ class Codex:
             reason = f"Codex app-server connection closed: {failure or 'closed'}"
             self._fail_pending(reason)
             await self._expire_approvals("disconnected", connection=websocket)
+            await self._expire_inputs("disconnected", connection=websocket)
             if not self._stopping and (
                 self._reconnect_task is None or self._reconnect_task.done()
             ):
@@ -518,13 +525,16 @@ class Codex:
         self, message: dict[str, Any], websocket: Any
     ) -> None:
         method = message.get("method")
-        if method not in APPROVAL_METHODS:
+        if method not in APPROVAL_METHODS | INPUT_METHODS:
             # Unknown server requests are intentionally left to compatible
             # clients; they must never be projected as notifications.
             return
         params = message.get("params")
         upstream_id = message.get("id")
         if not isinstance(params, dict) or not isinstance(upstream_id, (str, int)) or isinstance(upstream_id, bool):
+            return
+        if method in INPUT_METHODS:
+            await self._input_request(method, upstream_id, params, websocket)
             return
         params = bounded_approval_params(method, params)
         key = approval_key(upstream_id)
@@ -551,11 +561,46 @@ class Codex:
             }
         )
 
+    async def _input_request(
+        self,
+        method: str,
+        upstream_id: str | int,
+        params: dict[str, Any],
+        websocket: Any,
+    ) -> None:
+        params = bounded_input_params(method, params)
+        key = approval_key(upstream_id)
+        existing_id = self._input_requests.get(key)
+        if existing_id and existing_id in self._inputs:
+            return
+        pending = PendingInput(
+            upstream_id=upstream_id,
+            method=method,
+            params=params,
+            connection=websocket,
+        )
+        self._inputs[pending.id] = pending
+        self._input_requests[key] = pending.id
+        self.last_event = time.time()
+        await self.on_event(
+            {
+                "method": "foreman/input/requested",
+                "params": {"input": pending.projection()},
+            }
+        )
+
     def list_approvals(self) -> list[dict[str, Any]]:
         return [
             approval.projection()
             for approval in self._approvals.values()
             if approval.status in ("pending", "submitting")
+        ]
+
+    def list_inputs(self) -> list[dict[str, Any]]:
+        return [
+            pending.projection()
+            for pending in self._inputs.values()
+            if pending.status in ("pending", "submitting")
         ]
 
     async def respond_approval(
@@ -596,10 +641,46 @@ class Codex:
                 raise ApprovalError("Approval expired while the response was sent")
             return approval.projection()
 
+    async def respond_input(
+        self, input_id: str, response: dict[str, Any]
+    ) -> dict[str, Any]:
+        pending = self._inputs.get(input_id)
+        if pending is None:
+            if input_id in self._input_tombstones:
+                raise ApprovalError("Already resolved")
+            raise ApprovalError("Input request is no longer available")
+        async with pending.lock:
+            if pending.status != "pending":
+                raise ApprovalError("Already resolved")
+            if pending.connection is not self._websocket:
+                await self._resolve_input(pending, "expired", "reconnected")
+                raise ApprovalError("Input request expired during reconnect")
+            result, resolution = pending.response_result(response)
+            pending.status = "submitting"
+            pending.resolution = resolution
+            await self.on_event(
+                {
+                    "method": "foreman/input/updated",
+                    "params": {"input": pending.projection()},
+                }
+            )
+            if self._inputs.get(pending.id) is not pending or pending.status != "submitting":
+                raise ApprovalError("Already resolved")
+            try:
+                await self._send_on_connection(
+                    pending.connection,
+                    {"id": pending.upstream_id, "result": result},
+                )
+            except CodexError:
+                await self._resolve_input(pending, "expired", "disconnected")
+                raise ApprovalError("Input request expired while the response was sent")
+            return pending.projection()
+
     async def expire_turn(self, thread_id: str, turn_id: str, reason: str) -> None:
         await self._expire_approvals(reason, thread_id=thread_id, turn_id=turn_id)
+        await self._expire_inputs(reason, thread_id=thread_id, turn_id=turn_id)
 
-    async def _approval_lifecycle(self, message: dict[str, Any]) -> None:
+    async def _server_request_lifecycle(self, message: dict[str, Any]) -> None:
         method = message.get("method")
         params = message.get("params")
         if not isinstance(params, dict):
@@ -611,6 +692,12 @@ class Codex:
                 await self._resolve_approval(
                     approval, "resolved", approval.resolution or "resolvedElsewhere"
                 )
+            input_id = self._input_requests.get(approval_key(params.get("requestId")))
+            pending = self._inputs.get(input_id or "")
+            if pending:
+                await self._resolve_input(
+                    pending, "resolved", pending.resolution or "resolvedElsewhere"
+                )
         elif method == "turn/started":
             turn = params.get("turn")
             turn_id = turn.get("id") if isinstance(turn, dict) else params.get("turnId")
@@ -619,6 +706,9 @@ class Codex:
                 for approval in list(self._approvals.values()):
                     if approval.thread_id == thread_id and approval.turn_id != turn_id:
                         await self._resolve_approval(approval, "expired", "replaced")
+                for pending in list(self._inputs.values()):
+                    if pending.thread_id == thread_id and pending.turn_id and pending.turn_id != turn_id:
+                        await self._resolve_input(pending, "expired", "replaced")
         elif method == "turn/completed":
             turn = params.get("turn")
             turn_id = turn.get("id") if isinstance(turn, dict) else params.get("turnId")
@@ -627,6 +717,13 @@ class Codex:
                 await self._expire_approvals(
                     "turnEnded", thread_id=thread_id, turn_id=turn_id
                 )
+                await self._expire_inputs(
+                    "turnEnded", thread_id=thread_id, turn_id=turn_id
+                )
+
+    async def _approval_lifecycle(self, message: dict[str, Any]) -> None:
+        """Compatibility alias for tests and older in-process integrations."""
+        await self._server_request_lifecycle(message)
 
     async def _expire_approvals(
         self,
@@ -661,6 +758,42 @@ class Codex:
             {
                 "method": "foreman/approval/resolved",
                 "params": {"approval": approval.projection()},
+            }
+        )
+
+    async def _expire_inputs(
+        self,
+        reason: str,
+        *,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+        connection: Any | None = None,
+    ) -> None:
+        for pending in list(self._inputs.values()):
+            if thread_id is not None and pending.thread_id != thread_id:
+                continue
+            if turn_id is not None and pending.turn_id != turn_id:
+                continue
+            if connection is not None and pending.connection is not connection:
+                continue
+            await self._resolve_input(pending, "expired", reason)
+
+    async def _resolve_input(
+        self, pending: PendingInput, status: str, resolution: str
+    ) -> None:
+        if pending.id not in self._inputs:
+            return
+        pending.status = status
+        pending.resolution = resolution
+        self._inputs.pop(pending.id, None)
+        self._input_requests.pop(approval_key(pending.upstream_id), None)
+        self._input_tombstones[pending.id] = resolution
+        while len(self._input_tombstones) > 500:
+            self._input_tombstones.pop(next(iter(self._input_tombstones)))
+        await self.on_event(
+            {
+                "method": "foreman/input/resolved",
+                "params": {"input": pending.projection()},
             }
         )
 

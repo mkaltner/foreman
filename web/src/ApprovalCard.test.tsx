@@ -79,11 +79,8 @@ describe("approval card", () => {
     }));
   });
 
-  it("shows unsupported and resolved-elsewhere states honestly", () => {
-    const { rerender } = render(<ApprovalCard approval={{ ...base, type: "unsupportedInput", title: "User input required", unsupportedMessage: "This request type is not yet supported in Foreman.", availableDecisions: [] }} connected onRespond={vi.fn()} />);
-    expect(screen.getByText(/Open another compatible Codex client/)).toBeInTheDocument();
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
-    rerender(<ApprovalCard approval={{ ...base, status: "resolved", resolution: "resolvedElsewhere" }} connected onRespond={vi.fn()} />);
+  it("shows the resolved-elsewhere state", () => {
+    render(<ApprovalCard approval={{ ...base, status: "resolved", resolution: "resolvedElsewhere" }} connected onRespond={vi.fn()} />);
     expect(screen.getByText("Already resolved in another client.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Allow once" })).toBeDisabled();
   });

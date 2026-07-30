@@ -80,6 +80,32 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun unifiedAttentionDistinguishesStructuredInput() {
+        val input =
+            InputRequest(
+                id = "inp-1",
+                sessionId = "same",
+                source = "mcp",
+                title = "Input",
+                supported = false,
+                canDecline = true,
+                canCancel = true,
+                createdAt = 301,
+                status = "pending",
+            )
+        val snapshot = projectHostOverview(
+            "work",
+            listOf(SessionSummary("same", "/work/repo", "Collision", "waiting")),
+            emptyList(),
+            "connected",
+            inputs = listOf(input),
+        )
+        assertEquals("input", snapshot.attention.single().type)
+        assertEquals("inp-1", snapshot.attention.single().approvalId)
+        assertEquals("Waiting for unsupported user input", inputAttentionLabel(input))
+    }
+
+    @Test
     fun androidOverviewLifecycleStopsProbesInBackgroundAndCapsConnections() {
         val lifecycle = AndroidOverviewLifecycle()
         assertEquals(2, MAX_ANDROID_HOST_CONNECTIONS)

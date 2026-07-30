@@ -156,7 +156,7 @@ export interface ApprovalRequest {
   sessionId: string;
   turnId?: string | null;
   itemId?: string | null;
-  type: "command" | "fileChange" | "permission" | "unsupportedInput" | "unsupportedForm";
+  type: "command" | "fileChange" | "permission";
   title: string;
   createdAt: number;
   startedAt?: number | null;
@@ -177,11 +177,56 @@ export interface ApprovalRequest {
   fileCount?: number;
   grantRoot?: string | null;
   availableScopes?: Array<"turn" | "session">;
-  unsupportedMessage?: string;
 }
 
 export interface ApprovalEventPayload {
   approval: ApprovalRequest;
+}
+
+export interface InputOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface InputField {
+  id: string;
+  type: "singleChoice" | "multipleChoice" | "shortText" | "longText" | "boolean" | "confirmation";
+  label: string;
+  description?: string | null;
+  required: boolean;
+  secret?: boolean;
+  options?: InputOption[];
+  allowOther?: boolean;
+  minSelections?: number;
+  maxSelections?: number;
+  minLength?: number;
+  maxLength?: number;
+  default?: string | string[] | boolean;
+}
+
+export interface InputRequest {
+  id: string;
+  sessionId: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  source: "codex" | "mcp";
+  title: string;
+  message?: string | null;
+  serverName?: string | null;
+  fields: InputField[];
+  supported: boolean;
+  unsupportedMessage?: string | null;
+  canDecline: boolean;
+  canCancel: boolean;
+  autoResolutionMs?: number | null;
+  createdAt: number;
+  status: "pending" | "submitting" | "resolved" | "expired";
+  resolution?: string | null;
+}
+
+export interface InputEventPayload {
+  input: InputRequest;
 }
 
 export interface SessionEvent {

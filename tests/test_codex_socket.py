@@ -656,6 +656,83 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             resolved = await next_event("approval.resolved")
             self.assertEqual(resolved["payload"]["approval"]["status"], "resolved")
 
+        tool_request = asyncio.create_task(
+            server.request(
+                "input-upstream",
+                "item/tool/requestUserInput",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-input",
+                    "itemId": "input-item",
+                    "questions": [
+                        {
+                            "id": "choice",
+                            "header": "Pick one",
+                            "question": "Choose one option",
+                            "options": [
+                                {"label": "Alpha", "description": "First"},
+                                {"label": "Beta", "description": "Second"},
+                            ],
+                        }
+                    ],
+                    "autoResolutionMs": None,
+                },
+            )
+        )
+        requested_input = await next_event("input.requested")
+        pending_input = requested_input["payload"]["input"]
+        self.assertTrue(pending_input["supported"])
+        self.assertNotEqual(pending_input["id"], "input-upstream")
+        listed_inputs = await client_request("input.list", {})
+        self.assertEqual(listed_inputs["inputs"][0]["id"], pending_input["id"])
+        await client_request(
+            "input.respond",
+            {
+                "inputId": pending_input["id"],
+                "response": {"action": "accept", "values": {"choice": "Beta"}},
+            },
+        )
+        self.assertEqual(
+            (await tool_request)["result"],
+            {"answers": {"choice": {"answers": ["Beta"]}}},
+        )
+        await server.emit(
+            "serverRequest/resolved",
+            {"threadId": "thread-shared", "requestId": "input-upstream"},
+        )
+        self.assertEqual((await next_event("input.resolved"))["payload"]["input"]["status"], "resolved")
+
+        mcp_request = asyncio.create_task(
+            server.request(
+                901,
+                "mcpServer/elicitation/request",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-mcp",
+                    "serverName": "example-mcp",
+                    "mode": "form",
+                    "message": "Confirm the choice",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {"confirmed": {"type": "boolean", "title": "Continue?"}},
+                        "required": ["confirmed"],
+                    },
+                },
+            )
+        )
+        requested_mcp = (await next_event("input.requested"))["payload"]["input"]
+        self.assertEqual(requested_mcp["fields"][0]["type"], "confirmation")
+        await client_request(
+            "input.respond",
+            {"inputId": requested_mcp["id"], "response": {"action": "accept", "values": {"confirmed": True}}},
+        )
+        self.assertEqual((await mcp_request)["result"], {"action": "accept", "content": {"confirmed": True}})
+        await server.emit(
+            "serverRequest/resolved",
+            {"threadId": "thread-shared", "requestId": 901},
+        )
+        await next_event("input.resolved")
+
         desktop = asyncio.create_task(
             server.request(
                 "desktop-first",

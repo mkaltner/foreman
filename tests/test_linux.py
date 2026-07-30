@@ -38,9 +38,7 @@ from codex import (  # noqa: E402
 from approvals import (  # noqa: E402
     COMMAND_METHOD,
     FILE_METHOD,
-    MCP_ELICITATION_METHOD,
     PERMISSION_METHOD,
-    USER_INPUT_METHOD,
     ApprovalError,
     PendingApproval,
     bounded_approval_params,
@@ -104,6 +102,8 @@ class FakeCodex:
         self.reads: list[str] = []
         self.approvals: list[dict[str, Any]] = []
         self.approval_responses: list[tuple[str, dict[str, Any]]] = []
+        self.inputs: list[dict[str, Any]] = []
+        self.input_responses: list[tuple[str, dict[str, Any]]] = []
 
     async def start(self) -> None:
         pass
@@ -117,6 +117,8 @@ class FakeCodex:
             "thread/delete",
             "model/list",
             "permissionProfile/list",
+            "item/tool/requestUserInput",
+            "mcpServer/elicitation/request",
         }
 
     async def list_threads(self) -> list[dict[str, Any]]:
@@ -274,9 +276,27 @@ class FakeCodex:
         self.approvals = [match if item["id"] == approval_id else item for item in self.approvals]
         return match
 
+    def list_inputs(self) -> list[dict[str, Any]]:
+        return self.inputs
+
+    async def respond_input(
+        self, input_id: str, response: dict[str, Any]
+    ) -> dict[str, Any]:
+        match = next((item for item in self.inputs if item["id"] == input_id), None)
+        if match is None:
+            raise ApprovalError("Input request is no longer available")
+        self.input_responses.append((input_id, response))
+        match = {**match, "status": "submitting"}
+        self.inputs = [match if item["id"] == input_id else item for item in self.inputs]
+        return match
+
     async def expire_turn(self, thread_id: str, turn_id: str, reason: str) -> None:
         self.approvals = [
             item for item in self.approvals
+            if item.get("sessionId") != thread_id or item.get("turnId") != turn_id
+        ]
+        self.inputs = [
+            item for item in self.inputs
             if item.get("sessionId") != thread_id or item.get("turnId") != turn_id
         ]
 
@@ -875,7 +895,7 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(socket.sent[0])["result"], {"decision": amendment})
         self.assertEqual(sum(isinstance(item, ApprovalError) for item in results), 1)
 
-    async def test_file_permission_and_unsupported_normalization(self) -> None:
+    async def test_file_and_permission_normalization(self) -> None:
         file_approval = PendingApproval(
             1,
             FILE_METHOD,
@@ -933,21 +953,6 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
                 {"type": "grant", "permissions": {"fileSystem": {"write": ["/private"]}}}
             )
         self.assertEqual(permission.response_result({"type": "deny"})[0], {"permissions": {}, "scope": "turn"})
-
-        unsupported = PendingApproval(
-            3,
-            USER_INPUT_METHOD,
-            {"threadId": "thread-1", "turnId": "turn-1", "itemId": "input-1", "questions": []},
-        )
-        self.assertEqual(unsupported.projection()["availableDecisions"], [])
-        with self.assertRaisesRegex(ApprovalError, "cannot be answered"):
-            unsupported.response_result({"type": "decline"})
-        mcp = PendingApproval(
-            4,
-            MCP_ELICITATION_METHOD,
-            {"threadId": "thread-1", "turnId": "turn-1", "serverName": "test"},
-        )
-        self.assertEqual(mcp.response_result({"type": "cancel"})[0], {"action": "cancel", "content": None})
 
     async def test_resolution_disconnect_and_turn_completion_expire_without_replay(self) -> None:
         events: list[dict[str, Any]] = []
@@ -1361,6 +1366,45 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(response["accepted"])
         self.assertEqual(len(self.app.codex.approval_responses), 1)
+
+    async def test_input_protocol_requires_authentication_and_uses_separate_operations(self) -> None:
+        unauthenticated = await self.request_error("input.list")
+        self.assertEqual(unauthenticated["code"], "unauthorized")
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Input test"},
+        )
+        pending = {
+            "id": "inp_safe",
+            "sessionId": "thread-1",
+            "turnId": "turn-1",
+            "itemId": "item-1",
+            "source": "codex",
+            "title": "Input requested",
+            "fields": [],
+            "supported": True,
+            "canDecline": False,
+            "canCancel": False,
+            "createdAt": 1,
+            "status": "pending",
+        }
+        self.app.codex.inputs = [pending]
+        listed = await self.request("input.list")
+        self.assertEqual(listed["inputs"], [pending])
+        malformed = await self.request_error(
+            "input.respond", {"inputId": "inp_safe", "response": "yes"}
+        )
+        self.assertEqual(malformed["code"], "requestFailed")
+        unknown = await self.request_error(
+            "input.respond", {"inputId": "inp_missing", "response": {"values": {}}}
+        )
+        self.assertIn("no longer available", unknown["message"])
+        response = await self.request(
+            "input.respond",
+            {"inputId": "inp_safe", "response": {"action": "accept", "values": {}}},
+        )
+        self.assertTrue(response["accepted"])
+        self.assertEqual(self.app.codex.input_responses, [("inp_safe", {"action": "accept", "values": {}})])
 
     async def test_authenticated_bounded_session_search_composes_filters(self) -> None:
         await self.request(

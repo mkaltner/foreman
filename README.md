@@ -95,6 +95,8 @@ as an alternative.
   schema-advertised session and policy-amendment choices.
 - Resolve an approval from Android, web, or Codex Desktop and clear every
   Foreman client live when Codex confirms the result.
+- Answer bounded Codex choice/text questions and supported MCP choice, text,
+  boolean, or confirmation requests inline on web and Android.
 - Show current reasoning, plans, commands, tool names, and other meaningful
   live activity while Codex works.
 - Select installed models, Android-style reasoning levels, and Codex access
@@ -187,10 +189,9 @@ Dashboard behavior and limits:
 - Recent completion and feed data are not a permanent audit history.
 - **Other workspaces** contains session roots that do not map to a discovered
   Git repository.
-- Concrete approvals appear once in **Needs attention** and open the associated
-  inline card. General structured user-input and arbitrary MCP forms still need
-  another compatible Codex client unless Codex advertises a valid decline or
-  cancel response.
+- Concrete approvals and structured-input requests appear once in **Needs
+  attention** and open the associated inline card. Unsupported schemas are
+  labeled honestly and never rendered as arbitrary JSON Schema.
 - Search uses case-insensitive plain substrings. Criteria are ANDed, selected
   statuses are ORed, and hidden sessions stay excluded unless **Hidden
   sessions** is selected. Pins affect ordering, not matching.
@@ -284,9 +285,9 @@ CORS is not enabled.
 
 A paired client can control Codex with the access level selected for a turn, so
 treat its token and network access as sensitive. Foreman does not expose a
-standalone shell, Git-write, or structured-input endpoint. Its authenticated
-approval endpoint only returns a validated decision to the pending Codex
-request; it never executes command text itself. Codex can still run tools and
+standalone shell or Git-write endpoint. Its authenticated approval and bounded
+input endpoints only return validated responses to pending Codex requests;
+they never execute command text themselves. Codex can still run tools and
 modify files according to its selected access profile.
 Any authenticated Foreman client may revoke another paired token. Client lists
 contain only the saved label, client type, pairing time, and live connection
@@ -305,7 +306,8 @@ does not stop Desktop's Codex runtime.
 
 ## Known limitations
 
-- General structured user-input and arbitrary MCP forms are not yet supported.
+- Arbitrary JSON Schema, OpenAI extended forms, URL elicitation, and nested or
+  dynamic forms are not supported.
 - Direct TCP and HTTP transport is not encrypted.
 - Desktop live co-presence requires successful shared-socket attachment.
 - Android distribution is currently sideloaded.

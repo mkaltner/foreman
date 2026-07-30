@@ -12,6 +12,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
+import { InputCard, inputAttentionLabel } from "./InputCard";
 import { Dashboard } from "./Dashboard";
 import { messageDraft, updateMessageDraft } from "./drafts";
 import { UnifiedDashboard } from "./UnifiedDashboard";
@@ -53,6 +54,8 @@ import {
   type ApprovalEventPayload,
   type ApprovalRequest,
   type HelloPayload,
+  type InputEventPayload,
+  type InputRequest,
   type ModelInfo,
   type PairedClient,
   type RepositoryInfo,
@@ -154,6 +157,7 @@ function App() {
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const [focusedApprovalId, setFocusedApprovalId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [inputs, setInputs] = useState<InputRequest[]>([]);
   const selectedIdRef = useRef<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
   );
@@ -274,13 +278,13 @@ function App() {
     setHostSnapshots((previous) => {
       const cached = previous.get(hostId);
       const snapshot = connection === "connected" && serviceStatus
-        ? projectHostSnapshot(hostId, sessions, approvals, serviceStatus, connection)
+        ? projectHostSnapshot(hostId, sessions, approvals, serviceStatus, connection, Date.now(), inputs)
         : cached ? { ...cached, connection } : projectHostSnapshot(hostId, [], [], null, connection);
       const next = mergeHostSnapshot(previous, snapshot);
       saveHostSnapshots(next);
       return next;
     });
-  }, [approvals, connection, serviceStatus, sessions]);
+  }, [approvals, connection, inputs, serviceStatus, sessions]);
   useEffect(() => {
     const refreshPermission = () => setNotificationState(browserNotificationState());
     window.addEventListener("focus", refreshPermission);
@@ -474,6 +478,44 @@ function App() {
       }, 5_000);
       return;
     }
+    if (["input.requested", "input.updated", "input.resolved"].includes(message.type)) {
+      const pending = (message.payload as unknown as InputEventPayload).input;
+      if (!pending?.id || !pending.sessionId) return;
+      setInputs((previous) => previous.some(({ id }) => id === pending.id)
+        ? previous.map((item) => item.id === pending.id ? pending : item)
+        : [...previous, pending]);
+      const resolved = pending.status === "resolved" || pending.status === "expired";
+      const updateSession = (session: SessionSummary): SessionSummary => session.id !== pending.sessionId ? session : {
+        ...session,
+        status: resolved && session.status === "waiting" ? "working" : "waiting",
+        attention: !resolved,
+        activeTurnId: pending.turnId ?? session.activeTurnId,
+        waitType: resolved ? null : "input",
+        waitDescription: resolved ? null : inputAttentionLabel(pending),
+        activityLabel: resolved ? "Input request resolved" : inputAttentionLabel(pending),
+        lastActivity: Math.floor(Date.now() / 1000),
+      };
+      setSessions((previous) => {
+        const next = previous.map(updateSession);
+        sessionsRef.current = next;
+        return next;
+      });
+      setCurrent((previous) => previous ? updateSession(previous) : previous);
+      const feedSession = sessionsRef.current.find((session) => session.id === pending.sessionId);
+      const hostId = activeHostIdRef.current ?? "";
+      if (resolved) {
+        const tag = notificationMonitor.current.resolveApproval(hostId, pending.id);
+        void clearTurnNotification(tag).catch(() => undefined);
+      } else if (feedSession && message.type === "input.requested") {
+        const repositoryId = repositoryIdentity(feedSession.repository, repositoriesRef.current, repositoryRootRef.current).id;
+        const notification = notificationMonitor.current.observeApproval(hostId, pending.sessionId, pending.id, repositoryId);
+        if (notification && (document.visibilityState !== "visible" || !document.hasFocus())) {
+          void showTurnNotification(notification).catch(() => undefined);
+        }
+      }
+      if (resolved) window.setTimeout(() => setInputs((previous) => previous.filter(({ id }) => id !== pending.id)), 5_000);
+      return;
+    }
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
@@ -612,6 +654,7 @@ function App() {
     setHighlightItemId(null);
     setFocusedApprovalId(null);
     setApprovals([]);
+    setInputs([]);
     setModels([]);
     setAccessLevels([]);
     setRepositories([]);
@@ -656,8 +699,10 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
-      const [approvalResult, sessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
+      const [approvalResult, inputResult, sessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
         client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
+        client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
+          .catch(() => ({ inputs: [] })),
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
@@ -667,6 +712,7 @@ function App() {
       ]);
       if (activeHostIdRef.current !== hostId) return;
       setApprovals(approvalResult.approvals);
+      setInputs(inputResult.inputs);
       const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
       sessionsRef.current = reconciled;
       notificationMonitor.current.seed(reconciled.map((session) => ({
@@ -977,6 +1023,9 @@ function App() {
   const dashboardOpenApproval = useCallback((approval: ApprovalRequest) => {
     void openSession(approval.sessionId, true, null, approval.id);
   }, [openSession]);
+  const dashboardOpenInput = useCallback((input: InputRequest) => {
+    void openSession(input.sessionId, true, null, input.id);
+  }, [openSession]);
   const searchResultOpen = useCallback((id: string, itemId?: string | null) => {
     void openSession(id, true, itemId ?? null);
   }, [openSession]);
@@ -1146,6 +1195,7 @@ function App() {
             hostId={activeHost.id}
             sessions={visibleSessions.map(({ session }) => session)}
             approvals={approvals}
+            inputs={inputs}
             serviceStatus={serviceStatus}
             repositories={repositories}
             recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(entry.sessionId))}
@@ -1154,6 +1204,7 @@ function App() {
             disabled={!connected}
             onOpen={dashboardOpen}
             onOpenApproval={dashboardOpenApproval}
+            onOpenInput={dashboardOpenInput}
             onInterrupt={dashboardInterrupt}
             onRefresh={dashboardRefresh}
             onRevokeClient={async (pairedClient) => {
@@ -1233,6 +1284,7 @@ function App() {
               <ConversationView
                 session={current}
                 approvals={approvals.filter((approval) => approval.sessionId === current.id)}
+                inputs={inputs.filter((pending) => pending.sessionId === current.id)}
                 models={models}
                 accessLevels={accessLevels}
                 connected={connected}
@@ -1470,6 +1522,7 @@ function SessionList({
 export function ConversationView({
   session,
   approvals,
+  inputs = [],
   models,
   accessLevels,
   connected,
@@ -1483,6 +1536,7 @@ export function ConversationView({
 }: {
   session: SessionSummary;
   approvals: ApprovalRequest[];
+  inputs?: InputRequest[];
   models: ModelInfo[];
   accessLevels: AccessLevelInfo[];
   connected: boolean;
@@ -1529,7 +1583,7 @@ export function ConversationView({
     }
   }, [highlightItemId, session.id]);
 
-  const transcriptKey = `${session.messages?.length ?? 0}:${session.messages?.at(-1)?.text?.length ?? 0}:${session.activityText?.length ?? 0}:${approvals.map(({ id, status }) => `${id}:${status}`).join(",")}`;
+  const transcriptKey = `${session.messages?.length ?? 0}:${session.messages?.at(-1)?.text?.length ?? 0}:${session.activityText?.length ?? 0}:${approvals.map(({ id, status }) => `${id}:${status}`).join(",")}:${inputs.map(({ id, status }) => `${id}:${status}`).join(",")}`;
   useEffect(() => {
     if (following.current) {
       const frame = requestAnimationFrame(() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }));
@@ -1623,9 +1677,10 @@ export function ConversationView({
           if (atBottom) setJumpVisible(false);
         }}
       >
-        {!session.messages?.length && !approvals.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>Choose a route below and send the first prompt.</p></div>}
-        {session.messages?.map((item) => <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}</Fragment>)}
+        {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>Choose a route below and send the first prompt.</p></div>}
+        {session.messages?.map((item) => <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>)}
         {approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
+        {inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
         {(session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
