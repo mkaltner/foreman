@@ -16,6 +16,7 @@ import {
   confirmSessionAction,
   createSubmissionGuard,
   isNearBottom,
+  linkifyPlainText,
   parseAssistantContent,
   parseWebRoute,
   reasoningDescription,
@@ -85,6 +86,25 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(guard.enter()).toBe(false);
     guard.leave();
     expect(guard.enter()).toBe(true);
+  });
+
+  it("linkifies only safe bare web URLs and preserves surrounding punctuation", () => {
+    expect(linkifyPlainText("Open https://example.com/docs, then javascript:alert(1)."))
+      .toEqual([
+        { text: "Open " },
+        { text: "https://example.com/docs", href: "https://example.com/docs" },
+        { text: "," },
+        { text: " then javascript:alert(1)." },
+      ]);
+    expect(linkifyPlainText("See https://en.wikipedia.org/wiki/Foreman_(software)."))
+      .toEqual([
+        { text: "See " },
+        {
+          text: "https://en.wikipedia.org/wiki/Foreman_(software)",
+          href: "https://en.wikipedia.org/wiki/Foreman_(software)",
+        },
+        { text: "." },
+      ]);
   });
 
   it("tracks bottom proximity and requires confirmation for archive and permanent delete", () => {

@@ -2,6 +2,7 @@ package net.kaltner.foreman
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import java.io.ByteArrayInputStream
@@ -416,6 +417,27 @@ class ForemanConnectionTest {
                     rendered.text.substring(it.start, it.end) ==
                     "Implementing bulk session insertion helper"
             },
+        )
+    }
+
+    @Test
+    fun linkifiesBareWebUrlsWithoutSwallowingPunctuationOrUnsafeSchemes() {
+        val rendered =
+            styledInlineMarkdown(
+                "Open HTTPS://example.com/docs, not javascript:alert(1).",
+                color = Color.White,
+                linkColor = Color.Blue,
+                codeColor = Color.Gray,
+            )
+
+        assertEquals("Open HTTPS://example.com/docs, not javascript:alert(1).", rendered.text)
+        val links = rendered.getLinkAnnotations(0, rendered.length)
+        assertEquals(1, links.size)
+        assertEquals("HTTPS://example.com/docs", (links.single().item as LinkAnnotation.Url).url)
+        assertEquals("HTTPS://example.com/docs", rendered.text.substring(links.single().start, links.single().end))
+        assertEquals(
+            "https://en.wikipedia.org/wiki/Foreman_(software)",
+            trimTrailingUrlPunctuation("https://en.wikipedia.org/wiki/Foreman_(software)."),
         )
     }
 

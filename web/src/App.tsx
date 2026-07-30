@@ -83,6 +83,7 @@ import {
   createSubmissionGuard,
   formatActivity,
   isNearBottom,
+  linkifyPlainText,
   parseAssistantContent,
   parseWebRoute,
   reasoningDescription,
@@ -1362,11 +1363,17 @@ function ConversationItemView({ item, highlighted = false }: { item: NonNullable
   return (
     <article id={`message-${item.id}`} className={`message ${item.kind} ${highlighted ? "search-highlight" : ""}`}>
       <div className="message-label">{item.kind === "user" ? "You" : "Foreman"}</div>
-      {item.kind === "assistant" ? <Markdown text={item.text ?? ""} /> : <p className="user-text">{item.text}</p>}
+      {item.kind === "assistant" ? <Markdown text={item.text ?? ""} /> : <LinkedUserText text={item.text ?? ""} />}
       {!!item.images?.length && <div className="message-images">{item.images.map((image, index) => <img key={index} src={`data:${image.mimeType};base64,${image.data}`} alt={`Attachment ${index + 1}`} />)}</div>}
       {!!item.imageCount && !item.images?.length && <span className="image-indicator">▧ {item.imageCount} image{item.imageCount === 1 ? "" : "s"}</span>}
     </article>
   );
+}
+
+export function LinkedUserText({ text }: { text: string }) {
+  return <p className="user-text">{linkifyPlainText(text).map((segment, index) => segment.href
+    ? <a key={`${segment.href}-${index}`} href={segment.href} target="_blank" rel="noreferrer noopener">{segment.text}</a>
+    : segment.text)}</p>;
 }
 
 function Markdown({ text }: { text: string }) {
