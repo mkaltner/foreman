@@ -97,6 +97,9 @@ The service revalidates required fields, option membership, unique selections,
 selection counts, primitive types, and string lengths before serializing the
 installed Codex response. Stale, duplicate, malformed, or unsupported accepts
 fail. Pending input is connection-bound memory, never persisted or replayed.
+An installed-contract MCP form with an empty `properties` object is treated as
+a zero-field confirmation: Allow sends `action: "accept"` with empty content,
+while Decline and Cancel retain their distinct contract actions.
 
 `session.search` is authenticated and accepts `query`, one canonical
 `repository`/workspace path or `null`, a `statuses` array, `dateFrom`, `dateTo`,

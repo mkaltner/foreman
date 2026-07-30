@@ -118,6 +118,20 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(pending.response_result({"action": "decline"})[0], {"action": "decline", "content": None})
         self.assertEqual(pending.response_result({"action": "cancel"})[0], {"action": "cancel", "content": None})
 
+    def test_zero_field_mcp_form_is_an_action_confirmation(self) -> None:
+        pending = mcp_input({"type": "object", "properties": {}})
+        projection = pending.projection()
+
+        self.assertTrue(projection["supported"])
+        self.assertEqual(projection["title"], "Confirmation requested")
+        self.assertEqual(projection["fields"], [])
+        self.assertTrue(projection["canDecline"])
+        self.assertTrue(projection["canCancel"])
+        self.assertEqual(
+            pending.response_result({"action": "accept", "values": {}})[0],
+            {"action": "accept", "content": {}},
+        )
+
     def test_tool_questions_support_choice_other_text_and_exact_response_shape(self) -> None:
         pending = PendingInput(
             upstream_id=71,
@@ -297,11 +311,18 @@ class InstalledContractProofTests(unittest.TestCase):
                 self.skipTest(f"installed Codex cannot generate schemas: {completed.stderr}")
             tool = json.loads(Path(directory, "ToolRequestUserInputParams.json").read_text())
             mcp = json.loads(Path(directory, "McpServerElicitationRequestParams.json").read_text())
+            mcp_response = json.loads(Path(directory, "McpServerElicitationRequestResponse.json").read_text())
             self.assertIn("questions", tool["properties"])
             self.assertIn("ToolRequestUserInputQuestion", tool["definitions"])
             self.assertIn("McpElicitationSchema", mcp["definitions"])
             self.assertIn("McpElicitationBooleanSchema", mcp["definitions"])
             self.assertIn("McpElicitationMultiSelectEnumSchema", mcp["definitions"])
+            properties_schema = mcp["definitions"]["McpElicitationSchema"]["properties"]["properties"]
+            self.assertNotIn("minProperties", properties_schema)
+            self.assertEqual(
+                mcp_response["definitions"]["McpServerElicitationAction"]["enum"],
+                ["accept", "decline", "cancel"],
+            )
 
 
 if __name__ == "__main__":

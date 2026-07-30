@@ -237,8 +237,8 @@ def _normalize_mcp(params: dict[str, Any]) -> tuple[list[dict[str, Any]], str | 
     if not set(schema) <= {"$schema", "type", "properties", "required"}:
         return [], "MCP elicitation uses unsupported object-schema keywords."
     properties = schema.get("properties")
-    if not isinstance(properties, dict) or not 1 <= len(properties) <= MAX_FIELDS:
-        return [], f"MCP elicitation must contain 1 to {MAX_FIELDS} fields."
+    if not isinstance(properties, dict) or len(properties) > MAX_FIELDS:
+        return [], f"MCP elicitation must contain at most {MAX_FIELDS} fields."
     required_raw = schema.get("required", [])
     if not isinstance(required_raw, list) or any(not isinstance(value, str) for value in required_raw):
         return [], "MCP elicitation has a malformed required-field list."
@@ -365,13 +365,20 @@ class PendingInput:
 
     def projection(self) -> dict[str, Any]:
         is_mcp = self.method == MCP_ELICITATION_METHOD
+        is_confirmation = is_mcp and self.supported and not self.fields
         return {
             "id": self.id,
             "sessionId": self.thread_id,
             "turnId": self.turn_id or None,
             "itemId": self.item_id or None,
             "source": "mcp" if is_mcp else "codex",
-            "title": "Input requested" if not is_mcp else "MCP input requested",
+            "title": (
+                "Input requested"
+                if not is_mcp
+                else "Confirmation requested"
+                if is_confirmation
+                else "MCP input requested"
+            ),
             "message": self.params.get("message") if is_mcp else None,
             "serverName": self.params.get("serverName") if is_mcp else None,
             "fields": copy.deepcopy(self.fields),

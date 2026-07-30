@@ -733,6 +733,41 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         await next_event("input.resolved")
 
+        confirmation_request = asyncio.create_task(
+            server.request(
+                902,
+                "mcpServer/elicitation/request",
+                {
+                    "threadId": "thread-shared",
+                    "turnId": "turn-mcp-confirm",
+                    "serverName": "github",
+                    "mode": "form",
+                    "message": "Allow GitHub to create a pull request?",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                },
+            )
+        )
+        confirmation = (await next_event("input.requested"))["payload"]["input"]
+        self.assertTrue(confirmation["supported"])
+        self.assertEqual(confirmation["title"], "Confirmation requested")
+        self.assertEqual(confirmation["fields"], [])
+        await client_request(
+            "input.respond",
+            {
+                "inputId": confirmation["id"],
+                "response": {"action": "accept", "values": {}},
+            },
+        )
+        self.assertEqual(
+            (await confirmation_request)["result"],
+            {"action": "accept", "content": {}},
+        )
+        await server.emit(
+            "serverRequest/resolved",
+            {"threadId": "thread-shared", "requestId": 902},
+        )
+        await next_event("input.resolved")
+
         desktop = asyncio.create_task(
             server.request(
                 "desktop-first",

@@ -84,6 +84,9 @@ data class InputRequest(
 internal fun inputAttentionLabel(input: InputRequest): String =
     if (input.supported) "Waiting for user input" else "Waiting for unsupported user input"
 
+internal fun inputSubmitLabel(input: InputRequest): String =
+    if (input.source == "mcp" && input.supported && input.fields.isEmpty()) "Allow" else "Submit"
+
 @Composable
 internal fun InputRequestCard(
     input: InputRequest,
@@ -163,7 +166,9 @@ internal fun InputRequestCard(
                         onOther = { value -> otherValues = otherValues + (field.id to value) },
                     )
                 }
-                Button(enabled = !disabled, onClick = ::submit) { Text("Submit") }
+                Button(enabled = !disabled, onClick = ::submit) {
+                    Text(inputSubmitLabel(input))
+                }
             }
             if (submitting || input.status == "submitting") Text("Submitting response…", color = MaterialTheme.colorScheme.primary)
             if (input.status == "resolved") Text(if (input.resolution == "resolvedElsewhere") "Already resolved in another client." else "Input resolved.")

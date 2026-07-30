@@ -27,6 +27,27 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun zeroFieldMcpConfirmationUsesExplicitAllowAction() {
+        val input =
+            InputRequest(
+                id = "inp-confirm",
+                sessionId = "thread-1",
+                source = "mcp",
+                title = "Confirmation requested",
+                message = "Allow GitHub to create a pull request?",
+                fields = emptyList(),
+                supported = true,
+                canDecline = true,
+                canCancel = true,
+                createdAt = 1,
+                status = "pending",
+            )
+
+        assertEquals("Allow", inputSubmitLabel(input))
+        assertEquals("Waiting for user input", inputAttentionLabel(input))
+    }
+
+    @Test
     fun sessionSettingsPayloadUpdatesExistingThreadRoute() {
         val payload =
             sessionSettingsPayload(

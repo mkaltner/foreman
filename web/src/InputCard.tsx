@@ -32,6 +32,7 @@ export function InputCard({
   const formRef = useRef<HTMLFormElement>(null);
   const rootRef = useRef<HTMLElement>(null);
   const disabled = !connected || submitting || input.status !== "pending";
+  const isActionConfirmation = input.source === "mcp" && input.supported && input.fields.length === 0;
   const status = submitting || input.status === "submitting"
     ? "Submitting response…"
     : input.status === "resolved"
@@ -80,7 +81,7 @@ export function InputCard({
       void respond({ action: "accept", values: normalizedValues });
     }}>
       {input.fields.map((field) => <InputControl key={field.id} field={field} groupName={`${input.id}-${field.id}`} value={values[field.id]} other={other[field.id] ?? ""} disabled={disabled} onChange={(value) => setValues((previous) => ({ ...previous, [field.id]: value }))} onOther={(value) => setOther((previous) => ({ ...previous, [field.id]: value }))} />)}
-      <div className="approval-actions"><button className="approval-primary" disabled={disabled}>Submit</button></div>
+      <div className="approval-actions"><button className="approval-primary" disabled={disabled}>{isActionConfirmation ? "Allow" : "Submit"}</button></div>
     </form>}
     {status && <p className="approval-status" role="status">{status}</p>}
     {error && <p className="approval-error" role="alert">{error}</p>}
