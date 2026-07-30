@@ -40,6 +40,14 @@ resubscribes to the open session, and never replays prompt, steer, interrupt,
 archive, or delete requests. Its committed `web/dist` output is copied into the
 installed data directory so Node isn't part of the runtime.
 
+Android and web keep a client-local registry of independently paired hosts. A
+stable random local ID identifies each host in preferences, notification routes,
+and browser URLs; tokens remain Keystore-encrypted on Android and browser-local
+on web and never enter URLs. Switching stops subscriptions, closes the old
+connection, discards transient sessions and approvals, restores the selected
+host's preferences, and then authenticates and reloads. There is no coordinator,
+cross-host session model, or backend persistence for this registry.
+
 The dashboard uses the same session-summary projection rather than a parallel
 session model. It subscribes only to working and waiting sessions, coalesces
 high-frequency public activity updates, and keeps transcripts out of monitoring
@@ -57,11 +65,12 @@ expires the mapping without replay. There is no approval history or Foreman
 permission policy.
 
 Android uses one Compose activity, one connection/protocol file, a small image
-processor, and one Keystore-backed token store. Its cache is in memory and
+processor, and one Keystore-backed multi-host token store. Its cache is in memory and
 disposable. When the user enables active-turn notifications, an on-demand
 foreground service opens its own authenticated connection and subscribes only
-to turns the user opens or starts. Approval notifications are deduplicated by
-opaque request ID, contain no command or path, and are cancelled when another
+to turns the user opens or starts on the active host. Approval notifications carry
+host and session identity, are deduplicated by opaque request ID, contain no
+command or path, and are cancelled when another
 client resolves the request. The service stops after every subscribed turn is
 terminal; it is not an always-running poller or push client.
 
