@@ -117,7 +117,7 @@ import {
   type WebRoute,
 } from "./ui";
 
-export type View = "overview" | "dashboard" | "sessions" | "detail" | "settings";
+export type View = "dashboard" | "sessions" | "detail" | "settings";
 
 export function appShellClassName(view: View): string {
   return view === "settings" ? "app-shell settings-shell" : "app-shell";
@@ -296,7 +296,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (viewRef.current === "overview" || viewRef.current === "dashboard" || viewRef.current === "sessions") {
+    if (viewRef.current === "dashboard" || viewRef.current === "sessions") {
       const filtersSearch = sessionFiltersSearch(searchFilters);
       if (activeHostIdRef.current) saveSessionSearch(activeHostIdRef.current, filtersSearch);
       const search = withHostInSearch(filtersSearch, activeHostIdRef.current);
@@ -729,8 +729,8 @@ function App() {
           selectedIdRef.current = null;
           setSelectedId(null);
           setCurrent(null);
-          setView("overview");
-          updateRoute({ view: "overview" }, true);
+          setView("dashboard");
+          updateRoute({ view: "dashboard" }, true);
         }
       }
     },
@@ -851,13 +851,6 @@ function App() {
     window.addEventListener("popstate", restoreRoute);
     return () => window.removeEventListener("popstate", restoreRoute);
   }, [activateHost, restoreView]);
-
-  const showOverview = (replace = false) => {
-    viewRef.current = "overview";
-    setView("overview");
-    closeSelectedSession();
-    updateRoute({ view: "overview" }, replace);
-  };
 
   const showDashboard = (replace = false) => {
     viewRef.current = "dashboard";
@@ -1084,9 +1077,6 @@ function App() {
           <button className={view === "dashboard" ? "active" : ""} onClick={() => showDashboard()}>
             Dashboard
           </button>
-          <button className={view === "overview" ? "active" : ""} onClick={() => showOverview()}>
-            Hosts
-          </button>
           <button className={view === "sessions" || view === "detail" ? "active" : ""} onClick={() => showSessions()}>
             Sessions
           </button>
@@ -1132,10 +1122,11 @@ function App() {
           onRename={(hostId, displayName) => mutateHost(hostId, { displayName })}
           onForget={forget}
         />
-      ) : view === "overview" ? (
+      ) : view === "dashboard" ? (
         <div className="dashboard-scroll">
           <UnifiedDashboard
             hosts={hostRegistry.hosts}
+            activeHostId={activeHost.id}
             snapshots={hostSnapshots}
             onOpenHost={(hostId) => activateHost(hostId, { view: "dashboard" })}
             onOpenSession={unifiedOpenSession}
@@ -1146,9 +1137,6 @@ function App() {
               if (host && window.confirm(`Forget “${host.displayName}”? Its browser-local token and preferences will be removed.`)) forget(hostId);
             }}
           />
-        </div>
-      ) : view === "dashboard" ? (
-        <div className="dashboard-scroll">
           <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} loading={searchLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
           {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
             {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}

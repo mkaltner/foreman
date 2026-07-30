@@ -2510,7 +2510,7 @@ private fun HostOverviewCard(
             Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
             Text("Oldest ${overviewElapsed(snapshot?.oldestTurn?.timestamp)} · Latest activity ${overviewAge(snapshot?.latestActivity)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = onOpen) { Text("Open host") }
+                Button(onClick = onOpen) { Text("View dashboard") }
                 if (!live) FilledTonalButton(onClick = onReconnect) { Text("Reconnect") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -6,6 +6,7 @@ import { aggregateHostSnapshots, type HostOverviewSnapshot, type UnifiedAttentio
 
 interface Props {
   hosts: StoredHost[];
+  activeHostId: string;
   snapshots: Map<string, HostOverviewSnapshot>;
   onOpenHost: (hostId: string) => void;
   onOpenSession: (item: UnifiedAttentionItem | { hostId: string; sessionId: string }) => void;
@@ -14,14 +15,14 @@ interface Props {
   onForget: (hostId: string) => void;
 }
 
-export function UnifiedDashboard({ hosts, snapshots, onOpenHost, onOpenSession, onReconnect, onEdit, onForget }: Props) {
+export function UnifiedDashboard({ hosts, activeHostId, snapshots, onOpenHost, onOpenSession, onReconnect, onEdit, onForget }: Props) {
   const now = useSharedClock();
   const totals = useMemo(() => aggregateHostSnapshots(hosts.map(({ id }) => id), snapshots), [hosts, snapshots]);
   const attention = useMemo(() => hosts.flatMap((host) => (snapshots.get(host.id)?.attention ?? []).map((item) => ({ host, item })))
     .sort((left, right) => (left.item.startedAt ?? now) - (right.item.startedAt ?? now)), [hosts, now, snapshots]);
   return <main className="unified-dashboard">
     <header className="dashboard-heading">
-      <div><span className="eyebrow">All saved hosts</span><h1>Unified overview</h1><p>Client-side status across independently paired Foreman hosts.</p></div>
+      <div><span className="eyebrow">All saved hosts</span><h1>Hosts</h1><p>Health and work across independently paired Foreman hosts.</p></div>
       <span className="connection-limit">Up to 4 live connections · {totals.staleHosts} stale</span>
     </header>
     <section className="unified-totals" aria-label="Aggregate totals">
@@ -33,16 +34,15 @@ export function UnifiedDashboard({ hosts, snapshots, onOpenHost, onOpenSession, 
       <UnifiedMetric label="Latest completion" value={totals.latestCompletion ? formatAge(totals.latestCompletion.completedAt, now) : "—"} onClick={totals.latestCompletion ? () => onOpenSession(totals.latestCompletion!) : undefined} />
     </section>
 
-    <section className="unified-section" aria-labelledby="host-overview-title">
-      <header><div><span className="eyebrow">Host health</span><h2 id="host-overview-title">Saved hosts</h2></div><span>{hosts.length}</span></header>
+    <section className="unified-section" aria-label="Saved hosts">
       <div className="host-overview-grid">
-        {hosts.map((host) => <HostOverviewCard key={host.id} host={host} snapshot={snapshots.get(host.id)} now={now} onOpen={() => onOpenHost(host.id)} onReconnect={() => onReconnect(host.id)} onEdit={() => onEdit(host.id)} onForget={() => onForget(host.id)} />)}
+        {hosts.map((host) => <HostOverviewCard key={host.id} host={host} active={host.id === activeHostId} snapshot={snapshots.get(host.id)} now={now} onOpen={() => onOpenHost(host.id)} onReconnect={() => onReconnect(host.id)} onEdit={() => onEdit(host.id)} onForget={() => onForget(host.id)} />)}
       </div>
     </section>
 
-    <section className="unified-section attention-queue" aria-labelledby="combined-attention-title">
+    {attention.length > 0 && <section className="unified-section attention-queue" aria-labelledby="combined-attention-title">
       <header><div><span className="eyebrow">Across every host</span><h2 id="combined-attention-title">Needs attention</h2></div><span>{attention.length}</span></header>
-      {attention.length ? <div className="unified-attention-list">{attention.map(({ host, item }) => {
+      <div className="unified-attention-list">{attention.map(({ host, item }) => {
         const stale = snapshots.get(host.id)?.connection !== "connected";
         return <article key={`${host.id}:${item.sessionId}:${item.approvalId ?? item.type}`} className={stale ? "stale" : ""}>
           <span className={`attention-type ${item.type}`}>{item.type === "approval" ? "Approval" : item.type === "input" ? "Input" : "Failed"}</span>
@@ -51,8 +51,8 @@ export function UnifiedDashboard({ hosts, snapshots, onOpenHost, onOpenSession, 
           <time>{formatAge(item.startedAt, now)}{stale ? " · stale" : ""}</time>
           <button onClick={() => onOpenSession(item)}>Open</button>
         </article>;
-      })}</div> : <p className="unified-empty">Nothing across the connected hosts needs attention.</p>}
-    </section>
+      })}</div>
+    </section>}
   </main>;
 }
 
@@ -61,7 +61,7 @@ function UnifiedMetric({ label, value, onClick }: { label: string; value: string
   return onClick ? <button className="unified-metric" onClick={onClick}>{content}</button> : <div className="unified-metric">{content}</div>;
 }
 
-function HostOverviewCard({ host, snapshot, now, onOpen, onReconnect, onEdit, onForget }: { host: StoredHost; snapshot?: HostOverviewSnapshot; now: number; onOpen: () => void; onReconnect: () => void; onEdit: () => void; onForget: () => void }) {
+function HostOverviewCard({ host, active, snapshot, now, onOpen, onReconnect, onEdit, onForget }: { host: StoredHost; active: boolean; snapshot?: HostOverviewSnapshot; now: number; onOpen: () => void; onReconnect: () => void; onEdit: () => void; onForget: () => void }) {
   const live = snapshot?.connection === "connected";
   const connection = snapshot?.connection ?? host.lastKnownStatus;
   const runtime = snapshot?.runtimeMode === "shared" ? "Shared Desktop" : snapshot?.runtimeMode === "fallback" ? "Fallback" : host.runtimeMode === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop" : host.runtimeMode ? "Fallback" : "Unknown";
@@ -76,7 +76,7 @@ function HostOverviewCard({ host, snapshot, now, onOpen, onReconnect, onEdit, on
       <div><dt>Latest activity</dt><dd>{formatAge(snapshot?.latestActivity, now)}</dd></div>
     </dl>
     <footer>
-      <button className="primary" onClick={onOpen}>Open host</button>
+      <button className="primary" onClick={onOpen} disabled={active}>{active ? "Current host" : "Switch host"}</button>
       {!live && <button onClick={onReconnect}>Reconnect</button>}
       <button onClick={onEdit}>Edit</button>
       <button className="danger-link" onClick={onForget}>Forget</button>

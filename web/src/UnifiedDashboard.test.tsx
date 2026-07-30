@@ -22,9 +22,9 @@ describe("unified dashboard", () => {
     };
     const open = vi.fn();
     const reconnect = vi.fn();
-    render(<UnifiedDashboard hosts={hosts} snapshots={new Map([["two", snapshot]])} onOpenHost={vi.fn()} onOpenSession={open} onReconnect={reconnect} onEdit={vi.fn()} onForget={vi.fn()} />);
+    render(<UnifiedDashboard hosts={hosts} activeHostId="one" snapshots={new Map([["two", snapshot]])} onOpenHost={vi.fn()} onOpenSession={open} onReconnect={reconnect} onEdit={vi.fn()} onForget={vi.fn()} />);
     expect(screen.getAllByText(/Stale snapshot/)).toHaveLength(5);
-    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
     const attentionOpen = screen.getAllByRole("button", { name: "Open" }).at(-1)!;
     fireEvent.click(attentionOpen);
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ hostId: "two", sessionId: "same" }));
@@ -40,7 +40,7 @@ describe("unified dashboard", () => {
       attention: [{ hostId: "one", sessionId: "same", sessionTitle: "Needs input", repository: "/repo", type: "input", startedAt: Date.now() }],
     };
     const open = vi.fn();
-    render(<UnifiedDashboard hosts={[host("one")]} snapshots={new Map([["one", live]])} onOpenHost={vi.fn()} onOpenSession={open} onReconnect={vi.fn()} onEdit={vi.fn()} onForget={vi.fn()} />);
+    render(<UnifiedDashboard hosts={[host("one")]} activeHostId="one" snapshots={new Map([["one", live]])} onOpenHost={vi.fn()} onOpenSession={open} onReconnect={vi.fn()} onEdit={vi.fn()} onForget={vi.fn()} />);
     fireEvent.click(screen.getAllByRole("button", { name: "Open" }).at(-1)!);
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ hostId: "one", sessionId: "same", type: "input" }));
   });

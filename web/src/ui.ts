@@ -112,7 +112,6 @@ export function reasoningDescription(effort: string): string | undefined {
 }
 
 export type WebRoute =
-  | { view: "overview" }
   | { view: "dashboard" }
   | { view: "sessions" }
   | { view: "settings" }
@@ -120,8 +119,7 @@ export type WebRoute =
 
 export function parseWebRoute(pathname: string): WebRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
-  if (normalized === "/hosts") return { view: "overview" };
-  if (normalized === "/" || normalized === "/dashboard") return { view: "dashboard" };
+  if (normalized === "/" || normalized === "/dashboard" || normalized === "/hosts") return { view: "dashboard" };
   if (normalized === "/settings") return { view: "settings" };
   if (normalized === "/sessions") return { view: "sessions" };
   const match = /^\/sessions\/([^/]+)$/.exec(normalized);
@@ -137,7 +135,6 @@ export function parseWebRoute(pathname: string): WebRoute {
 }
 
 export function webRoutePath(route: WebRoute): string {
-  if (route.view === "overview") return "/hosts";
   if (route.view === "dashboard") return "/";
   if (route.view === "settings") return "/settings";
   if (route.view === "detail") return `/sessions/${encodeURIComponent(route.sessionId)}`;
