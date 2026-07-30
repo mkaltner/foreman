@@ -42,8 +42,8 @@ h1,h2,h3,p{margin-top:0}
 :root[data-theme=dark] .runtime-banner{color:#fdba74;background:#422006;border-color:#713f12}
 .error-banner{color:var(--danger);background:var(--danger-soft)}
 .error-banner button{color:inherit;background:0 0;border:0;margin-left:auto;font-size:20px}
-.workspace{grid-template-columns:minmax(290px,380px) minmax(0,1fr);min-height:0;display:grid;overflow:hidden}
-.session-pane{border-right:1px solid var(--border);background:var(--surface);grid-template-rows:auto auto minmax(0,1fr);min-width:0;display:grid}
+.workspace{grid-template-columns:minmax(290px,380px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);min-height:0;display:grid;overflow:hidden}
+.session-pane{border-right:1px solid var(--border);background:var(--surface);grid-template-rows:auto auto minmax(0,1fr);min-width:0;min-height:0;display:grid;overflow:hidden}
 .pane-heading{justify-content:space-between;align-items:end;padding:25px 22px 17px;display:flex}
 .pane-heading h1,.settings-page h1{letter-spacing:-.7px;margin:2px 0 0;font-size:27px}
 .eyebrow{color:var(--accent);letter-spacing:.12em;text-transform:uppercase;font-size:11px;font-weight:800}
@@ -73,7 +73,7 @@ button.full{width:100%;min-height:44px}
 .empty-list,.empty-detail,.empty-conversation{text-align:center;color:var(--muted);align-content:center;place-items:center;display:grid}
 .empty-list{min-height:240px}
 .empty-list h3,.empty-detail h2,.empty-conversation h2{color:var(--text);margin:15px 0 5px}
-.detail-pane{background:var(--bg);min-width:0;min-height:0}
+.detail-pane{background:var(--bg);min-width:0;min-height:0;overflow:hidden}
 .empty-detail{height:100%}
 .conversation{grid-template-rows:auto minmax(0,1fr) auto;width:100%;height:100%;min-width:0;min-height:0;display:grid;position:relative}
 .conversation-header{border-bottom:1px solid var(--border);background:var(--surface);width:100%;min-width:0;align-items:center;gap:15px;padding:15px 24px;display:flex}
