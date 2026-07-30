@@ -312,6 +312,7 @@ class InstalledContractProofTests(unittest.TestCase):
             tool = json.loads(Path(directory, "ToolRequestUserInputParams.json").read_text())
             mcp = json.loads(Path(directory, "McpServerElicitationRequestParams.json").read_text())
             mcp_response = json.loads(Path(directory, "McpServerElicitationRequestResponse.json").read_text())
+            turns = json.loads(Path(directory, "v2", "ThreadTurnsListParams.json").read_text())
             self.assertIn("questions", tool["properties"])
             self.assertIn("ToolRequestUserInputQuestion", tool["definitions"])
             self.assertIn("McpElicitationSchema", mcp["definitions"])
@@ -322,6 +323,16 @@ class InstalledContractProofTests(unittest.TestCase):
             self.assertEqual(
                 mcp_response["definitions"]["McpServerElicitationAction"]["enum"],
                 ["accept", "decline", "cancel"],
+            )
+            self.assertIn("cursor", turns["properties"])
+            self.assertIn("itemsView", turns["properties"])
+            self.assertIn(
+                "full",
+                [
+                    value
+                    for option in turns["definitions"]["TurnItemsView"]["oneOf"]
+                    for value in option.get("enum", [])
+                ],
             )
 
 

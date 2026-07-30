@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 from typing import Any
 
@@ -955,6 +955,60 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_paginated_turns_with_full_command_items(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._supported_methods = {"thread/turns/list"}
+        adapter.ensure_resumed = AsyncMock()
+        adapter.request = AsyncMock(
+            side_effect=[
+                {"thread": {**THREAD, "turns": []}},
+                {
+                    "data": [
+                        {
+                            "id": "turn-1",
+                            "status": "completed",
+                            "items": [
+                                {
+                                    "id": "command-1",
+                                    "type": "commandExecution",
+                                    "command": "git status",
+                                    "status": "completed",
+                                    "exitCode": 0,
+                                }
+                            ],
+                        }
+                    ],
+                    "nextCursor": "next-page",
+                },
+                {
+                    "data": [
+                        {
+                            "id": "turn-2",
+                            "status": "completed",
+                            "items": [
+                                {"id": "assistant-2", "type": "agentMessage", "text": "Done"}
+                            ],
+                        }
+                    ],
+                    "nextCursor": None,
+                },
+            ]
+        )
+
+        thread = await adapter.read_thread("thread-1")
+        mapped = session(thread, include_messages=True)
+
+        adapter.ensure_resumed.assert_awaited_once_with("thread-1")
+        self.assertEqual([item["kind"] for item in mapped["messages"]], ["command", "assistant"])
+        self.assertEqual(mapped["messages"][0]["exitCode"], 0)
+        turn_requests = [
+            call for call in adapter.request.await_args_list
+            if call.args[0] == "thread/turns/list"
+        ]
+        self.assertEqual(len(turn_requests), 2)
+        self.assertTrue(all(call.args[1]["itemsView"] == "full" for call in turn_requests))
+        self.assertEqual(turn_requests[1].args[1]["cursor"], "next-page")
+
     async def test_reconciled_status_includes_stored_thread_recency(self) -> None:
         events: list[dict[str, Any]] = []
 

@@ -35,6 +35,7 @@ MODEL_CACHE_SECONDS = 30
 ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
 SESSION_LIST_LIMIT = 500
+THREAD_HISTORY_LIMIT = 1_000
 SEARCH_SNIPPET_LIMIT = 200
 SEARCH_SNIPPETS_PER_SESSION = 3
 DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
@@ -859,6 +860,16 @@ class Codex:
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         await self.ensure_resumed(thread_id)
+        return await self._read_thread_with_history(thread_id)
+
+    async def _read_thread_with_history(self, thread_id: str) -> dict[str, Any]:
+        if self.supports("thread/turns/list"):
+            result = await self.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": False}
+            )
+            thread = result["thread"]
+            thread["turns"] = await self._list_thread_turns(thread_id)
+            return self._with_route(thread)
         try:
             result = await self.request(
                 "thread/read", {"threadId": thread_id, "includeTurns": True}
@@ -869,12 +880,32 @@ class Codex:
             )
         return self._with_route(result["thread"])
 
+    async def _list_thread_turns(self, thread_id: str) -> list[dict[str, Any]]:
+        turns: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while len(turns) < THREAD_HISTORY_LIMIT:
+            params: dict[str, Any] = {
+                "threadId": thread_id,
+                "limit": min(100, THREAD_HISTORY_LIMIT - len(turns)),
+                "sortDirection": "asc",
+                "itemsView": "full",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            result = await self.request("thread/turns/list", params)
+            data = result.get("data", [])
+            turns.extend(item for item in data if isinstance(item, dict))
+            next_cursor = result.get("nextCursor")
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        return turns[:THREAD_HISTORY_LIMIT]
+
     async def search_thread(self, thread_id: str) -> dict[str, Any]:
         """Read authoritative history without subscribing or resuming the thread."""
-        result = await self.request(
-            "thread/read", {"threadId": thread_id, "includeTurns": True}
-        )
-        return self._with_route(result["thread"])
+        return await self._read_thread_with_history(thread_id)
 
     async def start_thread(
         self, cwd: str, ephemeral: bool = False

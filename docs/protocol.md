@@ -84,6 +84,9 @@ request state is not deliberately discarded.
 
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.
+Conversation reads use the installed `thread/turns/list` contract with bounded
+pagination and `itemsView:"full"`, preserving historical command and tool cards
+after refresh; older Codex versions fall back to `thread/read(includeTurns:true)`.
 `session.event` carries normalized status, lifecycle, assistant delta, public
 activity, and command/tool item events.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
