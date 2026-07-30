@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ApprovalRequest, ServiceStatus, SessionSummary } from "./protocol";
+import type { ApprovalRequest, InputRequest, ServiceStatus, SessionSummary } from "./protocol";
 import { aggregateHostSnapshots, liveBackgroundHostIds, projectHostSnapshot, sessionIdentityKey } from "./unified";
 
 const status: ServiceStatus = {
@@ -45,6 +45,15 @@ describe("unified multi-host projection", () => {
     };
     const snapshot = projectHostSnapshot("work", [session("same", "waiting", 200)], [approval], status, "connected");
     expect(snapshot.attention).toEqual([expect.objectContaining({ hostId: "work", sessionId: "same", approvalId: "apr-1" })]);
+  });
+
+  it("distinguishes structured input from approvals in needs-attention projection", () => {
+    const input: InputRequest = {
+      id: "inp-1", sessionId: "same", source: "mcp", title: "Input", fields: [], supported: false,
+      canDecline: true, canCancel: true, createdAt: 301, status: "pending",
+    };
+    const snapshot = projectHostSnapshot("work", [session("same", "waiting", 200)], [], status, "connected", 1_000_000, [input]);
+    expect(snapshot.attention).toEqual([expect.objectContaining({ approvalId: "inp-1", type: "input" })]);
   });
 
   it("bounds web sockets and rotates five saved hosts without including the active host", () => {

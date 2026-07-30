@@ -1,5 +1,5 @@
 import type { ConnectionState } from "./client";
-import type { ApprovalRequest, ServiceStatus, SessionSummary } from "./protocol";
+import type { ApprovalRequest, InputRequest, ServiceStatus, SessionSummary } from "./protocol";
 
 export const MAX_WEB_HOST_CONNECTIONS = 4;
 export const WEB_HOST_ROTATION_MS = 60_000;
@@ -57,9 +57,11 @@ export function projectHostSnapshot(
   status: ServiceStatus | null,
   connection: ConnectionState,
   observedAt = Date.now(),
+  inputs: InputRequest[] = [],
 ): HostOverviewSnapshot {
   const pending = approvals.filter(({ status }) => status === "pending" || status === "submitting");
-  const approvalSessions = new Set(pending.map(({ sessionId }) => sessionId));
+  const pendingInputs = inputs.filter(({ status }) => status === "pending" || status === "submitting");
+  const requestSessions = new Set([...pending.map(({ sessionId }) => sessionId), ...pendingInputs.map(({ sessionId }) => sessionId)]);
   const activeSessions = sessions.filter(({ status }) => status === "working");
   const waitingSessions = sessions.filter((session) => session.status === "waiting" || session.attention);
   const failedSessions = sessions.filter(({ status }) => status === "failed");
@@ -78,12 +80,24 @@ export function projectHostSnapshot(
       approvalId: approval.id,
       sessionTitle: session?.title || "Codex session",
       repository: session?.repository || "",
-      type: approval.type.startsWith("unsupported") ? "input" : "approval",
+      type: "approval",
       startedAt: millis(approval.startedAt ?? approval.createdAt),
     };
   });
+  pendingInputs.forEach((input) => {
+    const session = sessions.find(({ id }) => id === input.sessionId);
+    attention.push({
+      hostId,
+      sessionId: input.sessionId,
+      approvalId: input.id,
+      sessionTitle: session?.title || "Codex session",
+      repository: session?.repository || "",
+      type: "input",
+      startedAt: millis(input.createdAt),
+    });
+  });
   waitingSessions
-    .filter(({ id }) => !approvalSessions.has(id))
+    .filter(({ id }) => !requestSessions.has(id))
     .forEach((session) => attention.push({
       hostId,
       sessionId: session.id,

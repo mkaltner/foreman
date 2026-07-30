@@ -80,7 +80,6 @@ data class ApprovalRequest(
     val fileCount: Int = 0,
     val grantRoot: String? = null,
     val availableScopes: List<String> = emptyList(),
-    val unsupportedMessage: String? = null,
 )
 
 internal fun approvalAttentionLabel(type: String): String =
@@ -88,7 +87,7 @@ internal fun approvalAttentionLabel(type: String): String =
         "command" -> "Waiting for command approval"
         "fileChange" -> "Waiting for file-change approval"
         "permission" -> "Waiting for permission grant"
-        else -> "Waiting for unsupported user input"
+        else -> "Approval required"
     }
 
 internal data class PermissionChoice(
@@ -195,10 +194,7 @@ internal fun ApprovalCard(
                         }
                     }
                 }
-                else -> Text(
-                    (approval.unsupportedMessage ?: "This request type is not yet supported in Foreman.") +
-                        if (approval.availableDecisions.isEmpty()) " Open another compatible Codex client to answer it." else "",
-                )
+                else -> Text("Unsupported approval type.")
             }
             if (submitting || approval.status == "submitting") Text("Submitting decision…", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             if (approval.status == "resolved") Text(if (approval.resolution == "resolvedElsewhere") "Already resolved in another client." else "Approval resolved.")

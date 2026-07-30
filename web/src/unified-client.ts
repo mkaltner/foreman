@@ -4,6 +4,8 @@ import {
   reconcileSessionSummaries,
   type ApprovalEventPayload,
   type ApprovalRequest,
+  type InputEventPayload,
+  type InputRequest,
   type ServiceStatus,
   type SessionEventPayload,
   type SessionSummary,
@@ -21,6 +23,7 @@ interface Projection {
   connection: ConnectionState;
   sessions: SessionSummary[];
   approvals: ApprovalRequest[];
+  inputs: InputRequest[];
   status: ServiceStatus | null;
 }
 
@@ -98,9 +101,11 @@ export class UnifiedHostConnections {
     });
     this.clients.set(host.id, client);
     void client.start(parseEndpoint(host.host, host.webPort), host.deviceToken, async () => {
-      const [sessionResult, approvalResult, statusResult] = await Promise.all([
+      const [sessionResult, approvalResult, inputResult, statusResult] = await Promise.all([
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
         client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
+        client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
+          .catch(() => ({ inputs: [] } as { inputs: InputRequest[] } & Record<string, unknown>)),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
       ]);
       if (this.clients.get(host.id) !== client) return;
@@ -108,6 +113,7 @@ export class UnifiedHostConnections {
         connection: "connected",
         sessions: sessionResult.sessions,
         approvals: approvalResult.approvals,
+        inputs: inputResult.inputs ?? [],
         status: statusResult,
       });
       this.emit(host.id);
@@ -137,6 +143,12 @@ export class UnifiedHostConnections {
       projection.approvals = projection.approvals.some(({ id }) => id === approval.id)
         ? projection.approvals.map((item) => item.id === approval.id ? approval : item)
         : [...projection.approvals, approval];
+    } else if (["input.requested", "input.updated", "input.resolved"].includes(message.type)) {
+      const input = (message.payload as unknown as InputEventPayload).input;
+      if (!input?.id) return;
+      projection.inputs = projection.inputs.some(({ id }) => id === input.id)
+        ? projection.inputs.map((item) => item.id === input.id ? input : item)
+        : [...projection.inputs, input];
     } else return;
     this.emit(hostId);
   }
@@ -146,6 +158,7 @@ export class UnifiedHostConnections {
       connection: "disconnected" as ConnectionState,
       sessions: [],
       approvals: [],
+      inputs: [],
       status: null,
     };
     this.projections.set(hostId, { ...previous, ...update });
@@ -161,6 +174,8 @@ export class UnifiedHostConnections {
       projection.approvals,
       projection.status,
       projection.connection,
+      Date.now(),
+      projection.inputs,
     ));
   }
 }

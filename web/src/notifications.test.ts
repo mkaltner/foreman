@@ -144,6 +144,14 @@ describe("web turn notification lifecycle", () => {
     expect(notificationStateDescription("denied", false)).toContain("blocked");
   });
 
+  it("uses the same generic private notification for structured input", () => {
+    const monitor = new TurnNotificationMonitor();
+    monitor.configure(DEFAULT_NOTIFICATION_PREFERENCES, () => undefined);
+    const notification = monitor.observeApproval("home", "one", "inp-secret", "/repo");
+    expect(notification).toMatchObject({ title: "Foreman needs your attention", body: "A monitored session needs approval or input." });
+    expect(notification?.body).not.toContain("secret");
+  });
+
   it("reports a denied browser permission as blocked", () => {
     const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
     const browserNotification = Object.getOwnPropertyDescriptor(window, "Notification");

@@ -20,8 +20,6 @@ export function approvalAttentionLabel(approval: ApprovalRequest): string {
     command: "Waiting for command approval",
     fileChange: "Waiting for file-change approval",
     permission: "Waiting for permission grant",
-    unsupportedInput: "Waiting for unsupported user input",
-    unsupportedForm: "Waiting for unsupported user input",
   }[approval.type];
 }
 
@@ -144,7 +142,6 @@ export function ApprovalCard({
           <label className="scope-choice"><span>Grant scope</span><select value={scope} onChange={(event) => setScope(event.target.value)}><option value="">Choose scope</option>{approval.availableScopes?.map((value) => <option key={value} value={value}>{value === "turn" ? "This turn" : "This session"}</option>)}</select></label>
         </fieldset>
       )}
-      {(approval.type === "unsupportedInput" || approval.type === "unsupportedForm") && <p className="unsupported-request">{approval.unsupportedMessage} {approval.availableDecisions.length === 0 && "Open another compatible Codex client to answer it."}</p>}
       {statusText && <p className="approval-status" role="status">{statusText}</p>}
       {error && <p className="approval-error" role="alert">{error}</p>}
       <div className="approval-actions">

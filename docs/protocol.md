@@ -40,7 +40,9 @@ Implemented types:
 - `client.list`, `client.revoke`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
-- `turn.prompt`, `turn.steer`, `turn.interrupt`.
+- `turn.prompt`, `turn.steer`, `turn.interrupt`;
+- `approval.list`, `approval.respond`;
+- `input.list`, `input.respond`.
 
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
 `deviceToken`. `service.status` returns authenticated, user-facing host health:
@@ -81,6 +83,19 @@ selected subset, or `type: deny`. Unknown, stale, duplicate, malformed, or
 unadvertised responses fail. All authenticated clients observe the winning
 lifecycle; older clients may ignore these event types and keep generic waiting
 UI.
+
+Structured input is separate from approvals. Authenticated clients use
+`input.list`, `input.respond`, and the `input.requested`, `input.updated`, and
+`input.resolved` events. Input IDs are opaque `inp_…` Foreman IDs. Projections
+contain only bounded labels/descriptions, verified normalized fields, options,
+validation bounds, correlation, source/server display data, support status, and
+valid decline/cancel actions. Accept uses
+`{action:"accept",values:{...}}`; MCP-only decline/cancel omits values.
+
+The service revalidates required fields, option membership, unique selections,
+selection counts, primitive types, and string lengths before serializing the
+installed Codex response. Stale, duplicate, malformed, or unsupported accepts
+fail. Pending input is connection-bound memory, never persisted or replayed.
 
 `session.search` is authenticated and accepts `query`, one canonical
 `repository`/workspace path or `null`, a `statuses` array, `dateFrom`, `dateTo`,

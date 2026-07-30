@@ -453,3 +453,55 @@ button.unified-metric:hover{border-color:var(--accent)}.unified-metric strong{fo
 .attention-type{border-radius:999px;width:min-content;padding:4px 7px;font-size:10px;font-weight:700;text-transform:uppercase}.attention-type.approval,.attention-type.input{color:#b54708;background:#f790091a}.attention-type.failed{color:var(--danger);background:var(--danger-soft)}.unified-empty{color:var(--muted);border:1px dashed var(--border);border-radius:12px;padding:22px;text-align:center}
 @media (width<=900px){.unified-totals{grid-template-columns:repeat(2,minmax(0,1fr))}.unified-attention-list article{grid-template-columns:72px 1fr auto}.attention-host{display:none}}
 @media (width<=600px){.unified-dashboard{padding:20px 12px 8px}.host-overview-grid{grid-template-columns:1fr}.unified-attention-list article{grid-template-columns:1fr auto}.unified-attention-list article>div{grid-column:1/-1;grid-row:1}.attention-type{grid-column:1}}
+.input-card {
+  max-width: 760px;
+}
+
+.input-fields {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.input-field {
+  border: 0;
+  display: grid;
+  gap: .45rem;
+  margin: 0;
+  padding: 0;
+}
+
+.input-field legend,
+.input-field > strong {
+  font-weight: 700;
+  padding: 0;
+}
+
+.input-field > small,
+.input-field label small {
+  color: var(--muted);
+  display: block;
+}
+
+.input-field label {
+  align-items: flex-start;
+  display: flex;
+  gap: .55rem;
+}
+
+.input-field input[type="text"],
+.input-field input[type="password"],
+.input-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.input-secondary-actions {
+  border-top: 1px solid var(--border);
+  margin-top: .75rem;
+  padding-top: .75rem;
+}
+
+.input-attention-card .status-label.waiting {
+  color: var(--warning);
+}

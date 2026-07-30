@@ -23,8 +23,6 @@ APPROVAL_METHODS = {
     COMMAND_METHOD,
     FILE_METHOD,
     PERMISSION_METHOD,
-    USER_INPUT_METHOD,
-    MCP_ELICITATION_METHOD,
 }
 MAX_DECISION_BYTES = 64 * 1024
 
@@ -281,8 +279,6 @@ class PendingApproval:
             COMMAND_METHOD: "command",
             FILE_METHOD: "fileChange",
             PERMISSION_METHOD: "permission",
-            USER_INPUT_METHOD: "unsupportedInput",
-            MCP_ELICITATION_METHOD: "unsupportedForm",
         }[self.method]
 
     def decisions(self) -> tuple[list[dict[str, Any]], list[Any]]:
@@ -303,11 +299,6 @@ class PendingApproval:
             return [
                 {"type": "grant", "label": "Grant selected", "scopes": ["turn", "session"]},
                 {"type": "deny", "label": "Deny all"},
-            ], []
-        if self.method == MCP_ELICITATION_METHOD:
-            return [
-                {"type": "decline", "label": "Decline"},
-                {"type": "cancel", "label": "Cancel turn"},
             ], []
         return [], []
 
@@ -359,11 +350,6 @@ class PendingApproval:
                 "requestedPermissions": normalize_permissions(params.get("permissions")),
                 "availableScopes": ["turn", "session"],
             })
-        else:
-            result.update({
-                "title": "User input required",
-                "unsupportedMessage": "This request type is not yet supported in Foreman.",
-            })
         return result
 
     def response_result(self, response: Any) -> tuple[dict[str, Any], str]:
@@ -395,6 +381,4 @@ class PendingApproval:
             if not _permission_subset(requested, granted):
                 raise ApprovalError("granted permissions must be a subset of the request")
             return {"permissions": granted, "scope": scope}, "grant"
-        if self.method == MCP_ELICITATION_METHOD and kind in ("decline", "cancel"):
-            return {"action": kind, "content": None}, str(kind)
         raise ApprovalError("this request cannot be answered in Foreman")

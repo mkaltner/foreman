@@ -86,6 +86,7 @@ staging_dir="$(mktemp -d "$install_parent/.foreman-install.XXXXXX")"
 install -m 755 "$project_dir/linux/foreman_service.py" "$staging_dir/foreman_service.py"
 install -m 644 "$project_dir/linux/codex.py" "$staging_dir/codex.py"
 install -m 644 "$project_dir/linux/approvals.py" "$staging_dir/approvals.py"
+install -m 644 "$project_dir/linux/inputs.py" "$staging_dir/inputs.py"
 install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
 install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
@@ -98,6 +99,7 @@ python3 -m compileall -q \
   "$staging_dir/foreman_service.py" \
   "$staging_dir/codex.py" \
   "$staging_dir/approvals.py" \
+  "$staging_dir/inputs.py" \
   "$staging_dir/protocol.py" \
   "$staging_dir/state.py" \
   "$staging_dir/vendor"
@@ -152,6 +154,7 @@ python3 -m compileall -q \
   "$install_dir/foreman_service.py" \
   "$install_dir/codex.py" \
   "$install_dir/approvals.py" \
+  "$install_dir/inputs.py" \
   "$install_dir/protocol.py" \
   "$install_dir/state.py" \
   "$install_dir/vendor"

@@ -102,9 +102,9 @@ counts, a disclosure for paired-client token revocation, and a bounded recent
 feed while the browser is connected. Revocation disconnects that client but
 does not delete its sessions. “No recent
 activity” is a ten-minute browser heuristic and never changes a turn. Command,
-file-change, and permission approvals open inline from **Needs attention**.
-General structured user-input and arbitrary MCP forms require another compatible
-Codex client unless a valid decline or cancel choice is shown.
+file-change, permission approval, and supported bounded input cards open inline
+from **Needs attention**. Arbitrary MCP forms and unsupported schemas require
+another compatible client unless a valid decline or cancel action is shown.
 Recent activity is intentionally not a persistent audit history.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.

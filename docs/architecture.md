@@ -30,6 +30,7 @@ Linux files:
 - `foreman_service.py`: listener, request switch, repository discovery;
 - `codex.py`: app-server lifecycle, calls, and event normalization;
 - `approvals.py`: bounded in-memory approval projection, correlation, and validation;
+- `inputs.py`: verified structured-input normalization and response validation;
 - `protocol.py`: bounded JSONL frames;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
@@ -87,11 +88,11 @@ They always carry both host and session IDs, but overview sockets and probes do
 not generate additional notifications. Opening a notification or a combined
 attention row selects the saved host before opening its session.
 
-Pending approvals live only in the Codex adapter. Each has an opaque Foreman ID,
+Pending approvals and inputs live only in the Codex adapter. Each has an opaque Foreman ID,
 the exact upstream JSON-RPC ID and connection, and one small lock. The adapter
 registers before broadcasting, validates one response, sends it on the original
 connection, and waits for `serverRequest/resolved`. Disconnect or turn cleanup
-expires the mapping without replay. There is no approval history or Foreman
+expires the mapping without replay. There is no approval/input history or Foreman
 permission policy.
 
 Android uses one Compose activity, one connection/protocol file, a small image
