@@ -27,6 +27,22 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun sessionSettingsPayloadUpdatesExistingThreadRoute() {
+        val payload =
+            sessionSettingsPayload(
+                sessionId = "thread-1",
+                accessLevel = "full",
+                model = "gpt-test",
+                effort = "high",
+            )
+
+        assertEquals("thread-1", payload.getValue("sessionId").jsonPrimitive.content)
+        assertEquals("full", payload.getValue("accessLevel").jsonPrimitive.content)
+        assertEquals("gpt-test", payload.getValue("model").jsonPrimitive.content)
+        assertEquals("high", payload.getValue("reasoningEffort").jsonPrimitive.content)
+    }
+
+    @Test
     fun unifiedOverviewAggregatesFiveHostsAndIsolatesSessionCollisions() {
         fun session(id: String, status: String, startedAt: Long) =
             SessionSummary(

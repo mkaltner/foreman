@@ -39,7 +39,8 @@ Implemented types:
 - `service.status`;
 - `client.list`, `client.revoke`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
-  `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
+  `session.subscribe`, `session.unsubscribe`, `session.settings`, `session.archive`,
+  `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`;
 - `approval.list`, `approval.respond`;
 - `input.list`, `input.respond`.
@@ -117,7 +118,11 @@ prompt, steer, and interrupt requests from other connected Foreman clients.
 
 `model.list` returns only picker fields from Codex's installed catalog.
 `access.list` returns the access levels allowed by Codex's installed permission
-profiles. A `turn.prompt` may include `accessLevel`, `model`, and
+profiles. `session.settings` accepts `sessionId` plus at least one of
+`accessLevel`, `model`, and `reasoningEffort`, validates the selection against
+the installed catalogs, and updates Codex's existing thread defaults for
+subsequent turns. It does not alter the active turn or resolve an approval that
+turn already requested. A `turn.prompt` may include `accessLevel`, `model`, and
 `reasoningEffort`; `turn.steer` keeps the active turn's route. Both accept up to
 four images:
 

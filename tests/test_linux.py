@@ -99,6 +99,7 @@ class FakeCodex:
         self.archived: list[str] = []
         self.deleted: list[str] = []
         self.prompts: list[dict[str, Any]] = []
+        self.settings_updates: list[dict[str, Any]] = []
         self.reads: list[str] = []
         self.approvals: list[dict[str, Any]] = []
         self.approval_responses: list[tuple[str, dict[str, Any]]] = []
@@ -117,6 +118,7 @@ class FakeCodex:
             "thread/delete",
             "model/list",
             "permissionProfile/list",
+            "thread/settings/update",
             "item/tool/requestUserInput",
             "mcpServer/elicitation/request",
         }
@@ -243,6 +245,22 @@ class FakeCodex:
             }
         )
         return {"turn": {"id": "turn-new"}}
+
+    async def update_thread_settings(
+        self,
+        thread_id: str,
+        model_id: str | None = None,
+        effort: str | None = None,
+        selected_access_level: str | None = None,
+    ) -> None:
+        self.settings_updates.append(
+            {
+                "threadId": thread_id,
+                "model": model_id,
+                "effort": effort,
+                "accessLevel": selected_access_level,
+            }
+        )
 
     async def steer(
         self,
@@ -1114,6 +1132,34 @@ schema = {"oneOf": [
         self.assertEqual(requests[0][1]["approvalPolicy"], "never")
         self.assertEqual(requests[0][1]["approvalsReviewer"], "user")
 
+    async def test_updates_existing_thread_settings_for_subsequent_turns(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        adapter._loaded.add("thread-1")
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requests.append((method, params))
+            return {}
+
+        adapter.request = request  # type: ignore[method-assign]
+        await adapter.update_thread_settings(
+            "thread-1",
+            model_id="gpt-test",
+            effort="high",
+            selected_access_level="full",
+        )
+
+        self.assertEqual(requests, [("thread/settings/update", {
+            "threadId": "thread-1",
+            "model": "gpt-test",
+            "effort": "high",
+            "permissions": ":danger-full-access",
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+        })])
+        self.assertEqual(adapter._routes["thread-1"], ("gpt-test", "high"))
+        self.assertEqual(adapter._access_levels["thread-1"], "full")
+
     async def test_lists_only_access_levels_allowed_by_codex(self) -> None:
         adapter = Codex("unused", lambda _: asyncio.sleep(0))
 
@@ -1206,6 +1252,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hello["capabilities"]["archive"])
         self.assertTrue(hello["capabilities"]["delete"])
         self.assertTrue(hello["capabilities"]["search"])
+        self.assertTrue(hello["capabilities"]["threadSettings"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
@@ -1276,6 +1323,34 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(models[0]["id"], "model-test")
         levels = (await self.request("access.list"))["levels"]
         self.assertEqual([level["id"] for level in levels], ["ask", "auto", "full"])
+        settings = await self.request(
+            "session.settings",
+            {
+                "sessionId": started["id"],
+                "model": "model-test",
+                "reasoningEffort": "high",
+                "accessLevel": "full",
+            },
+        )
+        self.assertTrue(settings["updated"])
+        self.assertEqual(
+            self.app.codex.settings_updates[-1],
+            {
+                "threadId": started["id"],
+                "model": "model-test",
+                "effort": "high",
+                "accessLevel": "full",
+            },
+        )
+        missing_setting = await self.request_error(
+            "session.settings", {"sessionId": started["id"]}
+        )
+        self.assertIn("at least one session setting", missing_setting["message"])
+        invalid_access = await self.request_error(
+            "session.settings",
+            {"sessionId": started["id"], "accessLevel": "unlimited"},
+        )
+        self.assertIn("access level is unavailable", invalid_access["message"])
         prompted = await self.request(
             "turn.prompt",
             {

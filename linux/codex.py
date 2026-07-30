@@ -988,6 +988,32 @@ class Codex:
             self._access_levels[thread_id] = selected_access_level
         return result
 
+    async def update_thread_settings(
+        self,
+        thread_id: str,
+        model_id: str | None = None,
+        effort: str | None = None,
+        selected_access_level: str | None = None,
+    ) -> None:
+        """Update Codex defaults for subsequent turns on an existing thread."""
+        await self.ensure_resumed(thread_id)
+        params: dict[str, Any] = {"threadId": thread_id}
+        if model_id is not None:
+            params["model"] = model_id
+        if effort is not None:
+            params["effort"] = effort
+        if selected_access_level is not None:
+            params.update(access_params(selected_access_level))
+        await self.request("thread/settings/update", params)
+
+        previous_model, previous_effort = self._routes.get(thread_id, (None, None))
+        self._routes[thread_id] = (
+            model_id if model_id is not None else previous_model,
+            effort if effort is not None else previous_effort,
+        )
+        if selected_access_level is not None:
+            self._access_levels[thread_id] = selected_access_level
+
     async def steer(
         self,
         thread_id: str,

@@ -131,4 +131,36 @@ describe("conversation drafts", () => {
 
     expect(screen.getByRole("textbox")).not.toBe(firstComposer);
   });
+
+  it("updates access on the existing session as soon as it is selected", async () => {
+    const onRequest = vi.fn().mockResolvedValue({ updated: true });
+    render(
+      <ConversationView
+        session={{ ...session("one"), accessLevel: "ask" }}
+        approvals={[]}
+        models={[]}
+        accessLevels={[
+          { id: "ask", displayName: "Ask for approval", description: "Ask first" },
+          { id: "full", displayName: "Full access", description: "Unrestricted" },
+        ]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft=""
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={onRequest}
+        onError={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Access: Ask for approval" }));
+    fireEvent.click(screen.getByRole("option", { name: /Full access/ }));
+
+    expect(onRequest).toHaveBeenCalledWith("session.settings", {
+      sessionId: "one",
+      accessLevel: "full",
+    });
+    expect(screen.getByRole("button", { name: "Access: Full access" })).toBeInTheDocument();
+  });
 });
