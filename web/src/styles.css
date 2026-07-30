@@ -180,6 +180,8 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .check-row input{width:auto;margin-top:2px}
 .check-row span{display:grid;gap:3px;color:var(--text)}
 .check-row small{color:var(--muted);font-weight:400}
+.check-row.single-line{align-items:center!important}
+.check-row.single-line input{flex:none;margin-top:0}
 .notification-toggle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 18px}
 .quiet-hours{display:grid;grid-template-columns:repeat(2,minmax(120px,220px));gap:12px}
 .quiet-hours label{color:var(--muted);font-size:12px;font-weight:700;display:grid;gap:6px}
