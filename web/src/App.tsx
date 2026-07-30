@@ -1282,6 +1282,7 @@ function App() {
           <section className="detail-pane">
             {current ? (
               <ConversationView
+                key={`${activeHost.id}:${current.id}`}
                 session={current}
                 approvals={approvals.filter((approval) => approval.sessionId === current.id)}
                 inputs={inputs.filter((pending) => pending.sessionId === current.id)}

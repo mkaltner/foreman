@@ -434,7 +434,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 }
 .app-shell{height:100%}
 .app-shell.settings-shell{grid-template-rows:58px auto auto auto;height:auto;min-height:100%}
-.workspace{grid-row:4;height:100%}
+.workspace{grid-row:4;height:auto;align-self:stretch}
 .settings-page{grid-row:4;max-height:100%;overflow-y:auto}
 .settings-shell .settings-page{max-height:none;overflow:visible}
 @media (width<=720px){.app-shell.settings-shell{grid-template-rows:54px auto auto auto}}

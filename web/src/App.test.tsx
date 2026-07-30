@@ -91,6 +91,7 @@ describe("conversation drafts", () => {
 
   const renderConversation = (selected: SessionSummary, draft: string, onDraftChange = vi.fn()) => (
     <ConversationView
+      key={selected.id}
       session={selected}
       approvals={[]}
       models={[]}
@@ -120,5 +121,14 @@ describe("conversation drafts", () => {
     view.unmount();
     render(renderConversation(session("one"), "First session edited"));
     expect(screen.getByRole("textbox")).toHaveValue("First session edited");
+  });
+
+  it("remounts session-local composer state when switching sessions", () => {
+    const view = render(renderConversation(session("one"), ""));
+    const firstComposer = screen.getByRole("textbox");
+
+    view.rerender(renderConversation(session("two"), ""));
+
+    expect(screen.getByRole("textbox")).not.toBe(firstComposer);
   });
 });
