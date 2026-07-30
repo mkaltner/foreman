@@ -395,6 +395,7 @@ class MainActivity : ComponentActivity() {
     private fun openNotificationSession(intent: Intent?) {
         intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)?.let {
             foremanViewModel.openSessionFromNotification(
+                intent.getStringExtra(TurnMonitorService.EXTRA_HOST_ID),
                 it,
                 intent.getStringExtra(TurnMonitorService.EXTRA_APPROVAL_ID),
             )
@@ -588,11 +589,16 @@ internal class SessionDiscoveryQueue(private val maximumAttempts: Int = 4) {
 
 internal data class UiState(
     val screen: Screen = Screen.Setup,
+    val displayName: String = "",
     val host: String = "",
     val pairingKey: String = "",
     val deviceName: String = "Android",
     val connected: Boolean = false,
     val hasSavedConnection: Boolean = false,
+    val savedHosts: List<SavedHostSummary> = emptyList(),
+    val activeHostId: String? = null,
+    val connectionStatus: String = "disconnected",
+    val addingHost: Boolean = false,
     val loading: Boolean = false,
     val submitting: Boolean = false,
     val error: String? = null,
@@ -637,14 +643,29 @@ private data class SyncSnapshot(
     val approvals: List<ApprovalRequest>,
 )
 
+private fun UiPreferences.searchFilters(): SessionSearchFilters =
+    SessionSearchFilters(
+        query = searchQuery,
+        repository = searchRepository,
+        status = searchStatus,
+        dateRange = searchDateRange,
+        dateFrom = searchDateFrom,
+        dateTo = searchDateTo,
+    )
+
 internal fun UiState.withForgottenConnection(): UiState =
     copy(
         screen = Screen.Setup,
+        displayName = "",
         host = "",
         pairingKey = "",
         deviceName = "Android",
         connected = false,
         hasSavedConnection = false,
+        savedHosts = emptyList(),
+        activeHostId = null,
+        connectionStatus = "disconnected",
+        addingHost = false,
         loading = false,
         submitting = false,
         error = null,
@@ -665,7 +686,9 @@ internal fun UiState.withForgottenConnection(): UiState =
     )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
-    private val preferences = PreferenceStore(application)
+    private val hosts = HostStore(application)
+    private var activeHost = hosts.active()
+    private var preferences = PreferenceStore(application, activeHost?.id)
     private val savedPreferences = preferences.load()
     private val savedSearchFilters =
         SessionSearchFilters(
@@ -679,6 +702,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     val state =
         MutableStateFlow(
             UiState(
+                displayName = activeHost?.displayName.orEmpty(),
+                host = activeHost?.tcpEndpoint().orEmpty(),
+                hasSavedConnection = activeHost != null,
+                savedHosts = hosts.all().map(SavedHost::summary),
+                activeHostId = activeHost?.id,
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
                 followNewMessages = savedPreferences.followNewMessages,
@@ -694,11 +722,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
-    private val tokens = TokenStore(application)
     private var reconnectJob: Job? = null
     private val sessionDiscoveryLock = Any()
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
+    private var notificationHostId: String? = null
     private var notificationSessionId: String? = null
     private var notificationApprovalId: String? = null
     private var searchJob: Job? = null
@@ -707,6 +735,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
+            state.value.activeHostId?.let { hostId ->
+                hosts.updateConnection(hostId, "disconnected")
+            }
             synchronized(sessionDiscoveryLock) {
                 sessionDiscoveryJob?.cancel()
                 sessionDiscoveryJob = null
@@ -715,6 +746,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             state.update {
                 it.copy(
                     connected = false,
+                    connectionStatus = "disconnected",
+                    savedHosts = hosts.all().map(SavedHost::summary),
                     loading = false,
                     error = message,
                     capabilities = emptySet(),
@@ -731,18 +764,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     )
 
     init {
-        tokens.load()?.let { saved ->
-            state.update {
-                it.copy(
-                    host = saved.host,
-                    deviceName = saved.deviceName,
-                    hasSavedConnection = true,
-                )
-            }
-            launchReconnect(saved)
-        }
+        activeHost?.let(::launchReconnect)
     }
 
+    fun setDisplayName(value: String) = state.update { it.copy(displayName = value) }
     fun setHost(value: String) = state.update { it.copy(host = value) }
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
@@ -909,12 +934,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
     }
 
-    fun openSessionFromNotification(id: String, approvalId: String? = null) {
+    fun openSessionFromNotification(hostId: String?, id: String, approvalId: String? = null) {
+        if (hostId == null || hosts.load(hostId) == null) return
+        notificationHostId = hostId
         notificationSessionId = id
         notificationApprovalId = approvalId
-        if (state.value.connected) {
+        if (state.value.activeHostId != hostId) {
+            switchHost(hostId)
+        } else if (state.value.connected) {
+            notificationHostId = null
             notificationSessionId = null
             openSession(id, focusedApprovalId = approvalId)
+        } else {
+            reconnect()
         }
     }
 
@@ -924,19 +956,59 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         viewModelScope.launch {
             state.update { it.copy(loading = true, error = null) }
             runCatching {
-                parseHost(current.host)
+                if (current.addingHost) stopActiveHost()
+                val endpoint = parseHost(current.host)
                 require(current.pairingKey.isNotBlank()) { "Pairing key is required" }
                 require(current.deviceName.isNotBlank()) { "Device name is required" }
+                require(current.displayName.isNotBlank()) { "Host display name is required" }
                 val token =
                     client.pair(current.host, current.pairingKey, current.deviceName)
-                tokens.save(current.host.trim(), current.deviceName.trim(), token)
+                val saved = hosts.save(current.displayName, endpoint, token)
+                activeHost = saved
+                preferences = PreferenceStore(getApplication(), saved.id)
+                val restored = preferences.load()
+                val filters = restored.searchFilters()
+                hosts.updateConnection(
+                    saved.id,
+                    "connected",
+                    runtimeMode = client.runtimeMode,
+                    connectedAt = System.currentTimeMillis(),
+                )
                 state.update {
                     it.copy(
                         connected = true,
+                        connectionStatus = "connected",
                         hasSavedConnection = true,
+                        savedHosts = hosts.all().map { host -> host.summary() },
+                        activeHostId = saved.id,
+                        displayName = saved.displayName,
+                        host = saved.tcpEndpoint(),
                         screen = Screen.Sessions,
+                        addingHost = false,
                         pairingKey = "",
                         capabilities = client.capabilities,
+                        sessions = emptyList(),
+                        repositories = emptyList(),
+                        selected = null,
+                        approvals = emptyList(),
+                        submittingApprovalIds = emptySet(),
+                        approvalErrors = emptyMap(),
+                        repositoryRoot = "",
+                        searchFilters = filters,
+                        searchResults = emptyList(),
+                        searchLoading = false,
+                        searchError = null,
+                        showSearch = sessionSearchActive(filters),
+                        pinnedSessionIds = restored.pinnedSessionIds,
+                        hiddenSessionIds = restored.hiddenSessionIds,
+                        themeMode = restored.themeMode,
+                        accentColor = restored.accentColor,
+                        followNewMessages = restored.followNewMessages,
+                        hapticsEnabled = restored.hapticsEnabled,
+                        monitorActiveTurns = restored.monitorActiveTurns,
+                        composerAccessLevel = restored.accessLevel,
+                        composerModel = restored.model,
+                        composerEffort = restored.reasoningEffort,
                     )
                 }
                 synchronizeSessions()
@@ -945,31 +1017,153 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun reconnect() {
-        val saved = tokens.load() ?: run {
+        val saved = state.value.activeHostId?.let(hosts::load) ?: run {
             state.update { it.copy(screen = Screen.Setup) }
             return
         }
         launchReconnect(saved)
     }
 
+    fun addHost() {
+        state.update {
+            it.copy(
+                screen = Screen.Setup,
+                addingHost = true,
+                displayName = "",
+                host = "",
+                pairingKey = "",
+                deviceName = "Android",
+                error = null,
+            )
+        }
+    }
+
+    fun cancelAddHost() {
+        val saved = activeHost
+        if (saved == null) return
+        state.update {
+            it.copy(
+                screen = Screen.Sessions,
+                addingHost = false,
+                displayName = saved.displayName,
+                host = saved.tcpEndpoint(),
+                pairingKey = "",
+                error = null,
+            )
+        }
+        if (!state.value.connected) launchReconnect(saved)
+    }
+
+    fun renameHost(hostId: String, displayName: String) {
+        hosts.rename(hostId, displayName)
+        activeHost = state.value.activeHostId?.let(hosts::load)
+        state.update {
+            it.copy(
+                displayName = activeHost?.displayName ?: it.displayName,
+                savedHosts = hosts.all().map { host -> host.summary() },
+            )
+        }
+    }
+
     fun forgetHost() {
+        state.value.activeHostId?.let(::forgetHost)
+    }
+
+    fun forgetHost(hostId: String) {
+        val forgettingActive = state.value.activeHostId == hostId
+        if (forgettingActive) stopActiveHost()
+        val next = hosts.forget(hostId)
+        if (!forgettingActive) {
+            state.update { it.copy(savedHosts = hosts.all().map { host -> host.summary() }) }
+            return
+        }
+        activeHost = next
+        if (next == null) {
+            preferences = PreferenceStore(getApplication(), null)
+            state.update { it.withForgottenConnection() }
+            return
+        }
+        activateSavedHost(next)
+    }
+
+    fun switchHost(hostId: String) {
+        if (hostId == state.value.activeHostId) return
+        val selected = hosts.select(hostId) ?: return
+        stopActiveHost()
+        activeHost = selected
+        activateSavedHost(selected)
+    }
+
+    private fun stopActiveHost() {
         reconnectJob?.cancel()
         reconnectJob = null
+        searchJob?.cancel()
+        searchJob = null
         synchronized(sessionDiscoveryLock) {
             sessionDiscoveryJob?.cancel()
             sessionDiscoveryJob = null
             sessionDiscoveryQueue.clear()
         }
-        notificationSessionId = null
-        notificationApprovalId = null
         client.close()
         TurnMonitorService.stopAll(getApplication())
-        tokens.clear()
-        state.update { it.withForgottenConnection() }
+        state.value.activeHostId?.let { hosts.updateConnection(it, "disconnected") }
+    }
+
+    private fun activateSavedHost(saved: SavedHost) {
+        preferences = PreferenceStore(getApplication(), saved.id)
+        val restored = preferences.load()
+        val filters = restored.searchFilters()
+        state.update {
+            it.copy(
+                screen = if (notificationSessionId == null) Screen.Sessions else Screen.Detail,
+                displayName = saved.displayName,
+                host = saved.tcpEndpoint(),
+                pairingKey = "",
+                connected = false,
+                connectionStatus = "reconnecting",
+                hasSavedConnection = true,
+                savedHosts = hosts.all().map { host -> host.summary() },
+                activeHostId = saved.id,
+                addingHost = false,
+                loading = false,
+                submitting = false,
+                error = null,
+                sessions = emptyList(),
+                repositories = emptyList(),
+                selected = null,
+                showNewSession = false,
+                pendingSessionAction = null,
+                capabilities = emptySet(),
+                accessLevels = emptyList(),
+                models = emptyList(),
+                repositoryRoot = "",
+                searchFilters = filters,
+                searchResults = emptyList(),
+                searchLoading = false,
+                searchError = null,
+                showSearch = sessionSearchActive(filters),
+                pinnedSessionIds = restored.pinnedSessionIds,
+                hiddenSessionIds = restored.hiddenSessionIds,
+                highlightedItemId = null,
+                focusedApprovalId = null,
+                approvals = emptyList(),
+                submittingApprovalIds = emptySet(),
+                approvalErrors = emptyMap(),
+                themeMode = restored.themeMode,
+                accentColor = restored.accentColor,
+                followNewMessages = restored.followNewMessages,
+                hapticsEnabled = restored.hapticsEnabled,
+                monitorActiveTurns = restored.monitorActiveTurns,
+                composerAccessLevel = restored.accessLevel,
+                composerModel = restored.model,
+                composerEffort = restored.reasoningEffort,
+            )
+        }
+        launchReconnect(saved)
     }
 
     fun onForeground() {
-        val saved = tokens.load() ?: return
+        val saved = state.value.activeHostId?.let(hosts::load) ?: return
         if (state.value.loading || reconnectJob?.isActive == true) return
         reconnectJob =
             viewModelScope.launch {
@@ -987,29 +1181,49 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             }
     }
 
-    private fun launchReconnect(saved: SavedConnection) {
+    private fun launchReconnect(saved: SavedHost) {
         if (state.value.loading || reconnectJob?.isActive == true) return
         reconnectJob = viewModelScope.launch { reconnectSaved(saved) }
     }
 
-    private suspend fun reconnectSaved(saved: SavedConnection) {
+    private suspend fun reconnectSaved(saved: SavedHost) {
         val selectedId = notificationSessionId ?: state.value.selected?.id
-        state.update { it.copy(loading = true, error = null) }
+        state.update { it.copy(loading = true, error = null, connectionStatus = "reconnecting") }
         runCatching {
-            client.authenticate(saved.host, saved.token)
+            client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
+            if (state.value.activeHostId != saved.id) return
+            hosts.updateConnection(
+                saved.id,
+                "connected",
+                runtimeMode = client.runtimeMode,
+                connectedAt = System.currentTimeMillis(),
+            )
             state.update {
                 it.copy(
                     connected = true,
+                    connectionStatus = "connected",
+                    savedHosts = hosts.all().map { host -> host.summary() },
                     screen = if (selectedId == null) Screen.Sessions else Screen.Detail,
                     error = null,
                     capabilities = client.capabilities,
                 )
             }
             synchronizeSessions(selectedId)
+            notificationHostId = null
             notificationSessionId = null
             state.update { it.copy(focusedApprovalId = notificationApprovalId) }
             notificationApprovalId = null
-        }.onFailure(::fail)
+        }.onFailure { error ->
+            hosts.updateConnection(saved.id, "disconnected")
+            state.update {
+                it.copy(
+                    connected = false,
+                    connectionStatus = "disconnected",
+                    savedHosts = hosts.all().map { host -> host.summary() },
+                )
+            }
+            fail(error)
+        }
     }
 
     fun refresh() {
@@ -1685,7 +1899,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun prepareMonitor(session: SessionSummary, active: Boolean): Boolean {
         if (!state.value.monitorActiveTurns) return false
         return runCatching {
-            TurnMonitorService.monitor(getApplication(), session.id, active)
+            val hostId = requireNotNull(state.value.activeHostId)
+            TurnMonitorService.monitor(getApplication(), hostId, session.id, active)
         }.onFailure { error ->
             state.update {
                 it.copy(error = error.message ?: "Android could not start background monitoring.")
@@ -1758,6 +1973,12 @@ private fun SetupScreen(
             requestTurnMonitoring = requestTurnMonitoring,
             modifier = Modifier.align(Alignment.TopEnd),
         )
+        if (state.addingHost) {
+            TextButton(
+                onClick = viewModel::cancelAddHost,
+                modifier = Modifier.align(Alignment.TopStart),
+            ) { Text("Cancel") }
+        }
         Column(
             modifier =
                 Modifier.fillMaxSize()
@@ -1793,6 +2014,14 @@ private fun SetupScreen(
                 "Connect to Codex on your Linux host.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.displayName,
+                onValueChange = viewModel::setDisplayName,
+                label = { Text("Host display name") },
+                placeholder = { Text("Home server") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = state.host,
@@ -1844,7 +2073,7 @@ private fun SessionsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Foreman", fontWeight = FontWeight.Bold) },
+                title = { HostSelectorMenu(state, viewModel) },
                 navigationIcon = {
                     Image(
                         painter = painterResource(R.drawable.foreman_logo),
@@ -2323,6 +2552,7 @@ private fun SessionDetailScreen(
                     }
                 },
                 actions = {
+                    HostSelectorMenu(state, viewModel, compact = true)
                     if (selected?.status in setOf("working", "waiting") && selected?.activeTurnId != null) {
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
@@ -3030,6 +3260,133 @@ private fun ComposerRouteRow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HostSelectorMenu(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    compact: Boolean = false,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
+    var renameValue by remember(state.activeHostId, state.displayName) { mutableStateOf(state.displayName) }
+    var confirmForget by remember { mutableStateOf(false) }
+    val active = state.savedHosts.firstOrNull { it.id == state.activeHostId }
+    Box {
+        TextButton(onClick = { expanded = true }) {
+            Text(
+                if (compact) active?.displayName ?: "Hosts"
+                else "${active?.displayName ?: "Hosts"} · ${state.connectionStatus}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Text(
+                "Saved hosts",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            state.savedHosts.forEach { host ->
+                val status = if (host.id == state.activeHostId) state.connectionStatus else host.lastKnownStatus
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(host.displayName, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${host.host}:${host.tcpPort} · $status",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    trailingIcon = {
+                        if (host.id == state.activeHostId) {
+                            Icon(Icons.Default.Check, contentDescription = "Active host")
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        viewModel.switchHost(host.id)
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Add host") },
+                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                onClick = { expanded = false; viewModel.addHost() },
+            )
+            if (active != null) {
+                DropdownMenuItem(
+                    text = { Text("Rename active host") },
+                    onClick = {
+                        expanded = false
+                        renameValue = active.displayName
+                        renameOpen = true
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Forget active host", color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = {
+                        Icon(Icons.Default.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    },
+                    onClick = { expanded = false; confirmForget = true },
+                )
+            }
+            Text(
+                "Background monitoring follows the active host only.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
+            )
+        }
+    }
+    if (renameOpen && active != null) {
+        AlertDialog(
+            onDismissRequest = { renameOpen = false },
+            title = { Text("Rename host") },
+            text = {
+                OutlinedTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    label = { Text("Display name") },
+                    singleLine = true,
+                )
+            },
+            dismissButton = { TextButton(onClick = { renameOpen = false }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(
+                    enabled = renameValue.isNotBlank(),
+                    onClick = {
+                        viewModel.renameHost(active.id, renameValue)
+                        renameOpen = false
+                    },
+                ) { Text("Save") }
+            },
+        )
+    }
+    if (confirmForget && active != null) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("Forget ${active.displayName}?") },
+            text = {
+                Text("This removes only this host and its encrypted token. Other saved hosts remain available.")
+            },
+            dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmForget = false
+                        viewModel.forgetHost(active.id)
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Forget") }
+            },
+        )
     }
 }
 
