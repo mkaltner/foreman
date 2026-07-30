@@ -20,7 +20,13 @@ if VENDOR_DIR.is_dir():
 
 from websockets.asyncio.client import unix_connect
 
-from approvals import APPROVAL_METHODS, ApprovalError, PendingApproval, approval_key
+from approvals import (
+    APPROVAL_METHODS,
+    ApprovalError,
+    PendingApproval,
+    approval_key,
+    bounded_approval_params,
+)
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
@@ -420,8 +426,15 @@ class Codex:
         websocket = self._websocket
         if websocket is None:
             raise CodexError("Codex app-server is reconnecting")
+        await self._send_on_connection(websocket, message)
+
+    async def _send_on_connection(
+        self, websocket: Any, message: dict[str, Any]
+    ) -> None:
         data = json.dumps(message, separators=(",", ":"))
         async with self._write_lock:
+            if self._websocket is not websocket:
+                raise CodexError("Codex app-server disconnected")
             try:
                 await websocket.send(data)
             except Exception as error:
@@ -510,9 +523,10 @@ class Codex:
             # clients; they must never be projected as notifications.
             return
         params = message.get("params")
-        if not isinstance(params, dict):
-            return
         upstream_id = message.get("id")
+        if not isinstance(params, dict) or not isinstance(upstream_id, (str, int)) or isinstance(upstream_id, bool):
+            return
+        params = bounded_approval_params(method, params)
         key = approval_key(upstream_id)
         existing_id = self._approval_requests.get(key)
         if existing_id and existing_id in self._approvals:
@@ -567,8 +581,16 @@ class Codex:
                     "params": {"approval": approval.projection()},
                 }
             )
+            if (
+                self._approvals.get(approval.id) is not approval
+                or approval.status != "submitting"
+            ):
+                raise ApprovalError("Already resolved")
             try:
-                await self._send({"id": approval.upstream_id, "result": result})
+                await self._send_on_connection(
+                    approval.connection,
+                    {"id": approval.upstream_id, "result": result},
+                )
             except CodexError:
                 await self._resolve_approval(approval, "expired", "disconnected")
                 raise ApprovalError("Approval expired while the response was sent")
@@ -1133,7 +1155,7 @@ def waiting_details(raw: Any) -> tuple[str | None, str | None]:
         return None, None
     flags = raw.get("activeFlags", [])
     if "waitingOnApproval" in flags:
-        return "approval", "Approval is required in another compatible Codex client."
+        return "approval", "Approval is required."
     if "waitingOnUserInput" in flags:
         return "input", "Codex requested structured input in another compatible client."
     return None, None
@@ -1414,17 +1436,17 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
     ):
         wait_type = "input" if method == "item/tool/requestUserInput" else "approval"
         descriptions = {
-            "item/commandExecution/requestApproval": "Approval is required for a command in another compatible Codex client.",
-            "item/fileChange/requestApproval": "Approval is required for file changes in another compatible Codex client.",
+            "item/commandExecution/requestApproval": "Approval is required for a command.",
+            "item/fileChange/requestApproval": "Approval is required for file changes.",
             "item/tool/requestUserInput": "Codex requested structured input in another compatible client.",
-            "permissions/requestApproval": "Permission approval is required in another compatible Codex client.",
-            "item/permissions/requestApproval": "Permission approval is required in another compatible Codex client.",
+            "permissions/requestApproval": "Permission approval is required.",
+            "item/permissions/requestApproval": "Permission approval is required.",
         }
         event.update(
             {
                 "kind": "status",
                 "status": "waiting",
-                "reason": "approvalOrInputUnsupported",
+                "reason": "inputUnsupported" if wait_type == "input" else "approvalRequired",
                 "turnId": params.get("turnId"),
                 "waitType": wait_type,
                 "waitDescription": descriptions.get(method),

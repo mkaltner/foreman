@@ -43,6 +43,7 @@ from approvals import (  # noqa: E402
     USER_INPUT_METHOD,
     ApprovalError,
     PendingApproval,
+    bounded_approval_params,
 )
 from foreman_service import (  # noqa: E402
     Client,
@@ -702,6 +703,34 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_server_request_params_are_bounded_before_storage(self) -> None:
+        params = bounded_approval_params(
+            COMMAND_METHOD,
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "reason": "r" * 10_000,
+                "command": "c" * 30_000,
+                "cwd": "/" + "w" * 10_000,
+                "commandActions": [
+                    {"type": "search", "query": "q" * 3_000, "secret": "drop"}
+                ]
+                * 50,
+                "availableDecisions": ["accept"] * 30,
+                "ignored": "sensitive" * 10_000,
+            },
+        )
+
+        self.assertLessEqual(len(params["reason"]), 4_096)
+        self.assertLessEqual(len(params["command"]), 16_384)
+        self.assertLessEqual(len(params["cwd"]), 4_096)
+        self.assertEqual(len(params["commandActions"]), 20)
+        self.assertLessEqual(len(params["commandActions"][0]["query"]), 1_000)
+        self.assertEqual(len(params["availableDecisions"]), 20)
+        self.assertNotIn("ignored", params)
+        self.assertNotIn("secret", params["commandActions"][0])
+
     async def test_server_requests_register_before_event_and_correlate_response(self) -> None:
         events: list[dict[str, Any]] = []
 
@@ -755,6 +784,51 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["params"]["approval"]["status"], "resolved")
         with self.assertRaisesRegex(ApprovalError, "Already resolved"):
             await adapter.respond_approval(approval["id"], {"type": "accept"})
+
+    async def test_desktop_resolution_during_submit_prevents_stale_send(self) -> None:
+        class Socket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send(self, value: str) -> None:
+                self.sent.append(value)
+
+        async def on_event(event: dict[str, Any]) -> None:
+            if event["method"] == "foreman/approval/updated":
+                await adapter._approval_lifecycle(
+                    {
+                        "method": "serverRequest/resolved",
+                        "params": {
+                            "threadId": "thread-1",
+                            "requestId": "desktop-won",
+                        },
+                    }
+                )
+
+        adapter = Codex("unused", on_event)
+        socket = Socket()
+        adapter._websocket = socket
+        await adapter._server_request(
+            {
+                "id": "desktop-won",
+                "method": COMMAND_METHOD,
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-1",
+                    "command": "printf safe",
+                    "availableDecisions": ["accept", "decline"],
+                },
+            },
+            socket,
+        )
+        approval_id = adapter.list_approvals()[0]["id"]
+
+        with self.assertRaisesRegex(ApprovalError, "Already resolved"):
+            await adapter.respond_approval(approval_id, {"type": "accept"})
+
+        self.assertEqual(socket.sent, [])
+        self.assertEqual(adapter.list_approvals(), [])
 
     async def test_structured_command_amendment_and_response_race(self) -> None:
         class Socket:

@@ -26,6 +26,7 @@ APPROVAL_METHODS = {
     USER_INPUT_METHOD,
     MCP_ELICITATION_METHOD,
 }
+MAX_DECISION_BYTES = 64 * 1024
 
 LEGACY_COMMAND_DECISIONS = ["accept", "acceptForSession", "decline", "cancel"]
 LEGACY_FILE_DECISIONS = ["accept", "acceptForSession", "decline", "cancel"]
@@ -68,6 +69,70 @@ def decision_type(value: Any) -> str | None:
 def approval_key(request_id: Any) -> str:
     # JSON-RPC request IDs may be strings or integers; preserve their type.
     return json.dumps(request_id, separators=(",", ":"), sort_keys=True)
+
+
+def bounded_approval_params(method: str, value: Any) -> dict[str, Any]:
+    """Copy only fields Foreman needs, with bounded collections and strings."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("threadId", "turnId", "itemId", "approvalId", "environmentId"):
+        if text := bounded_text(value.get(key), 500):
+            result[key] = text
+    started = value.get("startedAtMs")
+    if isinstance(started, int) and not isinstance(started, bool):
+        result["startedAtMs"] = started
+    if text := bounded_text(value.get("reason")):
+        result["reason"] = text
+    if method == COMMAND_METHOD:
+        for key, limit in (("command", MAX_COMMAND), ("cwd", MAX_TEXT)):
+            if text := bounded_text(value.get(key), limit):
+                result[key] = text
+        actions = []
+        for raw in bounded_list(value.get("commandActions"), 20):
+            if not isinstance(raw, dict):
+                continue
+            action = {
+                key: bounded_text(item, 1_000)
+                for key, item in raw.items()
+                if key in {"type", "command", "name", "path", "query"}
+                and isinstance(item, str)
+            }
+            if action:
+                actions.append(action)
+        if actions:
+            result["commandActions"] = actions
+        decisions = []
+        for decision in bounded_list(value.get("availableDecisions"), 20):
+            try:
+                size = len(json.dumps(decision, separators=(",", ":")).encode())
+            except (TypeError, ValueError):
+                continue
+            if size <= MAX_DECISION_BYTES and decision_type(decision) in DECISION_LABELS:
+                decisions.append(copy.deepcopy(decision))
+        if isinstance(value.get("availableDecisions"), list):
+            result["availableDecisions"] = decisions
+        result["additionalPermissions"] = normalize_permissions(value.get("additionalPermissions"))
+        context = value.get("networkApprovalContext")
+        if isinstance(context, dict):
+            result["networkApprovalContext"] = {
+                "host": bounded_text(context.get("host"), 500),
+                "protocol": bounded_text(context.get("protocol"), 40),
+            }
+    elif method == FILE_METHOD:
+        if text := bounded_text(value.get("grantRoot")):
+            result["grantRoot"] = text
+        decisions = []
+        for decision in bounded_list(value.get("availableDecisions"), 20):
+            if decision_type(decision) in DECISION_LABELS:
+                decisions.append(copy.deepcopy(decision))
+        if isinstance(value.get("availableDecisions"), list):
+            result["availableDecisions"] = decisions
+    elif method == PERMISSION_METHOD:
+        if text := bounded_text(value.get("cwd")):
+            result["cwd"] = text
+        result["permissions"] = normalize_permissions(value.get("permissions"))
+    return result
 
 
 def _safe_path(value: Any) -> str | None:
