@@ -1,16 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  forgetHost,
+  addStoredHost,
+  createStoredHost,
+  forgetStoredHost,
   loadAppearance,
   loadDashboardPreferences,
-  loadHost,
+  loadHostRegistry,
   loadNotificationsEnabled,
   loadSessionOrganization,
   saveAppearance,
   saveDashboardPreferences,
-  saveHost,
+  saveHostRegistry,
   saveNotificationsEnabled,
   saveSessionOrganization,
+  suggestedHostDisplayName,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -27,17 +30,44 @@ import {
 describe("storage, appearance, and interaction helpers", () => {
   beforeEach(() => localStorage.clear());
 
-  it("stores a persistent token but forgets the entire host without retaining pairing material", () => {
-    saveHost({ host: "codex.local", port: 8766, deviceName: "Browser", deviceToken: "fmt_secret" });
-    expect(loadHost()).toEqual({
-      host: "codex.local",
-      port: 8766,
-      deviceName: "Browser",
-      deviceToken: "fmt_secret",
-    });
-    expect(localStorage.getItem("foreman.host.v1")).not.toContain("pairingKey");
-    forgetHost();
-    expect(loadHost()).toBeNull();
+  it("stores isolated hosts and forgets only the selected host", () => {
+    const home = createStoredHost({ displayName: "Home", host: "home.local", webPort: 8766, deviceToken: "fmt_home" });
+    const work = createStoredHost({ displayName: "Work", host: "work.local", webPort: 9766, deviceToken: "fmt_work" });
+    let registry = addStoredHost({ hosts: [], activeHostId: null }, home);
+    registry = addStoredHost(registry, work);
+    saveHostRegistry(registry);
+    expect(loadHostRegistry().hosts.map(({ displayName }) => displayName)).toEqual(["Home", "Work"]);
+    expect(localStorage.getItem("foreman.hosts.v2")).not.toContain("pairingKey");
+    registry = forgetStoredHost(registry, work.id);
+    saveHostRegistry(registry);
+    expect(loadHostRegistry().hosts).toHaveLength(1);
+    expect(loadHostRegistry().hosts[0].deviceToken).toBe("fmt_home");
+  });
+
+  it("migrates the prior single-host record and its local preferences", () => {
+    localStorage.setItem("foreman.host.v1", JSON.stringify({ host: "old.local", port: 8766, deviceName: "Browser", deviceToken: "fmt_old" }));
+    localStorage.setItem("foreman.notifications.v1", "true");
+    const registry = loadHostRegistry();
+    expect(registry.hosts).toHaveLength(1);
+    expect(registry.hosts[0]).toMatchObject({ host: "old.local", webPort: 8766, isDefault: true });
+    expect(loadNotificationsEnabled(registry.hosts[0].id)).toBe(true);
+    expect(localStorage.getItem("foreman.host.v1")).toBeNull();
+  });
+
+  it("separates the legacy browser device name from the host display name", () => {
+    localStorage.setItem("foreman.host.v1", JSON.stringify({ host: "localhost", port: 8766, deviceName: "Web browser", deviceToken: "fmt_old" }));
+    expect(loadHostRegistry().hosts[0].displayName).toBe("Local Foreman");
+
+    const migrated = createStoredHost({ displayName: "Web browser", host: "workstation.local", webPort: 8766, deviceToken: "fmt_migrated" }, true);
+    saveHostRegistry({ hosts: [migrated], activeHostId: migrated.id });
+    expect(loadHostRegistry().hosts[0].displayName).toBe("workstation.local");
+    expect(localStorage.getItem("foreman.hosts.v2")).toContain('"displayName":"workstation.local"');
+  });
+
+  it("suggests a local label or the endpoint hostname for new hosts", () => {
+    expect(suggestedHostDisplayName("localhost")).toBe("Local Foreman");
+    expect(suggestedHostDisplayName("http://127.0.0.1")).toBe("Local Foreman");
+    expect(suggestedHostDisplayName("workstation.local")).toBe("workstation.local");
   });
 
   it("persists theme and accent with safe defaults", () => {
@@ -70,6 +100,13 @@ describe("storage, appearance, and interaction helpers", () => {
     saveSessionOrganization({ pinnedIds: ["one", "one", "two"], hiddenIds: ["noise"] });
     expect(loadSessionOrganization()).toEqual({ pinnedIds: ["one", "two"], hiddenIds: ["noise"] });
     expect(localStorage.getItem("foreman.session-organization.v1")).not.toContain("transcript");
+  });
+
+  it("namespaces local settings by stable host ID", () => {
+    saveSessionOrganization({ pinnedIds: ["home-session"], hiddenIds: [] }, "home");
+    saveSessionOrganization({ pinnedIds: ["work-session"], hiddenIds: [] }, "work");
+    expect(loadSessionOrganization("home").pinnedIds).toEqual(["home-session"]);
+    expect(loadSessionOrganization("work").pinnedIds).toEqual(["work-session"]);
   });
 
   it("persists the browser notification preference disabled by default", () => {

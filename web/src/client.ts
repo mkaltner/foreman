@@ -235,7 +235,9 @@ export class ForemanWebClient {
         settled = true;
         resolve();
       };
-      socket.onmessage = (event) => this.receive(event.data);
+      socket.onmessage = (event) => {
+        if (generation === this.generation) this.receive(event.data);
+      };
       socket.onerror = () => {
         if (!settled) {
           settled = true;

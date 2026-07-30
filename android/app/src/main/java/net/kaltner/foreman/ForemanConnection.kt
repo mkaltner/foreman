@@ -208,7 +208,10 @@ class ForemanClient(
     private var socket: Socket? = null
     private var readerJob: Job? = null
     @Volatile private var closing = false
+    @Volatile private var generation = 0
     var capabilities: Set<String> = emptySet()
+        private set
+    var runtimeMode: String? = null
         private set
 
     suspend fun pair(host: String, pairingKey: String, deviceName: String): String {
@@ -232,6 +235,7 @@ class ForemanClient(
 
     private suspend fun hello() {
         val response = request("hello")
+        runtimeMode = response.payload["codexRuntime"]?.jsonPrimitive?.content
         capabilities =
             response.payload["capabilities"]?.jsonObject?.entries
                 ?.filter { (_, value) -> value.jsonPrimitive.content == "true" }
@@ -265,6 +269,7 @@ class ForemanClient(
 
     fun close() {
         closing = true
+        generation += 1
         readerJob?.cancel()
         readerJob = null
         socket?.close()
@@ -276,7 +281,9 @@ class ForemanClient(
     private suspend fun open(host: String) {
         close()
         capabilities = emptySet()
+        runtimeMode = null
         closing = false
+        val connectionGeneration = ++generation
         val endpoint = parseHost(host)
         val connected = withContext(Dispatchers.IO) {
             Socket().apply {
@@ -303,11 +310,11 @@ class ForemanClient(
                                 ?: "Foreman rejected the connection",
                         )
                     }
-                    onEvent(message)
+                    if (connectionGeneration == generation) onEvent(message)
                 }
                 if (!closing) throw EOFException("Foreman closed the connection")
             } catch (error: Exception) {
-                if (!closing && socket === connected) {
+                if (!closing && socket === connected && connectionGeneration == generation) {
                     pending.values.forEach { it.completeExceptionally(error) }
                     pending.clear()
                     onDisconnect(error.message ?: "Disconnected")

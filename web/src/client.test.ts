@@ -135,6 +135,34 @@ describe("web client pairing, authentication, and reconnect", () => {
     client.disconnect();
   });
 
+  it("tears down the old host and ignores its late events after switching", async () => {
+    const sockets: MockSocket[] = [];
+    const urls: string[] = [];
+    const onEvent = vi.fn();
+    const client = new ForemanWebClient(
+      { onEvent, onState: vi.fn() },
+      (url) => {
+        urls.push(url);
+        const socket = new MockSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    );
+    await client.start(parseEndpoint("home.local", 8766, "http:"), "fmt_home", async () => undefined);
+    const oldSocket = sockets[0];
+    await client.start(parseEndpoint("work.local", 9766, "http:"), "fmt_work", async () => undefined);
+
+    oldSocket.onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({ version: 1, type: "session.event", payload: { sessionId: "wrong-host" } }),
+    }));
+
+    expect(urls).toEqual(["ws://home.local:8766/ws", "ws://work.local:9766/ws"]);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(sockets[1].sent.find((message) => message.type === "authenticate")?.payload)
+      .toEqual({ deviceToken: "fmt_work" });
+    client.disconnect();
+  });
+
   it("stops reconnecting and requests fresh pairing when its token is revoked", async () => {
     const sockets: MockSocket[] = [];
     const timers: Array<() => void> = [];

@@ -108,18 +108,20 @@ Download and sideload the signed APK from the matching tagged
 [GitHub release](https://github.com/mkaltner/foreman/releases). Run `foreman pair`
 on the Linux host, then enter the host name or IP address, pairing code, and a
 device name in the app. Port `8765` is used when no port is given. Run
-`foreman pair` again for each additional device.
+`foreman pair` again for each additional device or saved host. The compact host
+selector can add, rename, forget, and switch among independently paired hosts.
 
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
 The Sessions screen provides expandable search and a compact filter dialog for
 repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
-and Hidden management. Search choices, pins, and hidden IDs use Android's
-existing local preferences; transcripts and image data are never stored there.
+and Hidden management. Search choices, pins, and hidden IDs use per-host local
+preferences; transcripts and image data are never stored there.
 Approval cards stay inside the existing conversation. Permission cards grant
 only selected requested access, and reconnect reloads only currently pending
 requests. Background approval notifications contain generic text and open the
-exact session/card without exposing commands or paths on the lock screen.
+exact host and session/card without exposing commands or paths on the lock
+screen. Background monitoring is intentionally limited to the active host.
 
 ## Web
 
@@ -139,9 +141,10 @@ foreman pair
 
 Open the printed URL—normally `http://HOST:8766`—from a current Chrome, Firefox,
 or Edge release on a trusted network. Enter the host and six-digit pairing code.
-The browser reconnects through the port that served the page, so there is no
-separate port field. Run `foreman pair` again for each additional browser profile
-or device.
+The initial web port defaults to the port that served the page and remains
+editable when adding another host. Run `foreman pair` on each host, then use the
+saved-host selector to add, rename, forget, or switch hosts. Cross-origin hosts
+must allow the page origin through `FOREMAN_WEB_ORIGINS`.
 
 `foreman web` only prints the configured URL; `foreman start`, `stop`, and
 `restart` control both the web listener on `8766` and Android protocol listener
@@ -167,7 +170,7 @@ The full web client also supports:
 - archive and delete actions;
 - opt-in browser notifications for background tabs;
 - bounded reconnect without request replay;
-- durable session URLs with Back, Forward, and refresh restoration;
+- durable host/session URLs with Back, Forward, and refresh restoration;
 - bookmarkable search/filter URLs, keyboard search navigation, local pins, and
   a restorable Hidden view;
 - responsive dark/light/system themes and configurable accents.
@@ -191,13 +194,15 @@ Dashboard behavior and limits:
   at most 100 sessions and three 200-character safe snippets per session, and
   creates no index or transcript cache. It is not fuzzy or semantic search.
 - Pins and hidden-session choices are browser-local. They do not change Codex
-  state or sync to Android.
+  state or sync to Android, and they are isolated by local host ID.
 - Host Status can show connected and offline paired clients. Revoking one removes
   only that authentication token, disconnecting its live connections without
   affecting sessions or repositories.
 
 Browser notifications require HTTPS or localhost and work while Foreman remains
-open in a background tab. For another LAN device, put the web listener behind a
+open in a background tab for the active host only. Notification data includes
+the local host ID so a tap selects the right host before opening the session.
+For another LAN device, put the web listener behind a
 trusted same-origin HTTPS reverse proxy. For example, Caddy can terminate TLS
 and proxy both HTTP and WebSocket traffic:
 
@@ -300,7 +305,7 @@ does not stop Desktop's Codex runtime.
 - Direct TCP and HTTP transport is not encrypted.
 - Desktop live co-presence requires successful shared-socket attachment.
 - Android distribution is currently sideloaded.
-- Multi-host aggregation is not implemented.
+- Saved-host switching is supported; unified multi-host aggregation is not.
 - Recent dashboard activity is not a persistent audit history.
 - Dashboard stale activity is an observation, not a failure or automatic action.
 - Web support remains experimental during the alpha.

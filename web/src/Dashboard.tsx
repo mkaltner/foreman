@@ -28,6 +28,7 @@ import {
 import { reasoningLabel } from "./ui";
 
 interface DashboardProps {
+  hostId?: string;
   sessions: SessionSummary[];
   approvals?: ApprovalRequest[];
   serviceStatus: ServiceStatus | null;
@@ -52,6 +53,7 @@ const FILTERS: Array<{ id: DashboardFilter; label: string }> = [
 ];
 
 export function Dashboard({
+  hostId,
   sessions,
   approvals = [],
   serviceStatus,
@@ -66,7 +68,7 @@ export function Dashboard({
   onRefresh,
   onRevokeClient,
 }: DashboardProps) {
-  const [preferences, setPreferences] = useState<DashboardPreferences>(loadDashboardPreferences);
+  const [preferences, setPreferences] = useState<DashboardPreferences>(() => loadDashboardPreferences(hostId));
   const now = useSharedClock();
   const repositories = useMemo(
     () => repositoryGroups(sessions, now, discoveredRepositories, serviceStatus?.repositoryRoot),
@@ -74,8 +76,9 @@ export function Dashboard({
   );
   const updatePreferences = useCallback((next: DashboardPreferences) => {
     setPreferences(next);
-    saveDashboardPreferences(next);
-  }, []);
+    saveDashboardPreferences(next, hostId);
+  }, [hostId]);
+  useEffect(() => setPreferences(loadDashboardPreferences(hostId)), [hostId]);
   const dismissed = useMemo(() => new Set(preferences.dismissedFailures), [preferences.dismissedFailures]);
   const visibleSessions = useMemo(() => sessions.filter((session) => {
     const attention = attentionState(session, serviceStatus, now);

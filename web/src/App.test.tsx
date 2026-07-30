@@ -4,11 +4,11 @@ import { LinkedUserText, RouteSelect, SetupView } from "./App";
 import { inferPagePort } from "./client";
 
 describe("Foreman setup", () => {
-  it("uses the current page port without showing a redundant port field", () => {
+  it("captures a display name and explicit web port for each host", () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
     render(<SetupView error="" busy={false} onConnect={onConnect} />);
 
-    expect(screen.queryByLabelText("Web port")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Web port")).toHaveValue(String(inferPagePort()));
     fireEvent.change(screen.getByLabelText("Host"), {
       target: { value: "foreman.local" },
     });
@@ -19,8 +19,10 @@ describe("Foreman setup", () => {
 
     expect(onConnect).toHaveBeenCalledWith(
       {
+        displayName: "foreman.local",
         host: "foreman.local",
-        port: inferPagePort(),
+        tcpPort: 8765,
+        webPort: inferPagePort(),
         deviceName: "Web browser",
       },
       "123456",

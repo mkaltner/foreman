@@ -44,6 +44,39 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun savedHostsKeepStableIdentityPortsAndRedactTokens() {
+        val host =
+            SavedHost(
+                id = "host-home",
+                displayName = "Home server",
+                host = "2001:db8::1",
+                tcpPort = 9765,
+                webPort = 9766,
+                deviceToken = "fmt_secret",
+                pairedAt = 1_720_000_000_000,
+                lastConnectedAt = null,
+                lastKnownStatus = "disconnected",
+                runtimeMode = null,
+                isDefault = true,
+            )
+
+        assertEquals("[2001:db8::1]:9765", host.tcpEndpoint())
+        assertEquals("host-home", host.summary().id)
+        assertFalse(host.summary().toString().contains("fmt_secret"))
+        assertFalse(host.toString().contains("fmt_secret"))
+        assertTrue(host.toString().contains("<redacted>"))
+    }
+
+    @Test
+    fun hostDisplayNamesDescribeTheServerInsteadOfTheAndroidClient() {
+        assertEquals("Local Foreman", suggestedHostDisplayName("localhost"))
+        assertEquals("Local Foreman", suggestedHostDisplayName("127.0.0.1"))
+        assertEquals("Local Foreman", suggestedHostDisplayName("::1"))
+        assertEquals("workstation.local", suggestedHostDisplayName("workstation.local"))
+        assertEquals("192.168.1.59", suggestedHostDisplayName("192.168.1.59"))
+    }
+
+    @Test
     fun accentPresetsAreDistinctAndProvideLightAndDarkRoles() {
         assertEquals(AccentColor.Purple, parseAccentColor(null))
         assertEquals(AccentColor.Purple, parseAccentColor("unsupported"))

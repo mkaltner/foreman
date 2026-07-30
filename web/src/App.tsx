@@ -54,16 +54,27 @@ import {
 } from "./protocol";
 import {
   ACCENTS,
-  forgetHost,
+  addStoredHost,
+  createStoredHost,
+  forgetStoredHost,
+  hostIdFromUrl,
   loadAppearance,
-  loadHost,
+  loadHostRegistry,
   loadNotificationsEnabled,
+  loadSessionSearch,
   loadSessionOrganization,
   saveAppearance,
-  saveHost,
+  saveHostRegistry,
   saveNotificationsEnabled,
+  saveSessionSearch,
   saveSessionOrganization,
+  selectStoredHost,
+  suggestedHostDisplayName,
+  updateStoredHost,
+  withHostInSearch,
   type Appearance,
+  type HostRegistry,
+  type NewStoredHost,
   type StoredHost,
 } from "./storage";
 import {
@@ -94,12 +105,24 @@ import {
 } from "./ui";
 
 type View = "dashboard" | "sessions" | "detail" | "settings";
+type PairingSettings = Omit<NewStoredHost, "deviceToken"> & { deviceName: string };
 
 function App() {
   const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
-  const initialFilters = useRef(parseSessionFilters(window.location.search)).current;
-  const [storedHost, setStoredHost] = useState<StoredHost | null>(() => loadHost());
-  const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
+  const initialRegistry = useRef(loadHostRegistry()).current;
+  const requestedHostId = hostIdFromUrl();
+  const initialHostId = initialRegistry.hosts.some(({ id }) => id === requestedHostId)
+    ? requestedHostId
+    : initialRegistry.activeHostId;
+  const initialFilters = useRef(parseSessionFilters(
+    window.location.search || (initialHostId ? loadSessionSearch(initialHostId) : ""),
+  )).current;
+  const [hostRegistry, setHostRegistry] = useState<HostRegistry>(() =>
+    initialHostId ? selectStoredHost(initialRegistry, initialHostId) : initialRegistry,
+  );
+  const hostRegistryRef = useRef(hostRegistry);
+  const activeHost = hostRegistry.hosts.find(({ id }) => id === hostRegistry.activeHostId) ?? null;
+  const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance(initialHostId));
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
@@ -124,13 +147,14 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(loadNotificationsEnabled);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => loadNotificationsEnabled(initialHostId));
   const [searchFilters, setSearchFilters] = useState<SessionFilters>(initialFilters);
   const [searchResults, setSearchResults] = useState<SessionSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchRevision, setSearchRevision] = useState(0);
-  const [organization, setOrganization] = useState(loadSessionOrganization);
+  const [organization, setOrganization] = useState(() => loadSessionOrganization(initialHostId));
+  const [hostSetupOpen, setHostSetupOpen] = useState(false);
   const notificationsEnabledRef = useRef(notificationsEnabled);
   const searchFiltersRef = useRef(initialFilters);
   const lastImmediateSearch = useRef(0);
@@ -139,6 +163,7 @@ function App() {
   const sessionsRef = useRef<SessionSummary[]>([]);
   const currentRef = useRef<SessionSummary | null>(null);
   const connectedRef = useRef(false);
+  const activeHostIdRef = useRef<string | null>(initialHostId);
   const viewRef = useRef<View>(initialRoute.view);
   const clientRef = useRef<ForemanWebClient | null>(null);
   const dashboardSubscriptions = useRef(new Set<string>());
@@ -146,10 +171,30 @@ function App() {
   const dashboardFrame = useRef<number | null>(null);
   const notificationMonitor = useRef(new TurnNotificationMonitor());
   const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
+  const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
+
+  const persistRegistry = useCallback((next: HostRegistry) => {
+    hostRegistryRef.current = next;
+    activeHostIdRef.current = next.activeHostId;
+    saveHostRegistry(next);
+    setHostRegistry(next);
+  }, []);
+
+  const mutateHost = useCallback((hostId: string, update: Parameters<typeof updateStoredHost>[2]) => {
+    setHostRegistry((previous) => {
+      const next = updateStoredHost(previous, hostId, update);
+      hostRegistryRef.current = next;
+      saveHostRegistry(next);
+      return next;
+    });
+  }, []);
 
   const updateRoute = useCallback((route: WebRoute, replace = false) => {
     const path = webRoutePath(route);
-    const search = sessionFiltersSearch(searchFiltersRef.current);
+    const search = withHostInSearch(
+      sessionFiltersSearch(searchFiltersRef.current),
+      activeHostIdRef.current,
+    );
     if (window.location.pathname === path && window.location.search === search) return;
     window.history[replace ? "replaceState" : "pushState"](null, "", `${path}${search}`);
   }, []);
@@ -161,11 +206,18 @@ function App() {
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
   useEffect(() => { viewRef.current = view; }, [view]);
-  useEffect(() => { updateRoute(initialRoute, true); }, [initialRoute, updateRoute]);
+  useEffect(() => {
+    saveHostRegistry(hostRegistry);
+    updateRoute(initialRoute, true);
+    // Initial URL normalization only; later host changes are explicit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (viewRef.current === "dashboard" || viewRef.current === "sessions") {
-      const search = sessionFiltersSearch(searchFilters);
+      const filtersSearch = sessionFiltersSearch(searchFilters);
+      if (activeHostIdRef.current) saveSessionSearch(activeHostIdRef.current, filtersSearch);
+      const search = withHostInSearch(filtersSearch, activeHostIdRef.current);
       window.history.replaceState(null, "", `${window.location.pathname}${search}`);
     }
   }, [searchFilters]);
@@ -233,12 +285,12 @@ function App() {
       void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     }
     const openFromNotification = (event: Event) => {
-      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
-      if (sessionId) openSessionRef.current(sessionId);
+      const detail = (event as CustomEvent<{ hostId?: string; sessionId?: string }>).detail;
+      if (detail?.hostId && detail.sessionId) notificationOpenRef.current(detail.hostId, detail.sessionId);
     };
     const serviceWorkerMessage = (event: MessageEvent) => {
-      if (event.data?.type === "notification.open" && typeof event.data.sessionId === "string") {
-        openSessionRef.current(event.data.sessionId);
+      if (event.data?.type === "notification.open" && typeof event.data.hostId === "string" && typeof event.data.sessionId === "string") {
+        notificationOpenRef.current(event.data.hostId, event.data.sessionId);
       }
     };
     window.addEventListener("foreman.notification.open", openFromNotification);
@@ -348,7 +400,7 @@ function App() {
             pinnedIds: previous.pinnedIds.filter((id) => id !== payload.sessionId),
             hiddenIds: previous.hiddenIds.filter((id) => id !== payload.sessionId),
           };
-          saveSessionOrganization(next);
+          if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
           return next;
         });
       } else if (payload.event.session) {
@@ -369,6 +421,7 @@ function App() {
       }
       const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
       const notification = notificationMonitor.current.observe(
+        activeHostIdRef.current ?? "",
         payload.sessionId,
         title,
         payload.event.status,
@@ -422,6 +475,37 @@ function App() {
     }
   }, [queueDashboardEvent]);
 
+  const clearHostProjections = useCallback(() => {
+    searchGeneration.current += 1;
+    if (dashboardFrame.current !== null) cancelAnimationFrame(dashboardFrame.current);
+    dashboardFrame.current = null;
+    pendingDashboardEvents.current.clear();
+    dashboardSubscriptions.current.clear();
+    notificationMonitor.current = new TurnNotificationMonitor();
+    sessionsRef.current = [];
+    currentRef.current = null;
+    selectedIdRef.current = null;
+    setSessions([]);
+    setCurrent(null);
+    setSelectedId(null);
+    setHighlightItemId(null);
+    setFocusedApprovalId(null);
+    setApprovals([]);
+    setModels([]);
+    setAccessLevels([]);
+    setRepositories([]);
+    setServiceStatus(null);
+    setPairedClients([]);
+    setRecentActivity([]);
+    setSearchResults([]);
+    setSearchLoading(false);
+    setSearchError("");
+    setHello(null);
+    setBusy(false);
+    setNewSessionOpen(false);
+    setError("");
+  }, []);
+
   const client = useMemo(
     () =>
       new ForemanWebClient({
@@ -429,28 +513,28 @@ function App() {
         onState: (state, detail) => {
           setConnection(state);
           setConnectionDetail(detail ?? "");
+          const hostId = activeHostIdRef.current;
+          if (hostId) mutateHost(hostId, {
+            lastKnownStatus: state === "connected" ? "connected" : state === "reconnecting" ? "reconnecting" : "disconnected",
+            ...(state === "connected" ? { lastConnectedAt: Date.now() } : {}),
+          });
         },
-        onHello: setHello,
+        onHello: (nextHello) => {
+          setHello(nextHello);
+          const hostId = activeHostIdRef.current;
+          if (hostId) mutateHost(hostId, { runtimeMode: nextHello.codexRuntime });
+        },
         onAuthenticationRejected: (detail) => {
-          forgetHost();
-          setStoredHost(null);
-          setSessions([]);
-          setCurrent(null);
-          setHello(null);
-          setServiceStatus(null);
-          setPairedClients([]);
-          setRecentActivity([]);
-          setApprovals([]);
-          dashboardSubscriptions.current.clear();
+          clearHostProjections();
           setError(detail);
         },
       }),
-    [onEvent],
+    [clearHostProjections, mutateHost, onEvent],
   );
   clientRef.current = client;
 
   const refreshState = useCallback(
-    async (reconnected = false) => {
+    async (hostId: string, reconnected = false) => {
       const [approvalResult, sessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
         client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
         client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
@@ -460,6 +544,7 @@ function App() {
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
+      if (activeHostIdRef.current !== hostId) return;
       setApprovals(approvalResult.approvals);
       const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
       sessionsRef.current = reconciled;
@@ -472,7 +557,7 @@ function App() {
           hiddenIds: previous.hiddenIds.filter((id) => validIds.has(id)),
         };
         if (next.pinnedIds.length !== previous.pinnedIds.length || next.hiddenIds.length !== previous.hiddenIds.length) {
-          saveSessionOrganization(next);
+          saveSessionOrganization(next, hostId);
           return next;
         }
         return previous;
@@ -525,8 +610,8 @@ function App() {
     async (host: StoredHost) => {
       setError("");
       try {
-        const endpoint = parseEndpoint(host.host, host.port);
-        await client.start(endpoint, host.deviceToken, refreshState);
+        const endpoint = parseEndpoint(host.host, host.webPort);
+        await client.start(endpoint, host.deviceToken, (reconnected) => refreshState(host.id, reconnected));
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Cannot connect to Foreman";
         setError(message);
@@ -537,9 +622,9 @@ function App() {
   );
 
   useEffect(() => {
-    if (storedHost) void connectHost(storedHost);
+    if (activeHost) void connectHost(activeHost);
     return () => client.disconnect();
-  }, [client, connectHost, storedHost]);
+  }, [client, connectHost, activeHost?.id, activeHost?.host, activeHost?.webPort, activeHost?.deviceToken]);
 
   const openSession = useCallback(
     async (id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
@@ -578,38 +663,62 @@ function App() {
     setCurrent(null);
   }, [client]);
 
+  const restoreView = useCallback((route: WebRoute, openConnectedDetail: boolean) => {
+    viewRef.current = route.view;
+    setView(route.view);
+    if (route.view !== "detail") {
+      selectedIdRef.current = null;
+      setSelectedId(null);
+      setCurrent(null);
+      return;
+    }
+    selectedIdRef.current = route.sessionId;
+    setSelectedId(route.sessionId);
+    if (openConnectedDetail && currentRef.current?.id !== route.sessionId) {
+      openSessionRef.current(route.sessionId, false);
+    }
+  }, []);
+
+  const activateHost = useCallback((hostId: string, route: WebRoute = { view: "dashboard" }, replace = false, filtersSearch?: string) => {
+    const registry = hostRegistryRef.current;
+    if (!registry.hosts.some((host) => host.id === hostId)) return;
+    const switching = activeHostIdRef.current !== hostId;
+    if (switching) {
+      client.disconnect();
+      clearHostProjections();
+      const next = selectStoredHost(registry, hostId);
+      persistRegistry(next);
+      const nextAppearance = loadAppearance(hostId);
+      const nextNotifications = loadNotificationsEnabled(hostId);
+      const nextOrganization = loadSessionOrganization(hostId);
+      setAppearance(nextAppearance);
+      setNotificationsEnabled(nextNotifications);
+      notificationsEnabledRef.current = nextNotifications;
+      setOrganization(nextOrganization);
+    }
+    const filters = parseSessionFilters(filtersSearch ?? loadSessionSearch(hostId));
+    searchFiltersRef.current = filters;
+    setSearchFilters(filters);
+    restoreView(route, !switching && connectedRef.current);
+    const search = withHostInSearch(sessionFiltersSearch(filters), hostId);
+    const path = webRoutePath(route);
+    window.history[replace ? "replaceState" : "pushState"](null, "", `${path}${search}`);
+  }, [clearHostProjections, client, persistRegistry, restoreView]);
+
+  notificationOpenRef.current = (hostId, sessionId) => {
+    activateHost(hostId, { view: "detail", sessionId });
+  };
+
   useEffect(() => {
     const restoreRoute = () => {
       const route = parseWebRoute(window.location.pathname);
-      const filters = parseSessionFilters(window.location.search);
-      searchFiltersRef.current = filters;
-      setSearchFilters(filters);
-      viewRef.current = route.view;
-      if (route.view === "dashboard") {
-        closeSelectedSession();
-        setView("dashboard");
-        return;
-      }
-      if (route.view === "settings") {
-        closeSelectedSession();
-        setView("settings");
-        return;
-      }
-      if (route.view === "sessions") {
-        closeSelectedSession();
-        setView("sessions");
-        return;
-      }
-      selectedIdRef.current = route.sessionId;
-      setSelectedId(route.sessionId);
-      setView("detail");
-      if (currentRef.current?.id !== route.sessionId && connectedRef.current) {
-        openSessionRef.current(route.sessionId, false);
-      }
+      const hostId = hostIdFromUrl();
+      if (hostId) activateHost(hostId, route, true, window.location.search);
+      else restoreView(route, connectedRef.current);
     };
     window.addEventListener("popstate", restoreRoute);
     return () => window.removeEventListener("popstate", restoreRoute);
-  }, [closeSelectedSession]);
+  }, [activateHost, restoreView]);
 
   const showDashboard = (replace = false) => {
     viewRef.current = "dashboard";
@@ -634,24 +743,69 @@ function App() {
 
   const updateAppearance = (next: Appearance) => {
     setAppearance(next);
-    saveAppearance(next);
+    saveAppearance(next, activeHostIdRef.current);
   };
 
-  const forget = () => {
-    client.disconnect();
-    forgetHost();
-    setStoredHost(null);
-    setSessions([]);
-    setCurrent(null);
-    selectedIdRef.current = null;
-    setSelectedId(null);
-    setHello(null);
-    setServiceStatus(null);
-    setPairedClients([]);
-    setApprovals([]);
-    dashboardSubscriptions.current.clear();
+  const forget = (hostId: string) => {
+    const wasActive = activeHostIdRef.current === hostId;
+    if (wasActive) client.disconnect();
+    const next = forgetStoredHost(hostRegistryRef.current, hostId);
+    persistRegistry(next);
+    if (wasActive) {
+      clearHostProjections();
+      const nextId = next.activeHostId;
+      if (nextId) {
+        setAppearance(loadAppearance(nextId));
+        const nextNotifications = loadNotificationsEnabled(nextId);
+        setNotificationsEnabled(nextNotifications);
+        notificationsEnabledRef.current = nextNotifications;
+        setOrganization(loadSessionOrganization(nextId));
+        const filters = parseSessionFilters(loadSessionSearch(nextId));
+        searchFiltersRef.current = filters;
+        setSearchFilters(filters);
+      }
+    }
     setError("");
-    showDashboard(true);
+    restoreView({ view: "dashboard" }, false);
+    const search = next.activeHostId ? withHostInSearch("", next.activeHostId) : "";
+    window.history.replaceState(null, "", `/${search}`);
+  };
+
+  const pairHost = async (settings: PairingSettings, pairingKey: string) => {
+    setBusy(true);
+    setError("");
+    const pairingClient = new ForemanWebClient({ onEvent: () => undefined, onState: () => undefined });
+    try {
+      const endpoint = parseEndpoint(settings.host, settings.webPort);
+      const token = await pairingClient.pair(endpoint, pairingKey, settings.deviceName);
+      const saved = createStoredHost({
+        displayName: settings.displayName,
+        host: endpoint.host,
+        tcpPort: settings.tcpPort,
+        webPort: endpoint.port,
+        deviceToken: token,
+      });
+      const next = addStoredHost(hostRegistryRef.current, saved);
+      client.disconnect();
+      clearHostProjections();
+      persistRegistry(next);
+      setAppearance(loadAppearance(saved.id));
+      const savedNotifications = loadNotificationsEnabled(saved.id);
+      setNotificationsEnabled(savedNotifications);
+      notificationsEnabledRef.current = savedNotifications;
+      setOrganization(loadSessionOrganization(saved.id));
+      const filters = parseSessionFilters(loadSessionSearch(saved.id));
+      searchFiltersRef.current = filters;
+      setSearchFilters(filters);
+      setHostSetupOpen(false);
+      restoreView({ view: "dashboard" }, false);
+      window.history.pushState(null, "", `/${withHostInSearch("", saved.id)}`);
+    } catch (caught) {
+      setError(setupError(caught));
+    } finally {
+      pairingClient.disconnect();
+      setBusy(false);
+    }
   };
 
   const dashboardOpen = useCallback((id: string) => {
@@ -671,7 +825,8 @@ function App() {
     }).catch((caught) => setError(caught instanceof Error ? caught.message : "Interrupt failed"));
   }, [client]);
   const dashboardRefresh = useCallback(() => {
-    void refreshState().catch((caught) => setError(String(caught)));
+    const hostId = activeHostIdRef.current;
+    if (hostId) void refreshState(hostId).catch((caught) => setError(String(caught)));
   }, [refreshState]);
   const repositoryOptions = useMemo(
     () => repositoryFilterOptions(sessions, repositories, serviceStatus?.repositoryRoot ?? ""),
@@ -696,7 +851,7 @@ function App() {
         ? previous.pinnedIds.filter((value) => value !== id)
         : [...previous.pinnedIds, id];
       const next = { ...previous, pinnedIds };
-      saveSessionOrganization(next);
+      if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
       return next;
     });
   }, []);
@@ -706,31 +861,17 @@ function App() {
         ? previous.hiddenIds.filter((value) => value !== id)
         : [...previous.hiddenIds, id];
       const next = { ...previous, hiddenIds };
-      saveSessionOrganization(next);
+      if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
       return next;
     });
   }, []);
 
-  if (!storedHost) {
+  if (!activeHost) {
     return (
       <SetupView
         error={error}
         busy={busy}
-        onConnect={async (settings, pairingKey) => {
-          setBusy(true);
-          setError("");
-          try {
-            const endpoint = parseEndpoint(settings.host, settings.port);
-            const token = await client.pair(endpoint, pairingKey, settings.deviceName);
-            const saved = { ...settings, deviceToken: token };
-            saveHost(saved);
-            setStoredHost(saved);
-          } catch (caught) {
-            setError(setupError(caught));
-          } finally {
-            setBusy(false);
-          }
-        }}
+        onConnect={pairHost}
       />
     );
   }
@@ -743,7 +884,14 @@ function App() {
           <span className="brand-mark">F</span>
           <span>Foreman</span>
         </button>
-        <ConnectionBadge state={connection} detail={connectionDetail} />
+        <HostSelector
+          hosts={hostRegistry.hosts}
+          activeHostId={activeHost.id}
+          activeState={connection}
+          detail={connectionDetail}
+          onSelect={(hostId) => activateHost(hostId)}
+          onAdd={() => setHostSetupOpen(true)}
+        />
         <nav>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => showDashboard()}>
             Dashboard
@@ -771,7 +919,8 @@ function App() {
 
       {view === "settings" ? (
         <SettingsView
-          host={storedHost}
+          host={activeHost}
+          hosts={hostRegistry.hosts}
           appearance={appearance}
           hello={hello}
           onAppearance={updateAppearance}
@@ -782,9 +931,12 @@ function App() {
               setError(notificationStateDescription(browserNotificationState(), false));
               return;
             }
-            saveNotificationsEnabled(enabled);
+            saveNotificationsEnabled(enabled, activeHost.id);
             setNotificationsEnabled(enabled);
           }}
+          onAdd={() => setHostSetupOpen(true)}
+          onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
+          onRename={(hostId, displayName) => mutateHost(hostId, { displayName })}
           onForget={forget}
         />
       ) : view === "dashboard" ? (
@@ -793,6 +945,7 @@ function App() {
           {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
             {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
             <Dashboard
+            hostId={activeHost.id}
             sessions={visibleSessions.map(({ session }) => session)}
             approvals={approvals}
             serviceStatus={serviceStatus}
@@ -809,7 +962,7 @@ function App() {
               try {
                 await client.request("client.revoke", { clientId: pairedClient.id });
                 setPairedClients((previous) => previous.filter((entry) => entry.id !== pairedClient.id));
-                if (pairedClient.current) forget();
+                if (pairedClient.current) forget(activeHost.id);
               } catch (caught) {
                 setError(caught instanceof Error ? caught.message : "Client token could not be revoked");
                 throw caught;
@@ -828,7 +981,10 @@ function App() {
             selectedId={selectedId}
             disabled={!connected}
             onOpen={searchResultOpen}
-            onRefresh={() => void refreshState().catch((caught) => setError(String(caught)))}
+            onRefresh={() => {
+              const hostId = activeHostIdRef.current;
+              if (hostId) void refreshState(hostId).catch((caught) => setError(String(caught)));
+            }}
             onNew={async () => {
               setNewSessionOpen(true);
               try {
@@ -859,7 +1015,7 @@ function App() {
                       pinnedIds: previous.pinnedIds.filter((id) => id !== session.id),
                       hiddenIds: previous.hiddenIds.filter((id) => id !== session.id),
                     };
-                    saveSessionOrganization(next);
+                    if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
                     return next;
                   });
                 }
@@ -927,6 +1083,16 @@ function App() {
           }}
         />
       )}
+      {hostSetupOpen && (
+        <div className="modal-backdrop">
+          <SetupView
+            error={error}
+            busy={busy}
+            onConnect={pairHost}
+            onCancel={() => { setHostSetupOpen(false); setError(""); }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -935,32 +1101,45 @@ export function SetupView({
   error,
   busy,
   onConnect,
+  onCancel,
 }: {
   error: string;
   busy: boolean;
-  onConnect: (settings: Omit<StoredHost, "deviceToken">, pairingKey: string) => Promise<void>;
+  onConnect: (settings: PairingSettings, pairingKey: string) => Promise<void>;
+  onCancel?: () => void;
 }) {
   const [host, setHost] = useState(window.location.hostname || "");
+  const [webPort, setWebPort] = useState(String(inferPagePort()));
   const [pairingKey, setPairingKey] = useState("");
   const [deviceName, setDeviceName] = useState("Web browser");
+  const [displayName, setDisplayName] = useState("");
   return (
-    <main className="setup-page">
+    <main className={onCancel ? "setup-page embedded" : "setup-page"}>
       <section className="setup-card">
         <div className="setup-heading">
           <span className="brand-mark large">F</span>
           <div><h1>Connect to Foreman</h1><p>Your local Codex companion.</p></div>
+          {onCancel && <button className="setup-close" onClick={onCancel} aria-label="Close">×</button>}
         </div>
         {error && <div className="form-error" role="alert">{error}</div>}
         <form
           onSubmit={(event) => {
             event.preventDefault();
             void onConnect(
-              { host: host.trim(), port: inferPagePort(), deviceName: deviceName.trim() },
+              {
+                displayName: displayName.trim() || suggestedHostDisplayName(host),
+                host: host.trim(),
+                tcpPort: 8765,
+                webPort: Number(webPort),
+                deviceName: deviceName.trim(),
+              },
               pairingKey,
             );
           }}
         >
           <label>Host<input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.59" autoComplete="url" required /></label>
+          <label>Web port<input value={webPort} onChange={(event) => setWebPort(event.target.value)} inputMode="numeric" min="1" max="65535" required /></label>
+          <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Home server" autoComplete="off" /></label>
           <label>Pairing code<input value={pairingKey} onChange={(event) => setPairingKey(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>
           <label>Device name<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} autoComplete="name" required /></label>
           <button className="primary full" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button>
@@ -974,6 +1153,28 @@ export function SetupView({
 function ConnectionBadge({ state, detail }: { state: ConnectionState; detail: string }) {
   const label = state === "connected" ? "Connected" : state === "reconnecting" ? "Reconnecting…" : state === "connecting" ? "Connecting…" : "Disconnected";
   return <span className={`connection ${state}`} title={detail}><i />{label}</span>;
+}
+
+function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAdd }: {
+  hosts: StoredHost[];
+  activeHostId: string;
+  activeState: ConnectionState;
+  detail: string;
+  onSelect: (hostId: string) => void;
+  onAdd: () => void;
+}) {
+  const status = (host: StoredHost) => host.id === activeHostId
+    ? activeState === "connecting" ? "reconnecting" : activeState
+    : host.lastKnownStatus;
+  return <div className="host-selector">
+    <ConnectionBadge state={activeState} detail={detail} />
+    <select aria-label="Saved host" value={activeHostId} onChange={(event) => onSelect(event.target.value)}>
+      {hosts.map((host) => <option key={host.id} value={host.id}>
+        {host.displayName} · {status(host)}
+      </option>)}
+    </select>
+    <button onClick={onAdd} aria-label="Add host">+</button>
+  </div>;
 }
 
 function SessionList({
@@ -1421,10 +1622,10 @@ function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: R
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (selected) void onCreate(selected); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div><label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label>{repositories.length === 0 && <p className="muted">No Git repositories were found under Foreman’s configured root.</p>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!selected}>Create</button></div></form></div>;
 }
 
-function SettingsView({ host, appearance, hello, notificationsEnabled, notificationState, onAppearance, onNotifications, onForget }: { host: StoredHost; appearance: Appearance; hello: HelloPayload | null; notificationsEnabled: boolean; notificationState: BrowserNotificationState; onAppearance: (appearance: Appearance) => void; onNotifications: (enabled: boolean) => Promise<void>; onForget: () => void }) {
+function SettingsView({ host, hosts, appearance, hello, notificationsEnabled, notificationState, onAppearance, onNotifications, onAdd, onSelect, onRename, onForget }: { host: StoredHost; hosts: StoredHost[]; appearance: Appearance; hello: HelloPayload | null; notificationsEnabled: boolean; notificationState: BrowserNotificationState; onAppearance: (appearance: Appearance) => void; onNotifications: (enabled: boolean) => Promise<void>; onAdd: () => void; onSelect: (hostId: string) => void; onRename: (hostId: string, displayName: string) => void; onForget: (hostId: string) => void }) {
   const notificationUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
   const notificationsActive = notificationsEnabled && notificationState === "granted";
-  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Notifications</h2><div className="notification-setting"><div><strong>Turn results</strong><p>{notificationStateDescription(notificationState, notificationsActive)}</p></div><button className="secondary" disabled={notificationUnavailable} onClick={() => void onNotifications(!notificationsActive)}>{notificationsActive ? "Disable" : notificationState === "denied" ? "Blocked" : "Enable"}</button></div></section><section className="settings-card"><h2>Connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.port}</dd></div><div><dt>Device</dt><dd>{host.deviceName}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">The persistent device token is stored in localStorage. Browser storage is less protected than Android Keystore.</p><button className="danger" onClick={() => { if (window.confirm("Disconnect and forget this Foreman host?")) onForget(); }}>Disconnect and forget host</button></section></main>;
+  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Notifications</h2><div className="notification-setting"><div><strong>Turn results</strong><p>{notificationStateDescription(notificationState, notificationsActive)}</p><p>Background monitoring is limited to the active host.</p></div><button className="secondary" disabled={notificationUnavailable} onClick={() => void onNotifications(!notificationsActive)}>{notificationsActive ? "Disable" : notificationState === "denied" ? "Blocked" : "Enable"}</button></div></section><section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section></main>;
 }
 
 function StatusPill({ status }: { status: string }) {

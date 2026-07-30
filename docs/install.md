@@ -68,6 +68,11 @@ browser `localStorage`. The one-time code isn't retained. Browser storage is
 less protected than Android Keystore, so use the **Disconnect and forget host**
 action on shared browsers.
 
+Android and web clients may save multiple independent Foreman installations.
+Each saved host keeps its own token and client-local preferences. Select one
+active host at a time; switching closes the old connection before authenticating
+the new one. Browser URLs contain only a stable local host ID, never a token.
+
 The CLI controls one unified service:
 
 | Command | Effect |
@@ -83,7 +88,10 @@ The CLI controls one unified service:
 To install specifically for browser use, no additional build or package is
 needed. Run `./install.sh`, verify `foreman status`, open the URL from
 `foreman web`, and enter a fresh code from `foreman pair`. The installed,
-prebuilt SPA uses the page's own port for its authenticated WebSocket connection.
+prebuilt SPA defaults to the page's own port for its authenticated WebSocket
+connection. The add-host form allows a different web port. When connecting from
+one host's page to another host, add the page's exact origin to the target's
+`FOREMAN_WEB_ORIGINS` setting.
 After authentication it opens on the live dashboard. **Sessions** retains the
 conversation list and full interaction view; **Settings** contains appearance,
 notification, and connection preferences.
@@ -105,6 +113,8 @@ addresses cannot request notification permission. Notifications cover turns
 that finish, fail, are interrupted, or need attention while Foreman remains
 open in a background tab. A trusted same-origin HTTPS reverse proxy enables the
 feature for remote browsers.
+Notification taps include host identity, and background monitoring remains
+limited to the currently active host.
 
 Allow TCP port `8765` and web port `8766` only on a trusted LAN or secure
 overlay. Foreman authenticates both transports but doesn't terminate TLS. Do

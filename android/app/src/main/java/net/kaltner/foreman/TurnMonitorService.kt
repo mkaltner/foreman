@@ -106,6 +106,7 @@ class TurnMonitorService : Service() {
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
     private val approvalNotifications = linkedMapOf<String, String>()
+    private var monitoredHostId: String? = null
     @Volatile private var connected = false
 
     override fun onCreate() {
@@ -136,10 +137,19 @@ class TurnMonitorService : Service() {
         }
 
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
-        if (intent?.action != ACTION_MONITOR || sessionId.isNullOrBlank()) {
+        val hostId = intent?.getStringExtra(EXTRA_HOST_ID)
+        if (intent?.action != ACTION_MONITOR || sessionId.isNullOrBlank() || hostId.isNullOrBlank()) {
             stopMonitoring()
             return START_NOT_STICKY
         }
+
+        if (monitoredHostId != null && monitoredHostId != hostId) {
+            lifecycle.clear()
+            approvalNotifications.clear()
+            client.close()
+            connected = false
+        }
+        monitoredHostId = hostId
 
         val active = intent.getBooleanExtra(EXTRA_ACTIVE, false)
         lifecycle.monitor(sessionId, active)
@@ -163,14 +173,14 @@ class TurnMonitorService : Service() {
     private suspend fun connectAndSync(sessionIds: Set<String>) {
         connectionMutex.withLock {
             if (!connected) {
-                val saved = TokenStore(this).load()
+                val saved = monitoredHostId?.let { HostStore(this).load(it) }
                 if (saved == null) {
                     sessionIds.forEach {
                         failMonitoring(it, "Pair Foreman again to monitor turns.")
                     }
                     return
                 }
-                client.authenticate(saved.host, saved.token)
+                client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
                 connected = true
             }
 
@@ -208,7 +218,7 @@ class TurnMonitorService : Service() {
             val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return
             if (message.type == "approval.resolved" || approval["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
                 approvalNotifications.remove(approvalId)
-                notificationManager.cancel(approvalNotificationId(approvalId))
+                monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, approvalId)) }
             } else {
                 notifyApproval(sessionId, approvalId)
             }
@@ -242,8 +252,9 @@ class TurnMonitorService : Service() {
     }
 
     private fun finishMonitoring(sessionId: String, outcome: MonitorOutcome, detail: String? = null) {
-        val notification = resultNotification(sessionId, outcome.copy(detail = detail ?: outcome.detail))
-        notificationManager.notify(resultNotificationId(sessionId), notification)
+        val hostId = monitoredHostId ?: return
+        val notification = resultNotification(hostId, sessionId, outcome.copy(detail = detail ?: outcome.detail))
+        notificationManager.notify(resultNotificationId(hostId, sessionId), notification)
         if (lifecycle.isEmpty()) {
             stopMonitoring()
         } else {
@@ -254,20 +265,21 @@ class TurnMonitorService : Service() {
     @Synchronized
     private fun notifyApproval(sessionId: String, approvalId: String) {
         if (!lifecycle.contains(sessionId) || approvalId in approvalNotifications) return
+        val hostId = monitoredHostId ?: return
         approvalNotifications[approvalId] = sessionId
-        notificationManager.cancel(resultNotificationId(sessionId))
+        notificationManager.cancel(resultNotificationId(hostId, sessionId))
         val outcome = approvalNotificationText()
         val notification =
             notificationBuilder(RESULT_CHANNEL)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(outcome.title)
                 .setContentText(outcome.detail)
-                .setContentIntent(openSessionIntent(sessionId, approvalId))
+                .setContentIntent(openSessionIntent(hostId, sessionId, approvalId))
                 .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(true)
                 .build()
-        notificationManager.notify(approvalNotificationId(approvalId), notification)
+        notificationManager.notify(approvalNotificationId(hostId, approvalId), notification)
     }
 
     @Synchronized
@@ -275,7 +287,7 @@ class TurnMonitorService : Service() {
         val ids = approvalNotifications.filterValues { it == sessionId }.keys.toList()
         ids.forEach {
             approvalNotifications.remove(it)
-            notificationManager.cancel(approvalNotificationId(it))
+            monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
         }
     }
 
@@ -322,12 +334,12 @@ class TurnMonitorService : Service() {
         }
     }
 
-    private fun resultNotification(sessionId: String, outcome: MonitorOutcome): Notification =
+    private fun resultNotification(hostId: String, sessionId: String, outcome: MonitorOutcome): Notification =
         notificationBuilder(RESULT_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(outcome.title)
             .setContentText(outcome.detail)
-            .setContentIntent(openSessionIntent(sessionId))
+            .setContentIntent(openSessionIntent(hostId, sessionId))
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .build()
@@ -345,15 +357,17 @@ class TurnMonitorService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java)
+                .apply { monitoredHostId?.let { putExtra(EXTRA_HOST_ID, it) } }
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun openSessionIntent(sessionId: String, approvalId: String? = null): PendingIntent =
+    private fun openSessionIntent(hostId: String, sessionId: String, approvalId: String? = null): PendingIntent =
         PendingIntent.getActivity(
             this,
-            sessionId.hashCode(),
+            "$hostId:$sessionId".hashCode(),
             Intent(this, MainActivity::class.java)
+                .putExtra(EXTRA_HOST_ID, hostId)
                 .putExtra(EXTRA_SESSION_ID, sessionId)
                 .apply { approvalId?.let { putExtra(EXTRA_APPROVAL_ID, it) } }
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -406,6 +420,7 @@ class TurnMonitorService : Service() {
 
     companion object {
         const val EXTRA_SESSION_ID = "net.kaltner.foreman.extra.SESSION_ID"
+        const val EXTRA_HOST_ID = "net.kaltner.foreman.extra.HOST_ID"
         const val EXTRA_APPROVAL_ID = "net.kaltner.foreman.extra.APPROVAL_ID"
         private const val EXTRA_ACTIVE = "net.kaltner.foreman.extra.ACTIVE"
         private const val ACTION_MONITOR = "net.kaltner.foreman.action.MONITOR"
@@ -415,10 +430,11 @@ class TurnMonitorService : Service() {
         private const val RESULT_CHANNEL = "foreman_turn_updates"
         private const val FOREGROUND_NOTIFICATION_ID = 1001
 
-        fun monitor(context: Context, sessionId: String, active: Boolean = true) {
+        fun monitor(context: Context, hostId: String, sessionId: String, active: Boolean = true) {
             val intent =
                 Intent(context, TurnMonitorService::class.java)
                     .setAction(ACTION_MONITOR)
+                    .putExtra(EXTRA_HOST_ID, hostId)
                     .putExtra(EXTRA_SESSION_ID, sessionId)
                     .putExtra(EXTRA_ACTIVE, active)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -440,10 +456,10 @@ class TurnMonitorService : Service() {
             context.stopService(Intent(context, TurnMonitorService::class.java))
         }
 
-        private fun resultNotificationId(sessionId: String): Int =
-            2_000 + (sessionId.hashCode() and 0x00ffffff)
+        private fun resultNotificationId(hostId: String, sessionId: String): Int =
+            2_000 + ("$hostId:$sessionId".hashCode() and 0x00ffffff)
 
-        private fun approvalNotificationId(approvalId: String): Int =
-            30_000_000 + (approvalId.hashCode() and 0x00ffffff)
+        private fun approvalNotificationId(hostId: String, approvalId: String): Int =
+            30_000_000 + ("$hostId:$approvalId".hashCode() and 0x00ffffff)
     }
 }
