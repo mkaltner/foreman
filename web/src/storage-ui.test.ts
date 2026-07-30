@@ -3,6 +3,7 @@ import {
   addStoredHost,
   createStoredHost,
   forgetStoredHost,
+  hostIdFromUrl,
   clearHostNotificationOverride,
   loadAppearance,
   loadDashboardPreferences,
@@ -19,6 +20,7 @@ import {
   saveSessionOrganization,
   suggestedHostDisplayName,
   updateStoredHost,
+  withHostInSearch,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -227,5 +229,10 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(webRoutePath({ view: "dashboard" })).toBe("/");
     expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
       .toBe("/sessions/thread%2Fone");
+    const deepLink = `${webRoutePath({ view: "detail", sessionId: "same" })}${withHostInSearch("", "host-work")}`;
+    expect(deepLink).toBe("/sessions/same?host=host-work");
+    expect(parseWebRoute(new URL(deepLink, "https://foreman.local").pathname))
+      .toEqual({ view: "detail", sessionId: "same" });
+    expect(hostIdFromUrl(new URL(deepLink, "https://foreman.local").search)).toBe("host-work");
   });
 });

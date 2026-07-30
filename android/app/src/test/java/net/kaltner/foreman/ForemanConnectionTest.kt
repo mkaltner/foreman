@@ -27,6 +27,76 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun unifiedOverviewAggregatesFiveHostsAndIsolatesSessionCollisions() {
+        fun session(id: String, status: String, startedAt: Long) =
+            SessionSummary(
+                id = id,
+                repository = "/work/$id",
+                title = id,
+                status = status,
+                activeTurnStartedAt = startedAt,
+                lastActivity = startedAt + 10,
+                terminalAt = if (status in setOf("completed", "failed")) startedAt + 20 else null,
+            )
+        val home = projectHostOverview("home", listOf(session("same", "working", 100)), emptyList(), "connected")
+        val work = projectHostOverview("work", listOf(session("same", "failed", 200)), emptyList(), "checked")
+        val snapshots = mapOf("home" to home, "work" to work)
+        val totals = aggregateHostOverviews(listOf("home", "work", "three", "four", "five"), snapshots)
+
+        assertEquals(5, totals.hosts)
+        assertEquals(1, totals.connectedHosts)
+        assertEquals(4, totals.staleHosts)
+        assertEquals(1, totals.active)
+        assertEquals(1, totals.failed)
+        assertEquals("home", totals.oldestTurn?.hostId)
+        assertEquals("work", totals.latestCompletion?.hostId)
+        assertFalse(
+            globalSessionKey(GlobalSessionIdentity("home", "same")) ==
+                globalSessionKey(GlobalSessionIdentity("work", "same")),
+        )
+        assertEquals("work", work.attention.single().hostId)
+    }
+
+    @Test
+    fun unifiedAttentionKeepsExactHostSessionAndApprovalNavigationIdentity() {
+        val approval =
+            ApprovalRequest(
+                id = "apr-1",
+                sessionId = "same",
+                type = "command",
+                title = "Approve",
+                createdAt = 300,
+                status = "pending",
+            )
+        val snapshot = projectHostOverview(
+            "work",
+            listOf(SessionSummary("same", "/work/repo", "Collision", "waiting")),
+            listOf(approval),
+            "connected",
+        )
+        assertEquals("work", snapshot.attention.single().hostId)
+        assertEquals("same", snapshot.attention.single().sessionId)
+        assertEquals("apr-1", snapshot.attention.single().approvalId)
+    }
+
+    @Test
+    fun androidOverviewLifecycleStopsProbesInBackgroundAndCapsConnections() {
+        val lifecycle = AndroidOverviewLifecycle()
+        assertEquals(2, MAX_ANDROID_HOST_CONNECTIONS)
+        assertEquals(60_000L, ANDROID_OVERVIEW_POLL_INTERVAL_MS)
+        assertFalse(lifecycle.beginProbe())
+        lifecycle.onForeground()
+        assertTrue(lifecycle.beginProbe())
+        assertFalse(lifecycle.beginProbe())
+        lifecycle.endProbe()
+        assertTrue(lifecycle.beginProbe())
+        lifecycle.onBackground()
+        assertFalse(lifecycle.foreground)
+        assertFalse(lifecycle.probeActive)
+        assertFalse(lifecycle.beginProbe())
+    }
+
+    @Test
     fun wireMessagesAlwaysIncludeProtocolVersion() {
         val encoded =
             Json.encodeToString(
