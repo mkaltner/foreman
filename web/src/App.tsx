@@ -69,6 +69,7 @@ import {
   saveSessionSearch,
   saveSessionOrganization,
   selectStoredHost,
+  suggestedHostDisplayName,
   updateStoredHost,
   withHostInSearch,
   type Appearance,
@@ -1126,7 +1127,7 @@ export function SetupView({
             event.preventDefault();
             void onConnect(
               {
-                displayName: displayName.trim() || host.trim(),
+                displayName: displayName.trim() || suggestedHostDisplayName(host),
                 host: host.trim(),
                 tcpPort: 8765,
                 webPort: Number(webPort),

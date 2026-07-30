@@ -68,12 +68,19 @@ export const ACCENTS: AccentColor[] = [
 
 export function loadHostRegistry(storage: Storage = localStorage): HostRegistry {
   const stored = parseRegistry(storage.getItem(HOSTS_KEY));
-  if (stored) return normalizeRegistry(stored);
+  if (stored) {
+    const normalized = normalizeRegistry(stored);
+    const migrated = migrateBrowserNamedDefaultHost(normalized);
+    if (migrated !== normalized) saveHostRegistry(migrated, storage);
+    return migrated;
+  }
 
   const legacy = parseLegacyHost(storage.getItem(LEGACY_HOST_KEY));
   if (!legacy) return { hosts: [], activeHostId: null };
   const migrated = createStoredHost({
-    displayName: legacy.deviceName || legacy.host,
+    displayName: legacy.deviceName === "Web browser"
+      ? suggestedHostDisplayName(legacy.host)
+      : legacy.deviceName || suggestedHostDisplayName(legacy.host),
     host: legacy.host,
     webPort: legacy.port,
     deviceToken: legacy.deviceToken,
@@ -103,6 +110,17 @@ export function createStoredHost(input: NewStoredHost, isDefault = false): Store
     runtimeMode: null,
     isDefault,
   };
+}
+
+export function suggestedHostDisplayName(rawHost: string): string {
+  const host = rawHost.trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/$/, "")
+    .replace(/^\[|\]$/g, "");
+  if (["localhost", "127.0.0.1", "::1"].includes(host.toLowerCase())) {
+    return "Local Foreman";
+  }
+  return host || "Foreman host";
 }
 
 export function addStoredHost(registry: HostRegistry, host: StoredHost): HostRegistry {
@@ -305,6 +323,19 @@ function normalizeRegistry(registry: HostRegistry): HostRegistry {
     ? registry.activeHostId
     : defaultId ?? null;
   return { hosts: normalized, activeHostId };
+}
+
+function migrateBrowserNamedDefaultHost(registry: HostRegistry): HostRegistry {
+  const legacyDefault = registry.hosts.find(
+    ({ displayName, isDefault }) => isDefault && displayName === "Web browser",
+  );
+  if (!legacyDefault) return registry;
+  return {
+    ...registry,
+    hosts: registry.hosts.map((host) => host.id === legacyDefault.id
+      ? { ...host, displayName: suggestedHostDisplayName(host.host) }
+      : host),
+  };
 }
 
 function migrateLegacyPreferences(hostId: string, storage: Storage): void {

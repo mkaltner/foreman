@@ -13,6 +13,7 @@ import {
   saveHostRegistry,
   saveNotificationsEnabled,
   saveSessionOrganization,
+  suggestedHostDisplayName,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -51,6 +52,22 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(registry.hosts[0]).toMatchObject({ host: "old.local", webPort: 8766, isDefault: true });
     expect(loadNotificationsEnabled(registry.hosts[0].id)).toBe(true);
     expect(localStorage.getItem("foreman.host.v1")).toBeNull();
+  });
+
+  it("separates the legacy browser device name from the host display name", () => {
+    localStorage.setItem("foreman.host.v1", JSON.stringify({ host: "localhost", port: 8766, deviceName: "Web browser", deviceToken: "fmt_old" }));
+    expect(loadHostRegistry().hosts[0].displayName).toBe("Local Foreman");
+
+    const migrated = createStoredHost({ displayName: "Web browser", host: "workstation.local", webPort: 8766, deviceToken: "fmt_migrated" }, true);
+    saveHostRegistry({ hosts: [migrated], activeHostId: migrated.id });
+    expect(loadHostRegistry().hosts[0].displayName).toBe("workstation.local");
+    expect(localStorage.getItem("foreman.hosts.v2")).toContain('"displayName":"workstation.local"');
+  });
+
+  it("suggests a local label or the endpoint hostname for new hosts", () => {
+    expect(suggestedHostDisplayName("localhost")).toBe("Local Foreman");
+    expect(suggestedHostDisplayName("http://127.0.0.1")).toBe("Local Foreman");
+    expect(suggestedHostDisplayName("workstation.local")).toBe("workstation.local");
   });
 
   it("persists theme and accent with safe defaults", () => {
