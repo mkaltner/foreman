@@ -960,10 +960,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val endpoint = parseHost(current.host)
                 require(current.pairingKey.isNotBlank()) { "Pairing key is required" }
                 require(current.deviceName.isNotBlank()) { "Device name is required" }
-                require(current.displayName.isNotBlank()) { "Host display name is required" }
                 val token =
                     client.pair(current.host, current.pairingKey, current.deviceName)
-                val saved = hosts.save(current.displayName, endpoint, token)
+                val saved =
+                    hosts.save(
+                        current.displayName.ifBlank { suggestedHostDisplayName(endpoint.host) },
+                        endpoint,
+                        token,
+                    )
                 activeHost = saved
                 preferences = PreferenceStore(getApplication(), saved.id)
                 val restored = preferences.load()

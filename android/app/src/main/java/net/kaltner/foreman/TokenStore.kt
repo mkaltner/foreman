@@ -65,6 +65,13 @@ fun SavedHost.summary(): SavedHostSummary =
 internal fun SavedHost.tcpEndpoint(): String =
     if (host.contains(':')) "[$host]:$tcpPort" else "$host:$tcpPort"
 
+internal fun suggestedHostDisplayName(host: String): String =
+    if (host.trim().lowercase() in setOf("localhost", "127.0.0.1", "::1")) {
+        "Local Foreman"
+    } else {
+        host.trim().ifBlank { "Foreman host" }
+    }
+
 @Serializable
 private data class HostRecord(
     val id: String,
@@ -87,6 +94,7 @@ class HostStore(private val context: Context) {
 
     init {
         migrateLegacyConnection()
+        migrateAndroidNamedDefaultHost()
     }
 
     fun all(): List<SavedHost> =
@@ -114,7 +122,7 @@ class HostStore(private val context: Context) {
         val record =
             HostRecord(
                 id = UUID.randomUUID().toString(),
-                displayName = displayName.trim().ifBlank { endpoint.host },
+                displayName = displayName.trim().ifBlank { suggestedHostDisplayName(endpoint.host) },
                 host = endpoint.host,
                 tcpPort = endpoint.port,
                 webPort = webPort,
@@ -208,7 +216,7 @@ class HostStore(private val context: Context) {
         val record =
             HostRecord(
                 id = id,
-                displayName = preferences.getString("deviceName", null).orEmpty().ifBlank { endpoint.host },
+                displayName = suggestedHostDisplayName(endpoint.host),
                 host = endpoint.host,
                 tcpPort = endpoint.port,
                 webPort = 8766,
@@ -224,6 +232,21 @@ class HostStore(private val context: Context) {
             .remove("tokenIv")
             .remove("tokenData")
             .commit()
+    }
+
+    private fun migrateAndroidNamedDefaultHost() {
+        val stored = records()
+        val legacyDefault = stored.firstOrNull { it.isDefault && it.displayName == "Android" }
+            ?: return
+        writeRecords(
+            stored.map { record ->
+                if (record.id == legacyDefault.id) {
+                    record.copy(displayName = suggestedHostDisplayName(record.host))
+                } else {
+                    record
+                }
+            },
+        )
     }
 
     private fun copyLegacyPreferences(hostId: String) {

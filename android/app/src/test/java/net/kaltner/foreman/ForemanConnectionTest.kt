@@ -68,6 +68,15 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun hostDisplayNamesDescribeTheServerInsteadOfTheAndroidClient() {
+        assertEquals("Local Foreman", suggestedHostDisplayName("localhost"))
+        assertEquals("Local Foreman", suggestedHostDisplayName("127.0.0.1"))
+        assertEquals("Local Foreman", suggestedHostDisplayName("::1"))
+        assertEquals("workstation.local", suggestedHostDisplayName("workstation.local"))
+        assertEquals("192.168.1.59", suggestedHostDisplayName("192.168.1.59"))
+    }
+
+    @Test
     fun accentPresetsAreDistinctAndProvideLightAndDarkRoles() {
         assertEquals(AccentColor.Purple, parseAccentColor(null))
         assertEquals(AccentColor.Purple, parseAccentColor("unsupported"))
