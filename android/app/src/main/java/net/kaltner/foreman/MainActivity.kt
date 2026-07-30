@@ -3288,9 +3288,6 @@ private fun SessionDetailScreen(
         bottomBar = {
             if (selected != null) PromptBox(
                 working = selected.status == "working",
-                routeChangeAppliesToNextTurn =
-                    selected.status in setOf("working", "waiting") &&
-                        selected.activeTurnId != null,
                 routeEnabled = state.connected && !state.submitting,
                 enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" } && selectedInputs.none { it.status == "pending" || it.status == "submitting" },
                 accessLevels = state.accessLevels,
@@ -3556,7 +3553,6 @@ private fun ImageThumbnailRow(
 @Composable
 private fun PromptBox(
     working: Boolean,
-    routeChangeAppliesToNextTurn: Boolean,
     routeEnabled: Boolean,
     enabled: Boolean,
     accessLevels: List<AccessLevelInfo>,
@@ -3637,14 +3633,6 @@ private fun PromptBox(
             ) {
                 selectEffort(it)
                 showEfforts = false
-            }
-            if (routeChangeAppliesToNextTurn) {
-                Text(
-                    "Route changes apply to the next turn.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
             }
             if (images.isNotEmpty()) {
                 ImageThumbnailRow(images) { index ->

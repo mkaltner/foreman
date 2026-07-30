@@ -1761,7 +1761,6 @@ export function ConversationView({
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
-        {connected && hasActiveTurn && <p className="composer-note">Route changes apply to the next turn.</p>}
       </form>
     </div>
   );
