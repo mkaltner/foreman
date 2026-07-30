@@ -238,41 +238,10 @@ rebuild the committed assets with the pinned Node version as documented in the
 ### Web
 
 <p align="center">
-  <img src="docs/screenshots/web-approval.png" alt="Foreman web command approval with safe example values" width="860">
-  <br>
-  <em>Schema-exact approval decisions in the active conversation</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/web-dashboard.png" alt="Foreman monitoring dashboard with multiple active sessions, an approval wait, repository groups, and host health" width="860">
+  <img src="docs/screenshots/web-dashboard.png" alt="Foreman web monitoring dashboard with host health and active work" width="860">
   <br>
   <em>Live multi-session supervision and host health</em>
 </p>
-
-<p align="center">
-  <img src="docs/screenshots/web-search.png" alt="Foreman session search with repository, status, date, pin, and hidden-session filters" width="860">
-  <br>
-  <em>Bounded transcript search and composable session filters</em>
-</p>
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/screenshots/web-sessions.png" alt="Foreman web session list" width="430"></td>
-    <td align="center"><img src="docs/screenshots/web-conversation.png" alt="Foreman web conversation and composer" width="430"></td>
-  </tr>
-  <tr>
-    <td align="center">Session list</td>
-    <td align="center">Conversation and compact composer</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/screenshots/web-route-menu.png" alt="Foreman web model route menu" width="430"></td>
-    <td align="center"><img src="docs/screenshots/web-mobile.png" alt="Foreman responsive mobile web client" width="220"></td>
-  </tr>
-  <tr>
-    <td align="center">Descriptive route controls</td>
-    <td align="center">Responsive mobile layout</td>
-  </tr>
-</table>
 
 ## Architecture
 
