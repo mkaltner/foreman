@@ -13,6 +13,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { Dashboard } from "./Dashboard";
+import { messageDraft, updateMessageDraft } from "./drafts";
 import { UnifiedDashboard } from "./UnifiedDashboard";
 import { UnifiedHostConnections } from "./unified-client";
 import { forgetHostSnapshot, loadHostSnapshots, saveHostSnapshots } from "./unified-storage";
@@ -181,6 +182,7 @@ function App() {
   const [organization, setOrganization] = useState(() => loadSessionOrganization(initialHostId));
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
   const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
+  const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
   const lastImmediateSearch = useRef(0);
@@ -1236,6 +1238,10 @@ function App() {
                 connected={connected}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
+                draft={messageDraft(messageDrafts, activeHost.id, current.id)}
+                onDraftChange={(text) => setMessageDrafts((previous) =>
+                  updateMessageDraft(previous, activeHost.id, current.id, text)
+                )}
                 onBack={() => showSessions()}
                 onRequest={(type, payload) => client.request(type, payload)}
                 onError={setError}
@@ -1461,7 +1467,7 @@ function SessionList({
   );
 }
 
-function ConversationView({
+export function ConversationView({
   session,
   approvals,
   models,
@@ -1469,6 +1475,8 @@ function ConversationView({
   connected,
   highlightItemId,
   focusedApprovalId,
+  draft,
+  onDraftChange,
   onBack,
   onRequest,
   onError,
@@ -1480,6 +1488,8 @@ function ConversationView({
   connected: boolean;
   highlightItemId: string | null;
   focusedApprovalId: string | null;
+  draft: string;
+  onDraftChange: (text: string) => void;
   onBack: () => void;
   onRequest: <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>;
   onError: (message: string) => void;
@@ -1488,7 +1498,6 @@ function ConversationView({
   const [model, setModel] = useState(initialRoute.model);
   const [effort, setEffort] = useState(initialRoute.reasoningEffort);
   const [access, setAccess] = useState(initialRoute.accessLevel);
-  const [text, setText] = useState("");
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -1531,7 +1540,7 @@ function ConversationView({
 
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
-  const canSubmit = connected && !submitting && !processing && (!!text.trim() || images.length > 0);
+  const canSubmit = connected && !submitting && !processing && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
 
@@ -1542,7 +1551,7 @@ function ConversationView({
     try {
       const base = {
         sessionId: session.id,
-        text,
+        text: draft,
         images: images.map(({ mimeType, data }) => ({ mimeType, data })),
       };
       if (active) {
@@ -1555,7 +1564,7 @@ function ConversationView({
           ...(access ? { accessLevel: access } : {}),
         });
       }
-      setText("");
+      onDraftChange("");
       setImages([]);
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "Message was not accepted");
@@ -1634,7 +1643,7 @@ function ConversationView({
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
-          <textarea value={text} onChange={(event) => setText(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+          <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
           {(session.status === "working" || session.status === "waiting") && session.activeTurnId && <button type="button" className="interrupt" disabled={!connected || submitting} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
         </div>

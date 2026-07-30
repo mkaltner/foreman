@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { appShellClassName, LinkedUserText, RouteSelect, SetupView } from "./App";
+import { appShellClassName, ConversationView, LinkedUserText, RouteSelect, SetupView } from "./App";
+import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 
 describe("Foreman setup", () => {
@@ -76,5 +77,48 @@ describe("route selector", () => {
     fireEvent.click(screen.getByRole("option", { name: /Ask for approval/ }));
     expect(onChange).toHaveBeenCalledWith("ask");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("conversation drafts", () => {
+  const session = (id: string): SessionSummary => ({
+    id,
+    repository: "/projects/foreman",
+    title: `Session ${id}`,
+    status: "idle",
+    messages: [],
+  });
+
+  const renderConversation = (selected: SessionSummary, draft: string, onDraftChange = vi.fn()) => (
+    <ConversationView
+      session={selected}
+      approvals={[]}
+      models={[]}
+      accessLevels={[]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft={draft}
+      onDraftChange={onDraftChange}
+      onBack={vi.fn()}
+      onRequest={vi.fn().mockResolvedValue({})}
+      onError={vi.fn()}
+    />
+  );
+
+  it("restores the controlled draft after tab and session changes", () => {
+    const firstChange = vi.fn();
+    const view = render(renderConversation(session("one"), "First session draft", firstChange));
+    expect(screen.getByRole("textbox")).toHaveValue("First session draft");
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "First session edited" } });
+    expect(firstChange).toHaveBeenCalledWith("First session edited");
+
+    view.rerender(renderConversation(session("two"), "Second session draft"));
+    expect(screen.getByRole("textbox")).toHaveValue("Second session draft");
+
+    view.unmount();
+    render(renderConversation(session("one"), "First session edited"));
+    expect(screen.getByRole("textbox")).toHaveValue("First session edited");
   });
 });
