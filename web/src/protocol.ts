@@ -132,6 +132,58 @@ export interface AccessLevelInfo {
   description?: string;
 }
 
+export interface ApprovalDecision {
+  type: string;
+  label: string;
+  optionId?: string;
+  scopes?: Array<"turn" | "session">;
+  amendment?: string[];
+  networkAmendment?: { host?: string | null; action?: "allow" | "deny" | null };
+}
+
+export interface ApprovalPermissions {
+  fileSystem?: {
+    read?: string[];
+    write?: string[];
+    entries?: Array<{ access: "read" | "write" | "deny"; path: Record<string, unknown> }>;
+    globScanMaxDepth?: number;
+  };
+  network?: { enabled?: boolean };
+}
+
+export interface ApprovalRequest {
+  id: string;
+  sessionId: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  type: "command" | "fileChange" | "permission" | "unsupportedInput" | "unsupportedForm";
+  title: string;
+  createdAt: number;
+  startedAt?: number | null;
+  reason?: string | null;
+  status: "pending" | "submitting" | "resolved" | "expired";
+  resolution?: string | null;
+  availableDecisions: ApprovalDecision[];
+  command?: string | null;
+  commandActions?: Array<Record<string, string | null>>;
+  cwd?: string | null;
+  networkContext?: { host?: string | null; protocol?: string | null };
+  requestedPermissions?: ApprovalPermissions;
+  fileChanges?: Array<{
+    path: string;
+    kind: string;
+    summary?: { addedLines: number; removedLines: number };
+  }>;
+  fileCount?: number;
+  grantRoot?: string | null;
+  availableScopes?: Array<"turn" | "session">;
+  unsupportedMessage?: string;
+}
+
+export interface ApprovalEventPayload {
+  approval: ApprovalRequest;
+}
+
 export interface SessionEvent {
   kind: string;
   type?: string;

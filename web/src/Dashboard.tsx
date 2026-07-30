@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConnectionState } from "./client";
 import { useSharedClock } from "./clock";
+import { approvalAttentionLabel } from "./ApprovalCard";
 import {
   attentionState,
   dashboardCounts,
@@ -18,7 +19,7 @@ import {
   type RecentActivityEntry,
   type RepositoryGroup,
 } from "./dashboard";
-import type { PairedClient, RepositoryInfo, ServiceStatus, SessionSummary } from "./protocol";
+import type { ApprovalRequest, PairedClient, RepositoryInfo, ServiceStatus, SessionSummary } from "./protocol";
 import {
   loadDashboardPreferences,
   saveDashboardPreferences,
@@ -28,6 +29,7 @@ import { reasoningLabel } from "./ui";
 
 interface DashboardProps {
   sessions: SessionSummary[];
+  approvals?: ApprovalRequest[];
   serviceStatus: ServiceStatus | null;
   repositories?: RepositoryInfo[];
   recentActivity?: RecentActivityEntry[];
@@ -35,6 +37,7 @@ interface DashboardProps {
   connection: ConnectionState;
   disabled: boolean;
   onOpen: (id: string) => void;
+  onOpenApproval?: (approval: ApprovalRequest) => void;
   onInterrupt: (session: SessionSummary) => void;
   onRefresh: () => void;
   onRevokeClient?: (client: PairedClient) => Promise<void>;
@@ -50,6 +53,7 @@ const FILTERS: Array<{ id: DashboardFilter; label: string }> = [
 
 export function Dashboard({
   sessions,
+  approvals = [],
   serviceStatus,
   repositories: discoveredRepositories = [],
   recentActivity = [],
@@ -57,6 +61,7 @@ export function Dashboard({
   connection,
   disabled,
   onOpen,
+  onOpenApproval,
   onInterrupt,
   onRefresh,
   onRevokeClient,
@@ -87,10 +92,12 @@ export function Dashboard({
     () => sortDashboardSessions(filtered, serviceStatus, now),
     [filtered, now, serviceStatus],
   );
+  const pendingApprovals = approvals.filter((approval) => approval.status === "pending" || approval.status === "submitting");
+  const approvalSessionIds = new Set(pendingApprovals.map((approval) => approval.sessionId));
   const attentionPairs = sorted
     .map((session) => ({ session, attention: attentionState(session, serviceStatus, now) }))
     .filter((entry): entry is { session: SessionSummary; attention: AttentionState } =>
-      entry.attention !== null && !dismissed.has(attentionKey(entry.session, entry.attention, serviceStatus))
+      entry.attention !== null && !approvalSessionIds.has(entry.session.id) && !dismissed.has(attentionKey(entry.session, entry.attention, serviceStatus))
     );
   const attentionIds = new Set(attentionPairs.map(({ session }) => session.id));
   const active = sorted.filter((session) => session.status === "working" && !attentionIds.has(session.id));
@@ -151,9 +158,9 @@ export function Dashboard({
         </section>
       )}
 
-      {attentionPairs.length > 0 && (
-        <DashboardSection title="Needs attention" count={attentionPairs.length} className="attention-section">
-          <div className="monitor-grid">{attentionPairs.map(({ session, attention }) => <MonitoringCard key={session.id} session={session} attention={attention} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} onDismiss={() => dismissAttention(session, attention)} />)}</div>
+      {(pendingApprovals.length > 0 || attentionPairs.length > 0) && (
+        <DashboardSection title="Needs attention" count={pendingApprovals.length + attentionPairs.length} className="attention-section">
+          <div className="monitor-grid">{pendingApprovals.map((approval) => <ApprovalAttentionCard key={approval.id} approval={approval} session={sessions.find((session) => session.id === approval.sessionId)} now={now} onOpen={() => onOpenApproval?.(approval)} />)}{attentionPairs.map(({ session, attention }) => <MonitoringCard key={session.id} session={session} attention={attention} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} onDismiss={() => dismissAttention(session, attention)} />)}</div>
         </DashboardSection>
       )}
 
@@ -178,9 +185,20 @@ export function Dashboard({
         </DashboardSection>
       )}
 
-      {!attentionPairs.length && !active.length && !recent.length && preferences.filter !== "all" && <EmptySection text="No sessions match this filter." />}
+      {!pendingApprovals.length && !attentionPairs.length && !active.length && !recent.length && preferences.filter !== "all" && <EmptySection text="No sessions match this filter." />}
     </main>
   );
+}
+
+function ApprovalAttentionCard({ approval, session, now, onOpen }: { approval: ApprovalRequest; session?: SessionSummary; now: number; onOpen: () => void }) {
+  return <article className="monitor-card needs-attention approval-attention-card">
+    <button className="monitor-card-main" onClick={onOpen} aria-label={`Open approval for ${session?.title ?? "session"}`}>
+      <div className="monitor-title-row"><StatusIcon status="waiting" /><span><strong>{session?.title ?? "Codex session"}</strong><small title={session?.repository}>{shortRepository(session?.repository ?? "")}</small></span><StatusLabel status="waiting" /></div>
+      <div className="monitor-activity"><strong>{approvalAttentionLabel(approval)}</strong><p>{approval.reason || "Codex needs a decision before it can continue."}</p></div>
+      <dl className="monitor-metadata"><div><dt>Request age</dt><dd>{formatAge(approval.startedAt ?? approval.createdAt, now)}</dd></div><div><dt>Workspace</dt><dd>{shortRepository(session?.repository ?? "")}</dd></div></dl>
+    </button>
+    <div className="monitor-actions"><button onClick={onOpen}>Open approval</button></div>
+  </article>;
 }
 
 const MonitoringCard = memo(function MonitoringCard({ session, attention, now, disabled, onOpen, onInterrupt, onDismiss }: { session: SessionSummary; attention: AttentionState | null; now: number; disabled: boolean; onOpen: (id: string) => void; onInterrupt: (session: SessionSummary) => void; onDismiss?: () => void }) {
@@ -198,7 +216,7 @@ const MonitoringCard = memo(function MonitoringCard({ session, attention, now, d
         <div><dt>Session event</dt><dd>{formatAge(session.lastActivity, now)}</dd></div>
       </dl>
     </button>
-    {(attention?.type === "approval" || attention?.type === "input") && <p className="unsupported-wait">Foreman can show this wait, but approval and structured input must currently be handled in another compatible Codex client.</p>}
+    {attention?.type === "input" && <p className="unsupported-wait">General structured input is not supported in Foreman. Open another compatible Codex client when no decline or cancel choice is available.</p>}
     <div className="monitor-actions"><button onClick={() => onOpen(session.id)} aria-label={`Open session ${session.title}`}>Open</button>{session.status === "working" && session.activeTurnId && !attention && <button className="interrupt" disabled={disabled} onClick={() => onInterrupt(session)} aria-label={`Interrupt ${session.title}`}>Interrupt</button>}{onDismiss && <button className="dismiss-action" onClick={onDismiss} aria-label="Dismiss">Dismiss</button>}</div>
   </article>;
 });
