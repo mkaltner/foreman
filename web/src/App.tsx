@@ -60,6 +60,7 @@ import {
   type PairedClient,
   type RepositoryInfo,
   type ServiceStatus,
+  type DiagnosticEvent,
   type SessionEvent,
   type SessionEventPayload,
   type SessionSummary,
@@ -1217,6 +1218,11 @@ function App() {
                 throw caught;
               }
             }}
+            onFetchDiagnostics={async () => {
+              const result = await client.request<{ events: DiagnosticEvent[] } & Record<string, unknown>>("diagnostics.list");
+              return result.events;
+            }}
+            onRestart={() => client.request<{ scheduled: boolean; timeoutSeconds?: number } & Record<string, unknown>>("service.restart")}
           /></>}
         </div>
       ) : (

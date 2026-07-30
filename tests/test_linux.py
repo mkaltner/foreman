@@ -47,8 +47,10 @@ from foreman_service import (  # noqa: E402
     Client,
     Foreman,
     PairingLimiter,
+    environment_flag,
     image_payloads,
 )
+from diagnostics import DiagnosticBuffer  # noqa: E402
 from state import State  # noqa: E402
 
 
@@ -393,7 +395,10 @@ class StateTests(unittest.TestCase):
             with patch("state.time.time", return_value=1_000):
                 key, expires_at = state.create_pairing(lifetime_seconds=10)
             self.assertEqual(expires_at, 1_010)
+            with patch("state.time.time", return_value=1_009):
+                self.assertEqual(state.active_pairing_count(), 1)
             with patch("state.time.time", return_value=1_010):
+                self.assertEqual(state.active_pairing_count(), 0)
                 self.assertIsNone(state.pair(key, "Late phone"))
 
 
@@ -412,6 +417,171 @@ class PairingLimiterTests(unittest.TestCase):
         limiter.failed("attacker")
         limiter.succeeded("attacker")
         self.assertTrue(limiter.allowed("attacker"))
+
+
+class DiagnosticBufferTests(unittest.TestCase):
+    def test_ring_is_bounded_and_projection_excludes_sensitive_data(self) -> None:
+        diagnostics = DiagnosticBuffer(100)
+        secret = "fmt_secret token=abc 123456 /home/user/private command prompt"
+        for index in range(125):
+            diagnostics.record(
+                "request.failed",
+                request="service" if index % 2 else "unknown",
+                timestamp=1_700_000_000 + index,
+            )
+        entries = diagnostics.entries()
+        self.assertEqual(len(entries), 100)
+        self.assertEqual(entries[0]["timestamp"], "2023-11-14T22:15:24+00:00")
+        self.assertNotIn(secret, json.dumps(entries))
+        self.assertTrue(
+            all(
+                set(entry)
+                <= {
+                    "timestamp",
+                    "severity",
+                    "category",
+                    "message",
+                    "ids",
+                    "requestCategory",
+                }
+                for entry in entries
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "identifier"):
+            diagnostics.record("client.connected", ids={"clientId": secret})
+        with self.assertRaisesRegex(ValueError, "category"):
+            diagnostics.record("raw.journal")
+
+
+class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.calls: list[str] = []
+
+        async def restart_runner() -> int:
+            self.calls.append("runner")
+            return 0
+
+        self.app = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+            remote_restart_enabled=True,
+            restart_runner=restart_runner,
+        )
+
+    async def asyncTearDown(self) -> None:
+        if self.app.restart_task is not None:
+            await asyncio.gather(self.app.restart_task, return_exceptions=True)
+        self.temporary.cleanup()
+
+    async def test_enabled_restart_flushes_ack_before_exact_runner(self) -> None:
+        app = self.app
+        calls = self.calls
+
+        class RestartClient:
+            authenticated = True
+            device_id = "fmc_test"
+            websocket = None
+            writer = None
+
+            async def send(self, message: dict[str, Any]) -> None:
+                self.message = message
+                calls.append("response")
+
+        client = RestartClient()
+        await app.handle_request(
+            client,  # type: ignore[arg-type]
+            {"version": 1, "id": "restart-1", "type": "service.restart", "payload": {}},
+        )
+        assert app.restart_task is not None
+        await app.restart_task
+        self.assertEqual(calls, ["response", "runner"])
+        self.assertEqual(client.message["payload"], {"scheduled": True, "timeoutSeconds": 45})
+
+    async def test_restart_disabled_and_unauthenticated_requests_are_rejected(self) -> None:
+        self.app.remote_restart_enabled = False
+        authenticated = Client(None, "redacted", authenticated=True)
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            await self.app.dispatch(
+                authenticated,
+                {"version": 1, "type": "service.restart", "payload": {}},
+            )
+        unauthenticated = Client(None, "redacted")
+        with self.assertRaisesRegex(PermissionError, "authenticate"):
+            await self.app.dispatch(
+                unauthenticated,
+                {"version": 1, "type": "service.restart", "payload": {}},
+            )
+        with self.assertRaisesRegex(PermissionError, "authenticate"):
+            await self.app.dispatch(
+                unauthenticated,
+                {"version": 1, "type": "diagnostics.list", "payload": {}},
+            )
+        self.assertEqual(self.calls, [])
+
+        class RejectClient:
+            authenticated = False
+            device_id = None
+            websocket = None
+            writer = None
+
+            async def send(self, message: dict[str, Any]) -> None:
+                self.message = message
+
+        secret = "fmt_secret 123456 /home/private prompt command approval"
+        rejected = RejectClient()
+        await self.app.handle_request(
+            rejected,  # type: ignore[arg-type]
+            {
+                "version": 1,
+                "id": "unauthenticated",
+                "type": "diagnostics.list",
+                "payload": {"raw": secret},
+            },
+        )
+        self.assertEqual(rejected.message["payload"]["code"], "unauthorized")
+        self.assertNotIn(secret, json.dumps(self.app.diagnostics.entries()))
+
+    async def test_remote_restart_gate_defaults_off_and_parses_explicit_opt_in(self) -> None:
+        default = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "default-state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        self.assertFalse(default.remote_restart_enabled)
+        self.assertFalse(environment_flag("0"))
+        self.assertTrue(environment_flag("1"))
+        self.assertTrue(environment_flag("YES"))
+
+    async def test_restart_command_targets_only_foreman_user_service(self) -> None:
+        class Process:
+            async def wait(self) -> int:
+                return 0
+
+        with patch(
+            "foreman_service.asyncio.create_subprocess_exec",
+            return_value=Process(),
+        ) as create:
+            self.assertEqual(await Foreman.systemd_restart(), 0)
+        create.assert_awaited_once_with(
+            "systemctl",
+            "--user",
+            "restart",
+            "--no-block",
+            "foreman.service",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.assertNotIn("codex", " ".join(create.await_args.args).lower())
 
 
 class MappingTests(unittest.TestCase):
@@ -1206,11 +1376,23 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hello["capabilities"]["archive"])
         self.assertTrue(hello["capabilities"]["delete"])
         self.assertTrue(hello["capabilities"]["search"])
+        self.assertTrue(hello["capabilities"]["diagnostics"])
+        self.assertFalse(hello["capabilities"]["remoteRestart"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
         )
         self.assertTrue(paired["deviceToken"].startswith("fmt_"))
+        diagnostics = await self.request("diagnostics.list")
+        self.assertLessEqual(len(diagnostics["events"]), diagnostics["limit"])
+        self.assertTrue(
+            any(event["category"] == "pairing.consumed" for event in diagnostics["events"])
+        )
+        self.assertTrue(
+            any(event["category"] == "pairing.created" for event in diagnostics["events"])
+        )
+        self.assertNotIn(paired["deviceToken"], json.dumps(diagnostics))
+        self.assertNotIn(self.pairing_key, json.dumps(diagnostics))
         paired_clients = await self.request("client.list")
         self.assertEqual(len(paired_clients["clients"]), 1)
         self.assertEqual(paired_clients["clients"][0]["name"], "Test phone")

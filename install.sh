@@ -89,6 +89,7 @@ install -m 644 "$project_dir/linux/approvals.py" "$staging_dir/approvals.py"
 install -m 644 "$project_dir/linux/inputs.py" "$staging_dir/inputs.py"
 install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
 install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
+install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
 cp -a "$project_dir/web/dist" "$staging_dir/web"
 if [[ -d "$install_dir/venv" ]]; then
@@ -102,6 +103,7 @@ python3 -m compileall -q \
   "$staging_dir/inputs.py" \
   "$staging_dir/protocol.py" \
   "$staging_dir/state.py" \
+  "$staging_dir/diagnostics.py" \
   "$staging_dir/vendor"
 FOREMAN_STAGING_DIR="$staging_dir" \
 FOREMAN_WEBSOCKETS_VERSION="$pinned_version" \
@@ -124,6 +126,7 @@ if [[ ! -e "$config_file" ]]; then
     printf 'FOREMAN_PORT=8765\n'
     printf 'FOREMAN_WEB_HOST=0.0.0.0\n'
     printf 'FOREMAN_WEB_PORT=8766\n'
+    printf 'FOREMAN_REMOTE_RESTART=0\n'
     printf 'FOREMAN_REPOSITORY_ROOT=%s\n' "$HOME/projects"
     printf 'FOREMAN_CODEX_EXECUTABLE=%s\n' "$codex_executable"
   } >"$config_file"

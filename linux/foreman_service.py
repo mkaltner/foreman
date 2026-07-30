@@ -19,7 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import unquote, urlsplit
 
 from codex import (
@@ -33,6 +33,7 @@ from codex import (
     search_matches,
     session,
 )
+from diagnostics import DiagnosticBuffer, request_category
 from protocol import (
     MAX_FRAME_BYTES,
     VERSION,
@@ -153,6 +154,9 @@ class Foreman:
         web_port: int | None = None,
         web_root: Path | None = None,
         web_origins: tuple[str, ...] = (),
+        remote_restart_enabled: bool = False,
+        restart_runner: Callable[[], Awaitable[int]] | None = None,
+        diagnostics: DiagnosticBuffer | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -170,9 +174,19 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        self.remote_restart_enabled = remote_restart_enabled
+        self.restart_runner = restart_runner or self.systemd_restart
+        self.restart_scheduled = False
+        self.restart_task: asyncio.Task[None] | None = None
+        self.diagnostics = diagnostics or DiagnosticBuffer()
+        self.known_pairing_count = 0
 
     async def start(self) -> None:
         await self.codex.start()
+        if self.codex.runtime_status == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE":
+            self.diagnostics.record("runtime.shared_attached")
+        elif getattr(self.codex, "process", None) is not None:
+            self.diagnostics.record("runtime.fallback_started")
         print(f"Codex runtime: {self.codex.runtime_status}", flush=True)
         self.server = await asyncio.start_server(
             self.client_connected,
@@ -190,8 +204,11 @@ class Foreman:
                 compression=None,
                 server_header="Foreman",
             )
+        self.diagnostics.record("listeners.started")
+        self.diagnostics.record("service.started")
 
     async def stop(self) -> None:
+        self.diagnostics.record("service.stopping")
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -211,6 +228,12 @@ class Foreman:
 
     async def codex_event(self, message: dict[str, Any]) -> None:
         method = message.get("method")
+        if method == "foreman/runtime/disconnected":
+            self.diagnostics.record("runtime.disconnected")
+            return
+        if method == "foreman/runtime/reconnected":
+            self.diagnostics.record("runtime.reconnected")
+            return
         if method in (
             "foreman/approval/requested",
             "foreman/approval/updated",
@@ -502,6 +525,7 @@ class Foreman:
                 task = asyncio.create_task(self.handle_request(client, request))
                 client.track(task)
         except ProtocolError as exc:
+            self.diagnostics.record("protocol.incompatible")
             try:
                 await client.send(error(request, "protocolError", str(exc)))
             except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
@@ -521,6 +545,10 @@ class Foreman:
                 await asyncio.gather(*client.requests, return_exceptions=True)
             self.clients.discard(client)
             if client.authenticated:
+                self.diagnostics.record(
+                    "client.disconnected",
+                    ids={"clientId": client.device_id} if client.device_id else None,
+                )
                 await self.broadcast_service_status()
             try:
                 if client.writer is not None:
@@ -547,6 +575,7 @@ class Foreman:
                 try:
                     request = decode_message(frame.encode("utf-8"))
                 except ProtocolError as exc:
+                    self.diagnostics.record("protocol.incompatible")
                     await client.send(error(None, "protocolError", str(exc)))
                     continue
                 task = asyncio.create_task(self.handle_request(client, request))
@@ -562,21 +591,36 @@ class Foreman:
                 await asyncio.gather(*client.requests, return_exceptions=True)
             self.clients.discard(client)
             if client.authenticated:
+                self.diagnostics.record(
+                    "client.disconnected",
+                    ids={"clientId": client.device_id} if client.device_id else None,
+                )
                 await self.broadcast_service_status()
 
     async def handle_request(
         self, client: Client, request: dict[str, Any]
     ) -> None:
         try:
+            if request.get("type") in ("hello", "pair"):
+                self.observe_pairings()
             result = await self.dispatch(client, request)
-            await client.send(response(request, result))
+            try:
+                await client.send(response(request, result))
+            except Exception:
+                if request["type"] == "service.restart":
+                    self.restart_scheduled = False
+                raise
+            if request["type"] == "service.restart":
+                self.schedule_restart()
             if request["type"] in ("pair", "authenticate") and client.authenticated:
                 await self.broadcast_service_status()
             elif request["type"] == "client.revoke":
                 await self.disconnect_device(result["clientId"])
         except PermissionError as exc:
+            self.record_request_failure(request)
             await client.send(error(request, "unauthorized", str(exc)))
         except (ValueError, CodexError) as exc:
+            self.record_request_failure(request)
             await client.send(error(request, "requestFailed", str(exc)))
         except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
             raise
@@ -587,7 +631,51 @@ class Foreman:
                 pass
         except Exception as exc:
             print(f"request error: {exc}", flush=True)
+            self.record_request_failure(request)
             await client.send(error(request, "internalError", "request failed"))
+
+    def record_request_failure(self, request: dict[str, Any]) -> None:
+        self.diagnostics.record(
+            "request.failed", request=request_category(request.get("type"))
+        )
+
+    def observe_pairings(self) -> None:
+        active = self.state.active_pairing_count()
+        for _ in range(max(0, active - self.known_pairing_count)):
+            self.diagnostics.record("pairing.created")
+        self.known_pairing_count = active
+
+    def schedule_restart(self) -> None:
+        if self.restart_task is None or self.restart_task.done():
+            self.restart_task = asyncio.create_task(self.run_scheduled_restart())
+
+    async def run_scheduled_restart(self) -> None:
+        # The result envelope has already been awaited and flushed by handle_request.
+        await asyncio.sleep(0)
+        try:
+            return_code = await self.restart_runner()
+        except Exception:
+            self.restart_scheduled = False
+            self.diagnostics.record("request.failed", request="service")
+            return
+        if return_code != 0:
+            self.restart_scheduled = False
+            self.diagnostics.record("request.failed", request="service")
+
+    @staticmethod
+    async def systemd_restart() -> int:
+        process = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "--user",
+            "restart",
+            "--no-block",
+            "foreman.service",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return await process.wait()
 
     def http_request(
         self, connection: ServerConnection, request: Request
@@ -718,6 +806,7 @@ class Foreman:
         return {
             "foremanVersion": FOREMAN_VERSION,
             "connected": True,
+            "remoteRestartEnabled": self.remote_restart_enabled,
             "uptimeSeconds": max(0, int(time.monotonic() - self.started_monotonic)),
             "codex": {
                 "connected": codex_connected,
@@ -847,6 +936,8 @@ class Foreman:
                     "access": self.codex.supports("permissionProfile/list"),
                     "images": True,
                     "search": True,
+                    "diagnostics": True,
+                    "remoteRestart": self.remote_restart_enabled,
                 },
             }
         if message_type == "pair":
@@ -862,6 +953,13 @@ class Foreman:
             self.pairing_limiter.succeeded(client.peer)
             client.authenticated = True
             client.device_id = self.state.authenticate_device(token)["id"]
+            self.diagnostics.record(
+                "pairing.consumed", ids={"clientId": client.device_id}
+            )
+            self.observe_pairings()
+            self.diagnostics.record(
+                "client.connected", ids={"clientId": client.device_id}
+            )
             return {"deviceToken": token}
         if message_type == "authenticate":
             token = required_text(payload, "deviceToken", 200)
@@ -870,6 +968,9 @@ class Foreman:
             client.device_id = device["id"] if device else None
             if device is None:
                 raise PermissionError("device token is invalid")
+            self.diagnostics.record(
+                "client.connected", ids={"clientId": client.device_id}
+            )
             return {"authenticated": True}
         if message_type == "ping":
             return {"time": int(time.time())}
@@ -880,12 +981,22 @@ class Foreman:
             return {"repositories": await asyncio.to_thread(self.repositories)}
         if message_type == "service.status":
             return self.service_status()
+        if message_type == "diagnostics.list":
+            return {"events": self.diagnostics.entries(), "limit": 100}
+        if message_type == "service.restart":
+            if not self.remote_restart_enabled:
+                raise ValueError("remote restart is disabled")
+            if self.restart_scheduled:
+                raise ValueError("restart is already scheduled")
+            self.restart_scheduled = True
+            return {"scheduled": True, "timeoutSeconds": 45}
         if message_type == "client.list":
             return {"clients": self.paired_clients(client)}
         if message_type == "client.revoke":
             client_id = required_text(payload, "clientId", 100)
             if not self.state.revoke_device(client_id):
                 raise ValueError("client is no longer paired")
+            self.diagnostics.record("token.revoked", ids={"clientId": client_id})
             return {"revoked": True, "clientId": client_id}
         if message_type == "model.list":
             return {
@@ -1309,6 +1420,10 @@ def optional_number(payload: dict[str, Any], key: str) -> float | None:
     return float(value)
 
 
+def environment_flag(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def message_text(
     payload: dict[str, Any], images: list[dict[str, str]]
 ) -> str:
@@ -1383,6 +1498,7 @@ async def run_service(args: argparse.Namespace) -> None:
         web_origins=tuple(
             origin.strip() for origin in args.web_origins.split(",") if origin.strip()
         ),
+        remote_restart_enabled=args.remote_restart,
     )
     await app.start()
     sockets = ", ".join(str(sock.getsockname()) for sock in app.server.sockets or [])
@@ -1428,6 +1544,11 @@ def arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--web-origins", default=os.environ.get("FOREMAN_WEB_ORIGINS", "")
+    )
+    parser.add_argument(
+        "--remote-restart",
+        action=argparse.BooleanOptionalAction,
+        default=environment_flag(os.environ.get("FOREMAN_REMOTE_RESTART", "0")),
     )
     parser.add_argument(
         "--repository-root",

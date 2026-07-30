@@ -80,6 +80,7 @@ export interface ServiceStatus {
   receivedAt?: number;
   foremanVersion: string;
   connected: boolean;
+  remoteRestartEnabled?: boolean;
   uptimeSeconds: number;
   codex: {
     connected: boolean;
@@ -103,6 +104,15 @@ export interface ServiceStatus {
   repositoryRoot: string;
   activeBrowserConnections?: number;
   activeTcpConnections?: number;
+}
+
+export interface DiagnosticEvent {
+  timestamp: string;
+  severity: "info" | "warning" | "error";
+  category: string;
+  message: string;
+  ids?: { clientId?: string };
+  requestCategory?: string;
 }
 
 export interface PairedClient {

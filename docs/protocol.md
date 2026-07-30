@@ -37,6 +37,7 @@ Implemented types:
 - `model.list`;
 - `access.list`;
 - `service.status`;
+- `diagnostics.list`, `service.restart`;
 - `client.list`, `client.revoke`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.archive`, `session.delete`;
@@ -60,6 +61,23 @@ the caller uses that token. It includes offline paired tokens so they can be
 revoked. `client.revoke` accepts only the opaque `clientId`, deletes that token,
 and immediately disconnects all live connections authenticated with it. Neither
 request exposes a token or digest, and revocation does not alter Codex sessions.
+
+`diagnostics.list` returns at most 100 newest-first in-memory operational events.
+Every event uses a fixed safe message and one allowed category for service,
+runtime, authenticated-client, pairing, token, request-category, protocol, or
+listener lifecycle. It may include only an ISO timestamp, severity, category,
+fixed message, fixed request category, and a generated client ID. It never
+contains prompts, assistant text, commands, file content, approvals, tokens,
+hashes, pairing codes, source addresses, unrestricted paths, traces, logs, or
+raw JSON-RPC. The ring is discarded whenever Foreman stops.
+
+`service.restart` is authenticated and available only when
+`FOREMAN_REMOTE_RESTART=1`. Its result is `{scheduled:true,timeoutSeconds:45}`;
+that envelope is flushed before Foreman invokes exactly
+`systemctl --user restart --no-block foreman.service`. The scheduled result is
+not a success claim. Clients report completion only after the connection drops,
+Foreman returns, and authentication succeeds again. The operation never targets
+Desktop Codex or any other service.
 
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.

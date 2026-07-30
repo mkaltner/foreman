@@ -161,6 +161,7 @@ The responsive dashboard provides:
 
 - host, runtime, connection, and event freshness;
 - connected-client counts and paired-client management;
+- bounded sanitized diagnostics with manual refresh and copy;
 - compact active-session cards with scan-friendly titles and the oldest active turn;
 - a calm attention queue for waiting, failed, disconnected, or stale work;
 - repository and non-Git workspace groups;
@@ -176,6 +177,7 @@ The full web client also supports:
 - archive and delete actions;
 - opt-in browser notifications for background tabs;
 - bounded reconnect without request replay;
+- confirmed, gated restart of Foreman with reconnect progress;
 - durable host/session URLs with Back, Forward, and refresh restoration;
 - bookmarkable search/filter URLs, keyboard search navigation, local pins, and
   a restorable Hidden view;

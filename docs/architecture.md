@@ -32,6 +32,7 @@ Linux files:
 - `approvals.py`: bounded in-memory approval projection, correlation, and validation;
 - `inputs.py`: verified structured-input normalization and response validation;
 - `protocol.py`: bounded JSONL frames;
+- `diagnostics.py`: fixed-message, 100-entry sanitized in-memory event ring;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 
@@ -110,3 +111,10 @@ SHA-256 digests, labels, client types, and pairing times) are persisted by Linux
 The authenticated client projection never returns a token or digest. Codex stores
 transcripts; Git supplies repository state. Foreman never offers arbitrary
 commands or Git writes.
+
+The only remote host mutation is the optional, authenticated Foreman restart.
+It is disabled by default, has no command or unit-name parameter, flushes a
+scheduled acknowledgement, and enqueues a user-systemd restart of only
+`foreman.service`. Client reconnect is the completion signal. Desktop Codex,
+raw journals, arbitrary shell, reboot, upgrades, configuration, files, roles,
+and persistent audit storage are outside this surface.

@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Application
 import android.app.Activity
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Build
@@ -409,7 +411,36 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-internal enum class Screen { Setup, Overview, Sessions, Detail }
+internal enum class Screen { Setup, Overview, Sessions, Detail, Diagnostics }
+
+internal enum class RestartPhase { Idle, Scheduling, Scheduled, Reconnecting, Succeeded, TimedOut, Failed }
+
+internal fun restartPhaseAfterConnection(
+    phase: RestartPhase,
+    connected: Boolean,
+): RestartPhase =
+    when {
+        phase == RestartPhase.Scheduled && !connected -> RestartPhase.Reconnecting
+        phase == RestartPhase.Reconnecting && connected -> RestartPhase.Succeeded
+        else -> phase
+    }
+
+internal fun restartProgressLabel(phase: RestartPhase): String =
+    when (phase) {
+        RestartPhase.Idle -> ""
+        RestartPhase.Scheduling -> "Scheduling restart…"
+        RestartPhase.Scheduled -> "Restart scheduled; waiting for Foreman to stop…"
+        RestartPhase.Reconnecting -> "Foreman is restarting; reconnecting…"
+        RestartPhase.Succeeded -> "Restart complete; Foreman is connected."
+        RestartPhase.TimedOut -> "Restart timed out before Foreman returned."
+        RestartPhase.Failed -> "Restart could not be scheduled."
+    }
+
+internal fun diagnosticsText(events: List<DiagnosticEvent>): String =
+    events.joinToString("\n") { event ->
+        val request = event.requestCategory?.let { " [$it]" }.orEmpty()
+        "${event.timestamp} ${event.severity.uppercase()} ${event.category}$request: ${event.message}"
+    }
 
 internal enum class SessionAction { Archive, Delete }
 
@@ -649,6 +680,10 @@ internal data class UiState(
     val codexVersion: String? = null,
     val runtimeMode: String? = null,
     val runtimeConnected: Boolean = false,
+    val diagnostics: List<DiagnosticEvent> = emptyList(),
+    val diagnosticsLoading: Boolean = false,
+    val diagnosticsError: String? = null,
+    val restartPhase: RestartPhase = RestartPhase.Idle,
 )
 
 private data class SyncSnapshot(
@@ -715,6 +750,10 @@ internal fun UiState.withForgottenConnection(): UiState =
         codexVersion = null,
         runtimeMode = null,
         runtimeConnected = false,
+        diagnostics = emptyList(),
+        diagnosticsLoading = false,
+        diagnosticsError = null,
+        restartPhase = RestartPhase.Idle,
     )
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
@@ -761,6 +800,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         )
     private val json = Json { ignoreUnknownKeys = true }
     private var reconnectJob: Job? = null
+    private var restartReconnectJob: Job? = null
+    private var restartTimeoutJob: Job? = null
+    private var restartRequested = false
+    private var diagnosticsReturnScreen = Screen.Sessions
     private val sessionDiscoveryLock = Any()
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
@@ -805,6 +848,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     overviewSnapshots = snapshots,
                 )
             }
+            if (restartRequested) launchRestartReconnect()
             updateActiveOverview()
         },
     )
@@ -1145,6 +1189,127 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         launchReconnect(saved)
     }
 
+    fun openDiagnostics() {
+        if (!state.value.hasSavedConnection) return
+        diagnosticsReturnScreen = state.value.screen.takeUnless { it == Screen.Diagnostics } ?: Screen.Sessions
+        state.update { it.copy(screen = Screen.Diagnostics, diagnosticsError = null) }
+        refreshDiagnostics()
+    }
+
+    fun closeDiagnostics() {
+        state.update { it.copy(screen = diagnosticsReturnScreen) }
+    }
+
+    fun refreshDiagnostics() {
+        if (!state.value.connected || "diagnostics" !in state.value.capabilities) return
+        viewModelScope.launch {
+            state.update { it.copy(diagnosticsLoading = true, diagnosticsError = null) }
+            runCatching {
+                client.request("diagnostics.list").payload.getValue("events").jsonArray
+                    .map { json.decodeFromJsonElement<DiagnosticEvent>(it) }
+            }.onSuccess { events ->
+                state.update { it.copy(diagnostics = events, diagnosticsLoading = false) }
+            }.onFailure { error ->
+                state.update {
+                    it.copy(
+                        diagnosticsLoading = false,
+                        diagnosticsError = error.message ?: "Diagnostics could not be loaded",
+                    )
+                }
+            }
+        }
+    }
+
+    fun restartService() {
+        val current = state.value
+        if (!current.connected || "remoteRestart" !in current.capabilities || restartRequested) return
+        restartRequested = true
+        state.update { it.copy(restartPhase = RestartPhase.Scheduling, diagnosticsError = null) }
+        viewModelScope.launch {
+            runCatching { client.request("service.restart") }.onSuccess { response ->
+                val scheduled = response.payload["scheduled"]?.jsonPrimitive?.content == "true"
+                if (!scheduled) {
+                    restartRequested = false
+                    state.update { it.copy(restartPhase = RestartPhase.Failed) }
+                } else {
+                    state.update {
+                        if (it.restartPhase == RestartPhase.Reconnecting || it.restartPhase == RestartPhase.Succeeded) it
+                        else it.copy(restartPhase = RestartPhase.Scheduled)
+                    }
+                    if (restartRequested) {
+                        restartTimeoutJob?.cancel()
+                        restartTimeoutJob =
+                            viewModelScope.launch {
+                                delay(45_000)
+                                if (restartRequested) {
+                                    restartRequested = false
+                                    restartReconnectJob?.cancel()
+                                    state.update {
+                                        it.copy(
+                                            restartPhase = RestartPhase.TimedOut,
+                                            connectionStatus = if (it.connected) it.connectionStatus else "disconnected",
+                                        )
+                                    }
+                                }
+                            }
+                    }
+                }
+            }.onFailure {
+                if (state.value.restartPhase != RestartPhase.Reconnecting) {
+                    restartRequested = false
+                    state.update { it.copy(restartPhase = RestartPhase.Failed) }
+                }
+            }
+        }
+    }
+
+    private fun launchRestartReconnect() {
+        if (!restartRequested || restartReconnectJob?.isActive == true) return
+        reconnectJob?.cancel()
+        reconnectJob = null
+        state.update { it.copy(restartPhase = RestartPhase.Reconnecting, connectionStatus = "reconnecting") }
+        restartReconnectJob =
+            viewModelScope.launch {
+                val deadline = System.currentTimeMillis() + 45_000
+                val saved = state.value.activeHostId?.let(hosts::load)
+                while (saved != null && restartRequested && System.currentTimeMillis() < deadline) {
+                    val connected =
+                        runCatching {
+                            withTimeout(5_000) {
+                                client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
+                            }
+                            if (state.value.activeHostId != saved.id) error("Host changed")
+                            hosts.updateConnection(
+                                saved.id,
+                                "connected",
+                                runtimeMode = client.runtimeMode,
+                                connectedAt = System.currentTimeMillis(),
+                            )
+                            state.update {
+                                it.copy(
+                                    connected = true,
+                                    connectionStatus = "connected",
+                                    savedHosts = hosts.all().map(SavedHost::summary),
+                                    capabilities = client.capabilities,
+                                    error = null,
+                                )
+                            }
+                            synchronizeSessions(state.value.selected?.id)
+                        }.isSuccess
+                    if (connected) {
+                        restartRequested = false
+                        restartTimeoutJob?.cancel()
+                        state.update { it.copy(restartPhase = RestartPhase.Succeeded) }
+                        refreshDiagnostics()
+                        return@launch
+                    }
+                    delay(750)
+                }
+                restartRequested = false
+                state.update { it.copy(restartPhase = RestartPhase.TimedOut, connectionStatus = "disconnected") }
+            }
+    }
+
     fun addHost() {
         state.update {
             it.copy(
@@ -1220,6 +1385,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun stopActiveHost() {
         reconnectJob?.cancel()
         reconnectJob = null
+        restartReconnectJob?.cancel()
+        restartReconnectJob = null
+        restartTimeoutJob?.cancel()
+        restartTimeoutJob = null
+        restartRequested = false
         searchJob?.cancel()
         searchJob = null
         synchronized(sessionDiscoveryLock) {
@@ -1279,6 +1449,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 codexVersion = null,
                 runtimeMode = null,
                 runtimeConnected = false,
+                diagnostics = emptyList(),
+                diagnosticsLoading = false,
+                diagnosticsError = null,
+                restartPhase = RestartPhase.Idle,
                 themeMode = restored.themeMode,
                 accentColor = restored.accentColor,
                 followNewMessages = restored.followNewMessages,
@@ -2323,6 +2497,7 @@ private fun ForemanApp(
                 Screen.Overview -> UnifiedOverviewScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Sessions -> SessionsScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Detail -> SessionDetailScreen(state, viewModel, requestTurnMonitoring)
+                Screen.Diagnostics -> DiagnosticsScreen(state, viewModel)
             }
             state.pendingSessionAction?.let { pending ->
                 SessionActionDialog(
@@ -2333,6 +2508,158 @@ private fun ForemanApp(
                 )
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
+    val context = LocalContext.current
+    var confirmRestart by remember { mutableStateOf(false) }
+    BackHandler(onBack = viewModel::closeDiagnostics)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Diagnostics", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = viewModel::closeDiagnostics) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = viewModel::refreshDiagnostics,
+                        enabled = state.connected && !state.diagnosticsLoading,
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh diagnostics")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.padding(padding).fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Text(
+                    "Sanitized, in-memory host events only. Prompts, commands, tokens, paths, approvals, logs, and traces are excluded.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(ClipboardManager::class.java)
+                            clipboard?.setPrimaryClip(
+                                ClipData.newPlainText(
+                                    "Foreman diagnostics",
+                                    diagnosticsText(state.diagnostics),
+                                ),
+                            )
+                        },
+                        enabled = state.diagnostics.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Copy") }
+                    FilledTonalButton(
+                        onClick = { confirmRestart = true },
+                        enabled =
+                            state.connected && "remoteRestart" in state.capabilities &&
+                                state.restartPhase !in setOf(
+                                    RestartPhase.Scheduling,
+                                    RestartPhase.Scheduled,
+                                    RestartPhase.Reconnecting,
+                                ),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Restart Foreman") }
+                }
+            }
+            if ("remoteRestart" !in state.capabilities) {
+                item {
+                    Text(
+                        "Remote restart is disabled on this host.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            if (state.restartPhase != RestartPhase.Idle) {
+                item {
+                    Text(
+                        restartProgressLabel(state.restartPhase),
+                        color =
+                            when (state.restartPhase) {
+                                RestartPhase.Succeeded -> Color(0xFF12B76A)
+                                RestartPhase.Failed, RestartPhase.TimedOut -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+            state.diagnosticsError?.let { message ->
+                item { Text(message, color = MaterialTheme.colorScheme.error) }
+            }
+            if (state.diagnosticsLoading) {
+                item { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+            } else if (state.diagnostics.isEmpty() && state.diagnosticsError == null) {
+                item { Text("No diagnostic events are available.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            items(state.diagnostics) { event ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(event.category, fontWeight = FontWeight.Bold)
+                            Text(
+                                event.severity.uppercase(),
+                                color = if (event.severity == "info") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Text(event.message)
+                        event.requestCategory?.let {
+                            Text("Request category: $it", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            event.timestamp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (confirmRestart) {
+        AlertDialog(
+            onDismissRequest = { confirmRestart = false },
+            title = { Text("Restart Foreman?") },
+            text = {
+                Text(
+                    "This briefly disconnects clients, which will reconnect automatically. Desktop Codex is not restarted or stopped.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRestart = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmRestart = false
+                        viewModel.restartService()
+                    },
+                ) { Text("Restart") }
+            },
+        )
     }
 }
 
@@ -4300,6 +4627,18 @@ private fun UiSettingsMenu(
                         showingNotifications = true
                     },
                 )
+                if (state.hasSavedConnection) {
+                    DropdownMenuItem(
+                        text = { Text("Diagnostics") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Security, contentDescription = null)
+                        },
+                        onClick = {
+                            expanded = false
+                            viewModel.openDiagnostics()
+                        },
+                    )
+                }
                 if (state.hasSavedConnection) {
                     HorizontalDivider()
                     DropdownMenuItem(
