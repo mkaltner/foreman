@@ -34,6 +34,7 @@ h1,h2,h3,p{margin-top:0}
 .connection i{background:#98a2b3;border-radius:50%;width:7px;height:7px}
 .connection.connected i{background:#17b26a;box-shadow:0 0 0 4px #17b26a1f}
 .connection.connecting i,.connection.reconnecting i{background:#f79009;animation:1.2s infinite breathe}
+.host-selector{align-items:center;gap:8px;min-width:0;display:flex}.host-selector select{background:var(--surface-alt);width:auto;max-width:230px;min-height:34px;padding:5px 28px 5px 9px;font-size:12px;font-weight:700}.host-selector>button{border:1px solid var(--border);background:var(--surface-alt);border-radius:8px;width:34px;height:34px;color:var(--accent);font-size:19px;line-height:1}
 @keyframes breathe{50%{opacity:.35}
 }
 .runtime-banner,.error-banner{justify-content:center;align-items:center;min-height:34px;padding:7px 20px;font-size:13px;display:flex}
@@ -154,6 +155,7 @@ button.full{width:100%;min-height:44px}
 .attachment-row img{object-fit:cover;border:1px solid var(--border);border-radius:8px;width:100%;height:100%}
 .attachment-row button{background:var(--text);width:18px;min-width:18px;height:18px;min-height:18px;aspect-ratio:1;color:var(--surface);border:0;border-radius:50%;place-items:center;padding:0;font-size:14px;line-height:1;display:grid;position:absolute;top:-5px;right:-5px}
 .setup-page{background:radial-gradient(circle at 50% 5%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 35%), var(--bg);place-items:center;min-height:100%;padding:30px 16px;display:grid}
+.setup-page.embedded{background:0 0;min-height:0;width:min(100%,480px);padding:0}.setup-page.embedded .setup-card{width:100%}.setup-close{color:var(--muted);background:0 0;border:0;margin-left:auto;font-size:24px}
 .setup-card{border:1px solid var(--border);background:var(--surface);width:min(100%,450px);box-shadow:var(--shadow);border-radius:20px;padding:30px}
 .setup-heading{align-items:center;gap:15px;margin-bottom:24px;display:flex}
 .setup-heading h1{letter-spacing:-.5px;margin:0 0 4px;font-size:24px}
@@ -172,6 +174,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .notification-setting strong{font-size:13px}
 .notification-setting p{color:var(--muted);margin:4px 0 0;font-size:11px;line-height:1.45}
 .notification-setting .secondary{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700}
+.secondary{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700}.add-host{margin-top:14px}.saved-hosts{display:grid}.saved-host{border-top:1px solid var(--border);grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:9px 0;display:grid}.saved-host:first-child{border-top:0}.saved-host.active{background:color-mix(in srgb,var(--accent-soft) 24%,transparent)}.saved-host-main{text-align:left;background:0 0;border:0;min-width:0;padding:5px 7px;display:grid}.saved-host-main strong,.saved-host-main small{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.saved-host-main small{color:var(--muted);margin-top:3px;font-size:11px}.saved-host>button:not(.saved-host-main){background:0 0;border:0;padding:7px;font-size:11px;font-weight:700}
 .settings-card>label{grid-template-columns:120px 1fr;align-items:center;margin-bottom:18px}
 .field-label{color:var(--muted);margin-bottom:9px;font-size:12px;font-weight:700;display:block}
 .accent-grid{grid-template-columns:repeat(4,1fr);gap:8px;display:grid}
@@ -360,6 +363,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .topbar nav button{padding:0 6px;font-size:11px}
 .topbar nav button.active:after{left:8px;right:8px}
 .connection{margin-right:auto;font-size:0}
+.host-selector{gap:5px;max-width:170px}.host-selector .connection{display:none}.host-selector select{max-width:125px}.host-selector>button{width:30px;height:30px}
 .workspace{display:block;position:relative}
 .session-pane,.detail-pane{position:absolute;inset:0}
 .detail-pane,.show-detail .session-pane{display:none}

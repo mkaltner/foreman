@@ -4,14 +4,15 @@ import { notificationStateDescription, TurnNotificationMonitor } from "./notific
 describe("web turn notifications", () => {
   it("notifies only after a session has been observed working", () => {
     const monitor = new TurnNotificationMonitor();
-    expect(monitor.observe("one", "Build client", "completed")).toBeNull();
-    expect(monitor.observe("one", "Build client", "working")).toBeNull();
-    expect(monitor.observe("one", "Build client", "completed")).toEqual({
+    expect(monitor.observe("home", "one", "Build client", "completed")).toBeNull();
+    expect(monitor.observe("home", "one", "Build client", "working")).toBeNull();
+    expect(monitor.observe("home", "one", "Build client", "completed")).toEqual({
+      hostId: "home",
       sessionId: "one",
       title: "Foreman turn completed",
       body: "Build client — This turn finished successfully.",
     });
-    expect(monitor.observe("one", "Build client", "completed")).toBeNull();
+    expect(monitor.observe("home", "one", "Build client", "completed")).toBeNull();
   });
 
   it("covers attention and failure outcomes independently", () => {
@@ -21,11 +22,11 @@ describe("web turn notifications", () => {
       { id: "failed", status: "working" },
       { id: "recent", status: "completed" },
     ]);
-    expect(monitor.observe("attention", "Review change", "waiting")?.title)
+    expect(monitor.observe("work", "attention", "Review change", "waiting")?.title)
       .toBe("Foreman needs your attention");
-    expect(monitor.observe("failed", "Run tests", "failed")?.title)
+    expect(monitor.observe("work", "failed", "Run tests", "failed")?.title)
       .toBe("Foreman turn failed");
-    expect(monitor.observe("recent", "Old task", "completed")).toBeNull();
+    expect(monitor.observe("work", "recent", "Old task", "completed")).toBeNull();
   });
 
   it("explains the secure-context requirement", () => {

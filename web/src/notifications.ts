@@ -1,4 +1,5 @@
 export interface TurnNotification {
+  hostId: string;
   sessionId: string;
   title: string;
   body: string;
@@ -41,7 +42,7 @@ export class TurnNotificationMonitor {
     }
   }
 
-  observe(sessionId: string, sessionTitle: string, status: string): TurnNotification | null {
+  observe(hostId: string, sessionId: string, sessionTitle: string, status: string): TurnNotification | null {
     if (status === "working") {
       this.active.add(sessionId);
       return null;
@@ -51,6 +52,7 @@ export class TurnNotificationMonitor {
     if (!outcome) return null;
     this.active.delete(sessionId);
     return {
+      hostId,
       sessionId,
       title: outcome.title,
       body: sessionTitle ? `${sessionTitle} — ${outcome.detail}` : outcome.detail,
@@ -74,8 +76,8 @@ export async function showTurnNotification(notification: TurnNotification): Prom
   if (browserNotificationState() !== "granted") return;
   const options: NotificationOptions = {
     body: notification.body,
-    tag: `foreman-turn-${notification.sessionId}`,
-    data: { sessionId: notification.sessionId },
+    tag: `foreman-turn-${notification.hostId}-${notification.sessionId}`,
+    data: { hostId: notification.hostId, sessionId: notification.sessionId },
   };
   const registration = await navigator.serviceWorker?.getRegistration();
   if (registration) {
@@ -86,7 +88,7 @@ export async function showTurnNotification(notification: TurnNotification): Prom
   displayed.onclick = () => {
     window.focus();
     window.dispatchEvent(new CustomEvent("foreman.notification.open", {
-      detail: { sessionId: notification.sessionId },
+      detail: { hostId: notification.hostId, sessionId: notification.sessionId },
     }));
     displayed.close();
   };
