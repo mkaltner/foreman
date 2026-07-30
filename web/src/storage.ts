@@ -45,12 +45,14 @@ const LEGACY_HOST_KEY = "foreman.host.v1";
 const HOSTS_KEY = "foreman.hosts.v2";
 const APPEARANCE_KEY = "foreman.appearance.v1";
 const NOTIFICATIONS_KEY = "foreman.notifications.v1";
+const NOTIFICATION_PREFERENCES_KEY = "foreman.notification-preferences.v2";
 const DASHBOARD_KEY = "foreman.dashboard.v1";
 const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 const SESSION_SEARCH_KEY = "foreman.session-search.v1";
 const HOST_SCOPED_KEYS = [
   APPEARANCE_KEY,
   NOTIFICATIONS_KEY,
+  NOTIFICATION_PREFERENCES_KEY,
   DASHBOARD_KEY,
   SESSION_ORGANIZATION_KEY,
   SESSION_SEARCH_KEY,
@@ -211,6 +213,62 @@ export function saveNotificationsEnabled(
   storage.setItem(scopedKey(NOTIFICATIONS_KEY, hostId), String(enabled));
 }
 
+export function loadGlobalNotificationPreferences(
+  storage: Storage = localStorage,
+): NotificationPreferences {
+  return parseNotificationPreferences(storage.getItem(NOTIFICATION_PREFERENCES_KEY));
+}
+
+export function loadHostNotificationOverride(
+  hostId: string | null | undefined,
+  storage: Storage = localStorage,
+): NotificationPreferences | null {
+  if (!hostId) return null;
+  const raw = storage.getItem(scopedKey(NOTIFICATION_PREFERENCES_KEY, hostId));
+  if (raw === null) return null;
+  const inherited = loadGlobalNotificationPreferences(storage);
+  try {
+    const override = JSON.parse(raw) as Partial<NotificationPreferences> | null;
+    if (!override || typeof override !== "object") return inherited;
+    return normalizeNotificationPreferences({
+      ...inherited,
+      ...override,
+      repositoryOverrides: override.repositoryOverrides ?? inherited.repositoryOverrides,
+    });
+  } catch {
+    return inherited;
+  }
+}
+
+export function loadNotificationPreferences(
+  hostId?: string | null,
+  storage: Storage = localStorage,
+): NotificationPreferences {
+  return loadHostNotificationOverride(hostId, storage) ?? loadGlobalNotificationPreferences(storage);
+}
+
+export function saveNotificationPreferences(
+  preferences: NotificationPreferences,
+  hostId?: string | null,
+  storage: Storage = localStorage,
+): void {
+  const normalized = normalizeNotificationPreferences(preferences);
+  const stored = hostId
+    ? notificationPreferenceDifference(loadGlobalNotificationPreferences(storage), normalized)
+    : normalized;
+  storage.setItem(
+    scopedKey(NOTIFICATION_PREFERENCES_KEY, hostId),
+    JSON.stringify(stored),
+  );
+}
+
+export function clearHostNotificationOverride(
+  hostId: string,
+  storage: Storage = localStorage,
+): void {
+  storage.removeItem(scopedKey(NOTIFICATION_PREFERENCES_KEY, hostId));
+}
+
 export interface DashboardPreferences {
   filter: "all" | "active" | "waiting" | "failed" | "recent";
   repository: string;
@@ -293,6 +351,43 @@ function parseRegistry(raw: string | null): HostRegistry | null {
   }
 }
 
+function parseNotificationPreferences(raw: string | null): NotificationPreferences {
+  if (raw === null) return DEFAULT_NOTIFICATION_PREFERENCES;
+  try {
+    return normalizeNotificationPreferences(JSON.parse(raw));
+  } catch {
+    return DEFAULT_NOTIFICATION_PREFERENCES;
+  }
+}
+
+function notificationPreferenceDifference(
+  inherited: NotificationPreferences,
+  selected: NotificationPreferences,
+): Partial<NotificationPreferences> {
+  const difference: Partial<NotificationPreferences> = {};
+  const keys: Array<Exclude<keyof NotificationPreferences, "repositoryOverrides">> = [
+    "notifyApprovals",
+    "notifyFailures",
+    "notifyCompletions",
+    "notifyInterruptions",
+    "notifyLongRunning",
+    "longRunningMinutes",
+    "quietHoursEnabled",
+    "quietStart",
+    "quietEnd",
+    "criticalBypassQuietHours",
+  ];
+  for (const key of keys) {
+    if (selected[key] !== inherited[key]) {
+      Object.assign(difference, { [key]: selected[key] });
+    }
+  }
+  if (JSON.stringify(selected.repositoryOverrides) !== JSON.stringify(inherited.repositoryOverrides)) {
+    difference.repositoryOverrides = selected.repositoryOverrides;
+  }
+  return difference;
+}
+
 function parseLegacyHost(raw: string | null): LegacyStoredHost | null {
   try {
     const parsed = JSON.parse(raw ?? "null") as Partial<LegacyStoredHost> | null;
@@ -366,3 +461,8 @@ function stringIds(value: unknown): string[] {
     ? [...new Set(value.filter((id): id is string => typeof id === "string" && id.length <= 100))].slice(-1000)
     : [];
 }
+import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  normalizeNotificationPreferences,
+  type NotificationPreferences,
+} from "./notification-preferences";

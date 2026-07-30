@@ -142,6 +142,11 @@ data class SessionSummary(
     val model: String? = null,
     val reasoningEffort: String? = null,
     val accessLevel: String? = null,
+    val activeTurnStartedAt: Long? = null,
+    val terminalAt: Long? = null,
+    val turnDurationMs: Long? = null,
+    val failureSummary: String? = null,
+    val waitType: String? = null,
 )
 
 @Serializable

@@ -24,12 +24,18 @@ import {
 import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
 import {
   browserNotificationState,
+  clearTurnNotification,
   notificationStateDescription,
   requestBrowserNotifications,
   showTurnNotification,
   TurnNotificationMonitor,
   type BrowserNotificationState,
 } from "./notifications";
+import {
+  setRepositoryOverride,
+  type NotificationPreferences,
+  type RepositoryNotificationOverride,
+} from "./notification-preferences";
 import {
   applySessionEvent,
   applySessionSummaryEventBatch,
@@ -59,13 +65,15 @@ import {
   forgetStoredHost,
   hostIdFromUrl,
   loadAppearance,
+  loadHostNotificationOverride,
   loadHostRegistry,
-  loadNotificationsEnabled,
+  loadNotificationPreferences,
   loadSessionSearch,
   loadSessionOrganization,
   saveAppearance,
+  clearHostNotificationOverride,
   saveHostRegistry,
-  saveNotificationsEnabled,
+  saveNotificationPreferences,
   saveSessionSearch,
   saveSessionOrganization,
   selectStoredHost,
@@ -82,6 +90,7 @@ import {
   dateBounds,
   filterSessions,
   parseSessionFilters,
+  repositoryIdentity,
   repositoryFilterOptions,
   sessionFiltersSearch,
   type SessionFilters,
@@ -147,7 +156,15 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(() => loadNotificationsEnabled(initialHostId));
+  const [notificationPreferences, setNotificationPreferences] = useState(() =>
+    loadNotificationPreferences(initialHostId)
+  );
+  const [hostNotificationOverride, setHostNotificationOverride] = useState(() =>
+    loadHostNotificationOverride(initialHostId) !== null
+  );
+  const [notificationState, setNotificationState] = useState<BrowserNotificationState>(() =>
+    browserNotificationState()
+  );
   const [searchFilters, setSearchFilters] = useState<SessionFilters>(initialFilters);
   const [searchResults, setSearchResults] = useState<SessionSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -155,12 +172,14 @@ function App() {
   const [searchRevision, setSearchRevision] = useState(0);
   const [organization, setOrganization] = useState(() => loadSessionOrganization(initialHostId));
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
-  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
   const lastImmediateSearch = useRef(0);
   const lastBackendSearchKey = useRef("");
   const searchGeneration = useRef(0);
   const sessionsRef = useRef<SessionSummary[]>([]);
+  const repositoriesRef = useRef<RepositoryInfo[]>([]);
+  const repositoryRootRef = useRef("");
   const currentRef = useRef<SessionSummary | null>(null);
   const connectedRef = useRef(false);
   const activeHostIdRef = useRef<string | null>(initialHostId);
@@ -200,12 +219,32 @@ function App() {
   }, []);
 
   useEffect(() => applyAppearance(appearance), [appearance]);
-  useEffect(() => { notificationsEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
+  useEffect(() => {
+    notificationPreferencesRef.current = notificationPreferences;
+    notificationMonitor.current.configure(notificationPreferences, (notification) => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+        void showTurnNotification(notification).catch(() => undefined);
+      }
+    }, (tag) => { void clearTurnNotification(tag).catch(() => undefined); });
+  }, [notificationPreferences]);
   useEffect(() => { searchFiltersRef.current = searchFilters; }, [searchFilters]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { repositoriesRef.current = repositories; }, [repositories]);
+  useEffect(() => {
+    repositoryRootRef.current = serviceStatus?.repositoryRoot ?? "";
+  }, [serviceStatus?.repositoryRoot]);
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { connectedRef.current = connection === "connected"; }, [connection]);
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => {
+    const refreshPermission = () => setNotificationState(browserNotificationState());
+    window.addEventListener("focus", refreshPermission);
+    document.addEventListener("visibilitychange", refreshPermission);
+    return () => {
+      window.removeEventListener("focus", refreshPermission);
+      document.removeEventListener("visibilitychange", refreshPermission);
+    };
+  }, []);
   useEffect(() => {
     saveHostRegistry(hostRegistry);
     updateRoute(initialRoute, true);
@@ -357,6 +396,26 @@ function App() {
       });
       setCurrent((previous) => previous ? updateSession(previous) : previous);
       const feedSession = sessionsRef.current.find((session) => session.id === approval.sessionId);
+      const hostId = activeHostIdRef.current ?? "";
+      if (resolved) {
+        const tag = notificationMonitor.current.resolveApproval(hostId, approval.id);
+        void clearTurnNotification(tag).catch(() => undefined);
+      } else if (feedSession && message.type === "approval.requested") {
+        const repositoryId = repositoryIdentity(
+          feedSession.repository,
+          repositoriesRef.current,
+          repositoryRootRef.current,
+        ).id;
+        const notification = notificationMonitor.current.observeApproval(
+          hostId,
+          approval.sessionId,
+          approval.id,
+          repositoryId,
+        );
+        if (notification && (document.visibilityState !== "visible" || !document.hasFocus())) {
+          void showTurnNotification(notification).catch(() => undefined);
+        }
+      }
       if (feedSession && (message.type === "approval.requested" || message.type === "approval.resolved")) {
         setRecentActivity((previous) => recordRecentActivity(previous, feedSession, {
           kind: "activity",
@@ -419,16 +478,27 @@ function App() {
       if (searchFiltersRef.current.query.trim()) {
         setSearchRevision((value) => value + 1);
       }
-      const title = sessionsRef.current.find(({ id }) => id === payload.sessionId)?.title ?? "Foreman session";
+      const observedSession = payload.event.session ?? sessionsRef.current.find(
+        ({ id }) => id === payload.sessionId,
+      );
+      const repositoryId = repositoryIdentity(
+        observedSession?.repository ?? "",
+        repositoriesRef.current,
+        repositoryRootRef.current,
+      ).id;
       const notification = notificationMonitor.current.observe(
-        activeHostIdRef.current ?? "",
-        payload.sessionId,
-        title,
-        payload.event.status,
+        {
+          hostId: activeHostIdRef.current ?? "",
+          sessionId: payload.sessionId,
+          repositoryId,
+          status: payload.event.status,
+          turnId: payload.event.turnId ?? observedSession?.activeTurnId,
+          activeTurnStartedAt: payload.event.startedAt ?? observedSession?.activeTurnStartedAt,
+          waitType: payload.event.waitType ?? observedSession?.waitType,
+        },
       );
       if (
         notification &&
-        notificationsEnabledRef.current &&
         (document.visibilityState !== "visible" || !document.hasFocus())
       ) {
         void showTurnNotification(notification).catch(() => undefined);
@@ -481,7 +551,13 @@ function App() {
     dashboardFrame.current = null;
     pendingDashboardEvents.current.clear();
     dashboardSubscriptions.current.clear();
+    notificationMonitor.current.dispose();
     notificationMonitor.current = new TurnNotificationMonitor();
+    notificationMonitor.current.configure(notificationPreferencesRef.current, (notification) => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+        void showTurnNotification(notification).catch(() => undefined);
+      }
+    }, (tag) => { void clearTurnNotification(tag).catch(() => undefined); });
     sessionsRef.current = [];
     currentRef.current = null;
     selectedIdRef.current = null;
@@ -548,7 +624,19 @@ function App() {
       setApprovals(approvalResult.approvals);
       const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
       sessionsRef.current = reconciled;
-      notificationMonitor.current.seed(reconciled);
+      notificationMonitor.current.seed(reconciled.map((session) => ({
+        hostId,
+        sessionId: session.id,
+        repositoryId: repositoryIdentity(
+          session.repository,
+          repositoryResult.repositories,
+          statusResult.repositoryRoot,
+        ).id,
+        status: session.status,
+        turnId: session.activeTurnId,
+        activeTurnStartedAt: session.activeTurnStartedAt,
+        waitType: session.waitType,
+      })));
       setSessions(reconciled);
       const validIds = new Set(reconciled.map(({ id }) => id));
       setOrganization((previous) => {
@@ -689,11 +777,12 @@ function App() {
       const next = selectStoredHost(registry, hostId);
       persistRegistry(next);
       const nextAppearance = loadAppearance(hostId);
-      const nextNotifications = loadNotificationsEnabled(hostId);
+      const nextNotifications = loadNotificationPreferences(hostId);
       const nextOrganization = loadSessionOrganization(hostId);
       setAppearance(nextAppearance);
-      setNotificationsEnabled(nextNotifications);
-      notificationsEnabledRef.current = nextNotifications;
+      setNotificationPreferences(nextNotifications);
+      notificationPreferencesRef.current = nextNotifications;
+      setHostNotificationOverride(loadHostNotificationOverride(hostId) !== null);
       setOrganization(nextOrganization);
     }
     const filters = parseSessionFilters(filtersSearch ?? loadSessionSearch(hostId));
@@ -746,6 +835,27 @@ function App() {
     saveAppearance(next, activeHostIdRef.current);
   };
 
+  const updateNotificationPreferences = (next: NotificationPreferences) => {
+    const hostId = activeHostIdRef.current;
+    saveNotificationPreferences(next, hostNotificationOverride ? hostId : null);
+    notificationPreferencesRef.current = next;
+    setNotificationPreferences(next);
+  };
+
+  const updateHostNotificationOverride = (enabled: boolean) => {
+    const hostId = activeHostIdRef.current;
+    if (!hostId) return;
+    if (enabled) {
+      saveNotificationPreferences(notificationPreferencesRef.current, hostId);
+    } else {
+      clearHostNotificationOverride(hostId);
+      const inherited = loadNotificationPreferences(null);
+      notificationPreferencesRef.current = inherited;
+      setNotificationPreferences(inherited);
+    }
+    setHostNotificationOverride(enabled);
+  };
+
   const forget = (hostId: string) => {
     const wasActive = activeHostIdRef.current === hostId;
     if (wasActive) client.disconnect();
@@ -756,9 +866,10 @@ function App() {
       const nextId = next.activeHostId;
       if (nextId) {
         setAppearance(loadAppearance(nextId));
-        const nextNotifications = loadNotificationsEnabled(nextId);
-        setNotificationsEnabled(nextNotifications);
-        notificationsEnabledRef.current = nextNotifications;
+        const nextNotifications = loadNotificationPreferences(nextId);
+        setNotificationPreferences(nextNotifications);
+        notificationPreferencesRef.current = nextNotifications;
+        setHostNotificationOverride(loadHostNotificationOverride(nextId) !== null);
         setOrganization(loadSessionOrganization(nextId));
         const filters = parseSessionFilters(loadSessionSearch(nextId));
         searchFiltersRef.current = filters;
@@ -790,9 +901,10 @@ function App() {
       clearHostProjections();
       persistRegistry(next);
       setAppearance(loadAppearance(saved.id));
-      const savedNotifications = loadNotificationsEnabled(saved.id);
-      setNotificationsEnabled(savedNotifications);
-      notificationsEnabledRef.current = savedNotifications;
+      const savedNotifications = loadNotificationPreferences(saved.id);
+      setNotificationPreferences(savedNotifications);
+      notificationPreferencesRef.current = savedNotifications;
+      setHostNotificationOverride(false);
       setOrganization(loadSessionOrganization(saved.id));
       const filters = parseSessionFilters(loadSessionSearch(saved.id));
       searchFiltersRef.current = filters;
@@ -924,15 +1036,17 @@ function App() {
           appearance={appearance}
           hello={hello}
           onAppearance={updateAppearance}
-          notificationsEnabled={notificationsEnabled}
-          notificationState={browserNotificationState()}
-          onNotifications={async (enabled) => {
-            if (enabled && !await requestBrowserNotifications()) {
-              setError(notificationStateDescription(browserNotificationState(), false));
-              return;
-            }
-            saveNotificationsEnabled(enabled, activeHost.id);
-            setNotificationsEnabled(enabled);
+          notificationPreferences={notificationPreferences}
+          notificationState={notificationState}
+          hostNotificationOverride={hostNotificationOverride}
+          repositoryOptions={repositoryOptions}
+          onNotificationPreferences={updateNotificationPreferences}
+          onHostNotificationOverride={updateHostNotificationOverride}
+          onNotificationPermission={async () => {
+            const granted = await requestBrowserNotifications();
+            const next = browserNotificationState();
+            setNotificationState(next);
+            if (!granted) setError(notificationStateDescription(next, false));
           }}
           onAdd={() => setHostSetupOpen(true)}
           onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
@@ -1139,7 +1253,7 @@ export function SetupView({
         >
           <label>Host<input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.59" autoComplete="url" required /></label>
           <label>Web port<input value={webPort} onChange={(event) => setWebPort(event.target.value)} inputMode="numeric" min="1" max="65535" required /></label>
-          <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Home server" autoComplete="off" /></label>
+          <label>Host display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Home server" autoComplete="off" /></label>
           <label>Pairing code<input value={pairingKey} onChange={(event) => setPairingKey(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>
           <label>Device name<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} autoComplete="name" required /></label>
           <button className="primary full" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button>
@@ -1622,10 +1736,75 @@ function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: R
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (selected) void onCreate(selected); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div><label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label>{repositories.length === 0 && <p className="muted">No Git repositories were found under Foreman’s configured root.</p>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!selected}>Create</button></div></form></div>;
 }
 
-function SettingsView({ host, hosts, appearance, hello, notificationsEnabled, notificationState, onAppearance, onNotifications, onAdd, onSelect, onRename, onForget }: { host: StoredHost; hosts: StoredHost[]; appearance: Appearance; hello: HelloPayload | null; notificationsEnabled: boolean; notificationState: BrowserNotificationState; onAppearance: (appearance: Appearance) => void; onNotifications: (enabled: boolean) => Promise<void>; onAdd: () => void; onSelect: (hostId: string) => void; onRename: (hostId: string, displayName: string) => void; onForget: (hostId: string) => void }) {
-  const notificationUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
-  const notificationsActive = notificationsEnabled && notificationState === "granted";
-  return <main className="settings-page"><header><span className="eyebrow">Preferences</span><h1>Settings</h1></header><section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section><section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section><section className="settings-card"><h2>Notifications</h2><div className="notification-setting"><div><strong>Turn results</strong><p>{notificationStateDescription(notificationState, notificationsActive)}</p><p>Background monitoring is limited to the active host.</p></div><button className="secondary" disabled={notificationUnavailable} onClick={() => void onNotifications(!notificationsActive)}>{notificationsActive ? "Disable" : notificationState === "denied" ? "Blocked" : "Enable"}</button></div></section><section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section></main>;
+function SettingsView({
+  host,
+  hosts,
+  appearance,
+  hello,
+  notificationPreferences,
+  notificationState,
+  hostNotificationOverride,
+  repositoryOptions,
+  onAppearance,
+  onNotificationPreferences,
+  onHostNotificationOverride,
+  onNotificationPermission,
+  onAdd,
+  onSelect,
+  onRename,
+  onForget,
+}: {
+  host: StoredHost;
+  hosts: StoredHost[];
+  appearance: Appearance;
+  hello: HelloPayload | null;
+  notificationPreferences: NotificationPreferences;
+  notificationState: BrowserNotificationState;
+  hostNotificationOverride: boolean;
+  repositoryOptions: RepositoryFilterOption[];
+  onAppearance: (appearance: Appearance) => void;
+  onNotificationPreferences: (preferences: NotificationPreferences) => void;
+  onHostNotificationOverride: (enabled: boolean) => void;
+  onNotificationPermission: () => Promise<void>;
+  onAdd: () => void;
+  onSelect: (hostId: string) => void;
+  onRename: (hostId: string, displayName: string) => void;
+  onForget: (hostId: string) => void;
+}) {
+  const permissionUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
+  const update = <K extends keyof NotificationPreferences>(key: K, value: NotificationPreferences[K]) =>
+    onNotificationPreferences({ ...notificationPreferences, [key]: value });
+  const eventToggles: Array<[keyof NotificationPreferences, string]> = [
+    ["notifyApprovals", "Approvals and input"],
+    ["notifyFailures", "Failures"],
+    ["notifyCompletions", "Completions"],
+    ["notifyInterruptions", "Interruptions"],
+    ["notifyLongRunning", "Long-running turns"],
+  ];
+  const overrideKeys: Array<[keyof RepositoryNotificationOverride, string]> = [
+    ["notifyApprovals", "Approvals/input"],
+    ["notifyFailures", "Failures"],
+    ["notifyCompletions", "Completions"],
+    ["notifyInterruptions", "Interruptions"],
+    ["notifyLongRunning", "Long-running"],
+  ];
+  return <main className="settings-page">
+    <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
+    <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
+    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
+    <section className="settings-card notification-preferences">
+      <h2>Notifications</h2>
+      <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p></div><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button></div>
+      <label className="check-row"><input type="checkbox" checked={hostNotificationOverride} onChange={(event) => onHostNotificationOverride(event.target.checked)} /><span><strong>Override for {host.displayName}</strong><small>{hostNotificationOverride ? "This host uses its own local settings." : "This host inherits the global browser defaults."}</small></span></label>
+      <div className="notification-toggle-grid">{eventToggles.map(([key, label]) => <label className="check-row single-line" key={key}><input type="checkbox" checked={notificationPreferences[key] as boolean} onChange={(event) => update(key, event.target.checked)} /><span>{label}</span></label>)}</div>
+      <label>Long-running threshold (minutes)<input type="number" min="1" max="1440" value={notificationPreferences.longRunningMinutes} disabled={!notificationPreferences.notifyLongRunning} onChange={(event) => update("longRunningMinutes", Math.max(1, Math.min(1440, Number(event.target.value) || 1)))} /></label>
+      <label className="check-row single-line"><input type="checkbox" checked={notificationPreferences.quietHoursEnabled} onChange={(event) => update("quietHoursEnabled", event.target.checked)} /><span>Quiet hours</span></label>
+      {notificationPreferences.quietHoursEnabled && <div className="quiet-hours"><label>Start<input type="time" value={notificationPreferences.quietStart} onChange={(event) => update("quietStart", event.target.value)} /></label><label>End<input type="time" value={notificationPreferences.quietEnd} onChange={(event) => update("quietEnd", event.target.value)} /></label></div>}
+      <label className="check-row"><input type="checkbox" checked={notificationPreferences.criticalBypassQuietHours} onChange={(event) => update("criticalBypassQuietHours", event.target.checked)} /><span><strong>Allow critical alerts during quiet hours</strong><small>Only approval/input and failure alerts bypass quiet hours.</small></span></label>
+      <div className="repository-overrides"><h3>Repository and workspace overrides</h3><p className="muted">Each event inherits the settings above until explicitly set to on or off. Identities are canonical workspace paths and stay in this browser.</p>{repositoryOptions.length === 0 && <p className="muted">No known repositories or workspaces yet.</p>}{repositoryOptions.map((repository) => <details key={repository.id}><summary>{repository.label}</summary><small title={repository.id}>{repository.id}</small><div className="override-grid">{overrideKeys.map(([key, label]) => { const value = notificationPreferences.repositoryOverrides[repository.id]?.[key]; return <label key={key}>{label}<select value={value === undefined ? "inherit" : String(value)} onChange={(event) => onNotificationPreferences(setRepositoryOverride(notificationPreferences, repository.id, { [key]: event.target.value === "inherit" ? undefined : event.target.value === "true" }))}><option value="inherit">Inherit</option><option value="true">On</option><option value="false">Off</option></select></label>; })}</div></details>)}</div>
+    </section>
+    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
+  </main>;
 }
 
 function StatusPill({ status }: { status: string }) {

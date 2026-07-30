@@ -611,6 +611,9 @@ internal data class UiState(
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
+    val notificationPreferences: NotificationPreferences = NotificationPreferences(),
+    val hostNotificationOverride: Boolean = false,
+    val notificationPermissionGranted: Boolean = false,
     val pendingSessionAction: PendingSessionAction? = null,
     val capabilities: Set<String> = emptySet(),
     val accessLevels: List<AccessLevelInfo> = emptyList(),
@@ -673,6 +676,8 @@ internal fun UiState.withForgottenConnection(): UiState =
         repositories = emptyList(),
         selected = null,
         showNewSession = false,
+        notificationPreferences = NotificationPreferences(),
+        hostNotificationOverride = false,
         pendingSessionAction = null,
         capabilities = emptySet(),
         accessLevels = emptyList(),
@@ -687,6 +692,7 @@ internal fun UiState.withForgottenConnection(): UiState =
 
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
     private val hosts = HostStore(application)
+    private val notificationPreferencesStore = NotificationPreferenceStore(application)
     private var activeHost = hosts.active()
     private var preferences = PreferenceStore(application, activeHost?.id)
     private val savedPreferences = preferences.load()
@@ -712,6 +718,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 followNewMessages = savedPreferences.followNewMessages,
                 hapticsEnabled = savedPreferences.hapticsEnabled,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
+                notificationPreferences = notificationPreferencesStore.load(activeHost?.id),
+                hostNotificationOverride = notificationPreferencesStore.hasHostOverride(activeHost?.id),
                 composerAccessLevel = savedPreferences.accessLevel,
                 composerModel = savedPreferences.model,
                 composerEffort = savedPreferences.reasoningEffort,
@@ -924,6 +932,37 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun setNotificationPreferences(value: NotificationPreferences) {
+        val normalized = value.normalized()
+        val hostId = state.value.activeHostId
+        notificationPreferencesStore.save(
+            normalized,
+            hostId.takeIf { state.value.hostNotificationOverride },
+        )
+        state.update { it.copy(notificationPreferences = normalized) }
+        runCatching { TurnMonitorService.refreshPreferences(getApplication()) }
+    }
+
+    fun setHostNotificationOverride(enabled: Boolean) {
+        val hostId = state.value.activeHostId ?: return
+        val next =
+            if (enabled) {
+                state.value.notificationPreferences.also {
+                    notificationPreferencesStore.save(it, hostId)
+                }
+            } else {
+                notificationPreferencesStore.clearHostOverride(hostId)
+                notificationPreferencesStore.loadGlobal()
+            }
+        state.update {
+            it.copy(
+                notificationPreferences = next,
+                hostNotificationOverride = enabled,
+            )
+        }
+        runCatching { TurnMonitorService.refreshPreferences(getApplication()) }
+    }
+
     fun notificationPermissionDenied() {
         state.update {
             it.copy(error = "Allow notifications to monitor active turns in the background.")
@@ -931,6 +970,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun onNotificationPermissionState(granted: Boolean) {
+        state.update { it.copy(notificationPermissionGranted = granted) }
         if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
     }
 
@@ -1010,6 +1050,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         followNewMessages = restored.followNewMessages,
                         hapticsEnabled = restored.hapticsEnabled,
                         monitorActiveTurns = restored.monitorActiveTurns,
+                        notificationPreferences = notificationPreferencesStore.load(saved.id),
+                        hostNotificationOverride = notificationPreferencesStore.hasHostOverride(saved.id),
                         composerAccessLevel = restored.accessLevel,
                         composerModel = restored.model,
                         composerEffort = restored.reasoningEffort,
@@ -1076,6 +1118,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun forgetHost(hostId: String) {
         val forgettingActive = state.value.activeHostId == hostId
         if (forgettingActive) stopActiveHost()
+        notificationPreferencesStore.clearHostOverride(hostId)
         val next = hosts.forget(hostId)
         if (!forgettingActive) {
             state.update { it.copy(savedHosts = hosts.all().map { host -> host.summary() }) }
@@ -1158,6 +1201,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 followNewMessages = restored.followNewMessages,
                 hapticsEnabled = restored.hapticsEnabled,
                 monitorActiveTurns = restored.monitorActiveTurns,
+                notificationPreferences = notificationPreferencesStore.load(saved.id),
+                hostNotificationOverride = notificationPreferencesStore.hasHostOverride(saved.id),
                 composerAccessLevel = restored.accessLevel,
                 composerModel = restored.model,
                 composerEffort = restored.reasoningEffort,
@@ -1848,6 +1893,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                 status = newStatus,
                                 attention = newStatus == "waiting",
                                 activeTurnId = active,
+                                activeTurnStartedAt =
+                                    if (newStatus == "working") {
+                                        event["startedAt"]?.jsonPrimitive?.content?.toLongOrNull()
+                                            ?: selected.activeTurnStartedAt
+                                    } else {
+                                        null
+                                    },
+                                waitType =
+                                    if (newStatus == "waiting") {
+                                        event["waitType"]?.jsonPrimitive?.content
+                                    } else {
+                                        null
+                                    },
                                 activityLabel =
                                     if (newStatus == "working") {
                                         selected.activityLabel.ifBlank { "Thinking" }
@@ -1903,8 +1961,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun prepareMonitor(session: SessionSummary, active: Boolean): Boolean {
         if (!state.value.monitorActiveTurns) return false
         return runCatching {
-            val hostId = requireNotNull(state.value.activeHostId)
-            TurnMonitorService.monitor(getApplication(), hostId, session.id, active)
+            val current = state.value
+            val hostId = requireNotNull(current.activeHostId)
+            val repositoryId = sessionRepositoryIdentity(
+                session.repository,
+                current.repositories,
+                current.repositoryRoot,
+            ).id
+            TurnMonitorService.monitor(
+                getApplication(),
+                hostId,
+                session.id,
+                active,
+                repositoryId,
+                session.activeTurnId,
+                session.activeTurnStartedAt,
+            )
         }.onFailure { error ->
             state.update {
                 it.copy(error = error.message ?: "Android could not start background monitoring.")
@@ -2020,14 +2092,6 @@ private fun SetupScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
-                value = state.displayName,
-                onValueChange = viewModel::setDisplayName,
-                label = { Text("Host display name") },
-                placeholder = { Text("Home server") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
                 value = state.host,
                 onValueChange = viewModel::setHost,
                 label = { Text("Host") },
@@ -2036,9 +2100,17 @@ private fun SetupScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
+                value = state.displayName,
+                onValueChange = viewModel::setDisplayName,
+                label = { Text("Host display name") },
+                placeholder = { Text("Home server") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
                 value = state.pairingKey,
                 onValueChange = viewModel::setPairingKey,
-                label = { Text("Pairing key") },
+                label = { Text("Pairing code") },
                 placeholder = { Text("6-digit code") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
@@ -3403,12 +3475,18 @@ private fun UiSettingsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
+    var showingNotifications by remember { mutableStateOf(false) }
+    var notificationRepositoryId by remember { mutableStateOf<String?>(null) }
+    var quietStartText by remember(state.notificationPreferences.quietStart) { mutableStateOf(state.notificationPreferences.quietStart) }
+    var quietEndText by remember(state.notificationPreferences.quietEnd) { mutableStateOf(state.notificationPreferences.quietEnd) }
     var confirmForgetHost by remember { mutableStateOf(false) }
     val hapticFeedback = LocalHapticFeedback.current
     Box(modifier) {
         IconButton(
             onClick = {
                 showingAccentColors = false
+                showingNotifications = false
+                notificationRepositoryId = null
                 expanded = true
             },
         ) {
@@ -3419,6 +3497,8 @@ private fun UiSettingsMenu(
             onDismissRequest = {
                 expanded = false
                 showingAccentColors = false
+                showingNotifications = false
+                notificationRepositoryId = null
             },
         ) {
             if (showingAccentColors) {
@@ -3453,6 +3533,167 @@ private fun UiSettingsMenu(
                             expanded = false
                             showingAccentColors = false
                         },
+                    )
+                }
+            } else if (showingNotifications) {
+                val notificationPreferences = state.notificationPreferences
+                val selectedRepository = notificationRepositoryId
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (selectedRepository == null) "Notifications" else "Repository override",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    },
+                    onClick = {
+                        if (selectedRepository == null) showingNotifications = false
+                        else notificationRepositoryId = null
+                    },
+                )
+                HorizontalDivider()
+                if (selectedRepository == null) {
+                    Text(
+                        "Permission: ${if (state.notificationPermissionGranted) "allowed" else "not allowed"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    Text(
+                        "Background alerts require Android permission and active-turn monitoring. Android may stop background work under battery or force-stop restrictions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                    SettingsCheckboxItem(
+                        "Monitor active turns in background",
+                        state.monitorActiveTurns,
+                    ) { requestTurnMonitoring(!state.monitorActiveTurns) }
+                    SettingsCheckboxItem(
+                        "Override for this host",
+                        state.hostNotificationOverride,
+                    ) { viewModel.setHostNotificationOverride(!state.hostNotificationOverride) }
+                    SettingsCheckboxItem("Approvals and input", notificationPreferences.notifyApprovals) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(notifyApprovals = !notificationPreferences.notifyApprovals))
+                    }
+                    SettingsCheckboxItem("Failures", notificationPreferences.notifyFailures) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(notifyFailures = !notificationPreferences.notifyFailures))
+                    }
+                    SettingsCheckboxItem("Completions", notificationPreferences.notifyCompletions) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(notifyCompletions = !notificationPreferences.notifyCompletions))
+                    }
+                    SettingsCheckboxItem("Interruptions", notificationPreferences.notifyInterruptions) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(notifyInterruptions = !notificationPreferences.notifyInterruptions))
+                    }
+                    SettingsCheckboxItem("Long-running turns", notificationPreferences.notifyLongRunning) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(notifyLongRunning = !notificationPreferences.notifyLongRunning))
+                    }
+                    if (notificationPreferences.notifyLongRunning) {
+                        DropdownMenuItem(
+                            text = { Text("Long-running threshold") },
+                            trailingIcon = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("${notificationPreferences.longRunningMinutes} min")
+                                    IconButton(onClick = {
+                                        viewModel.setNotificationPreferences(notificationPreferences.copy(longRunningMinutes = (notificationPreferences.longRunningMinutes - 5).coerceAtLeast(1)))
+                                    }) { Text("−") }
+                                    IconButton(onClick = {
+                                        viewModel.setNotificationPreferences(notificationPreferences.copy(longRunningMinutes = (notificationPreferences.longRunningMinutes + 5).coerceAtMost(1_440)))
+                                    }) { Text("+") }
+                                }
+                            },
+                            onClick = {},
+                        )
+                    }
+                    SettingsCheckboxItem("Quiet hours", notificationPreferences.quietHoursEnabled) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(quietHoursEnabled = !notificationPreferences.quietHoursEnabled))
+                    }
+                    if (notificationPreferences.quietHoursEnabled) {
+                        Column(Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 6.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = quietStartText,
+                                    onValueChange = { value ->
+                                        if (value.length <= 5) quietStartText = value
+                                        if (Regex("^([01]\\d|2[0-3]):[0-5]\\d$").matches(value)) {
+                                            viewModel.setNotificationPreferences(notificationPreferences.copy(quietStart = value))
+                                        }
+                                    },
+                                    label = { Text("Start") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                OutlinedTextField(
+                                    value = quietEndText,
+                                    onValueChange = { value ->
+                                        if (value.length <= 5) quietEndText = value
+                                        if (Regex("^([01]\\d|2[0-3]):[0-5]\\d$").matches(value)) {
+                                            viewModel.setNotificationPreferences(notificationPreferences.copy(quietEnd = value))
+                                        }
+                                    },
+                                    label = { Text("End") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                    SettingsCheckboxItem(
+                        "Critical approval/failure bypass",
+                        notificationPreferences.criticalBypassQuietHours,
+                    ) {
+                        viewModel.setNotificationPreferences(notificationPreferences.copy(criticalBypassQuietHours = !notificationPreferences.criticalBypassQuietHours))
+                    }
+                    HorizontalDivider()
+                    Text(
+                        "Repository/workspace overrides",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    sessionRepositoryOptions(state.sessions, state.repositories, state.repositoryRoot).forEach { repository ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(repository.label)
+                                    Text(repository.id, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            },
+                            trailingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null) },
+                            onClick = { notificationRepositoryId = repository.id },
+                        )
+                    }
+                } else {
+                    val identity = sessionRepositoryOptions(state.sessions, state.repositories, state.repositoryRoot)
+                        .firstOrNull { it.id == selectedRepository }
+                    Text(
+                        identity?.label ?: selectedRepository,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.width(320.dp).padding(16.dp),
+                    )
+                    val override = notificationPreferences.repositoryOverrides[selectedRepository] ?: RepositoryNotificationOverride()
+                    RepositoryOverrideItem("Approvals and input", override.notifyApprovals) { value ->
+                        viewModel.setNotificationPreferences(notificationPreferences.withRepositoryOverride(selectedRepository, override.copy(notifyApprovals = value)))
+                    }
+                    RepositoryOverrideItem("Failures", override.notifyFailures) { value ->
+                        viewModel.setNotificationPreferences(notificationPreferences.withRepositoryOverride(selectedRepository, override.copy(notifyFailures = value)))
+                    }
+                    RepositoryOverrideItem("Completions", override.notifyCompletions) { value ->
+                        viewModel.setNotificationPreferences(notificationPreferences.withRepositoryOverride(selectedRepository, override.copy(notifyCompletions = value)))
+                    }
+                    RepositoryOverrideItem("Interruptions", override.notifyInterruptions) { value ->
+                        viewModel.setNotificationPreferences(notificationPreferences.withRepositoryOverride(selectedRepository, override.copy(notifyInterruptions = value)))
+                    }
+                    RepositoryOverrideItem("Long-running", override.notifyLongRunning) { value ->
+                        viewModel.setNotificationPreferences(notificationPreferences.withRepositoryOverride(selectedRepository, override.copy(notifyLongRunning = value)))
+                    }
+                    Text(
+                        "Inherit uses the host or global setting. Overrides stay on this device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(320.dp).padding(16.dp),
                     )
                 }
             } else {
@@ -3529,15 +3770,15 @@ private fun UiSettingsMenu(
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("Notify for active turns") },
+                    text = { Text("Notifications") },
                     leadingIcon = {
-                        Checkbox(
-                            checked = state.monitorActiveTurns,
-                            onCheckedChange = null,
-                        )
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                    },
+                    trailingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
                     },
                     onClick = {
-                        requestTurnMonitoring(!state.monitorActiveTurns)
+                        showingNotifications = true
                     },
                 )
                 if (state.hasSavedConnection) {
@@ -3601,6 +3842,58 @@ private fun UiSettingsMenu(
             },
         )
     }
+}
+
+private fun NotificationPreferences.withRepositoryOverride(
+    identity: String,
+    override: RepositoryNotificationOverride,
+): NotificationPreferences {
+    val empty =
+        override.notifyApprovals == null && override.notifyFailures == null &&
+            override.notifyCompletions == null && override.notifyInterruptions == null &&
+            override.notifyLongRunning == null
+    val next = repositoryOverrides.toMutableMap()
+    if (empty) next.remove(identity) else next[identity] = override
+    return copy(repositoryOverrides = next)
+}
+
+@Composable
+private fun SettingsCheckboxItem(label: String, checked: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        leadingIcon = { Checkbox(checked = checked, onCheckedChange = null) },
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun RepositoryOverrideItem(
+    label: String,
+    value: Boolean?,
+    onChange: (Boolean?) -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        trailingIcon = {
+            Text(
+                when (value) {
+                    null -> "Inherit"
+                    true -> "On"
+                    false -> "Off"
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        onClick = {
+            onChange(
+                when (value) {
+                    null -> true
+                    true -> false
+                    false -> null
+                },
+            )
+        },
+    )
 }
 
 @Composable

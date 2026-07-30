@@ -3,15 +3,19 @@ import {
   addStoredHost,
   createStoredHost,
   forgetStoredHost,
+  clearHostNotificationOverride,
   loadAppearance,
   loadDashboardPreferences,
   loadHostRegistry,
   loadNotificationsEnabled,
+  loadHostNotificationOverride,
+  loadNotificationPreferences,
   loadSessionOrganization,
   saveAppearance,
   saveDashboardPreferences,
   saveHostRegistry,
   saveNotificationsEnabled,
+  saveNotificationPreferences,
   saveSessionOrganization,
   suggestedHostDisplayName,
 } from "./storage";
@@ -115,6 +119,22 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadNotificationsEnabled()).toBe(true);
     saveNotificationsEnabled(false);
     expect(loadNotificationsEnabled()).toBe(false);
+  });
+
+  it("persists global notification defaults and optional per-host overrides locally", () => {
+    const global = { ...loadNotificationPreferences(), notifyInterruptions: true };
+    saveNotificationPreferences(global);
+    expect(loadNotificationPreferences("home").notifyInterruptions).toBe(true);
+    const home = { ...global, notifyCompletions: false };
+    saveNotificationPreferences(home, "home");
+    expect(loadHostNotificationOverride("home")?.notifyCompletions).toBe(false);
+    expect(loadNotificationPreferences("home").notifyCompletions).toBe(false);
+    expect(loadNotificationPreferences("work").notifyCompletions).toBe(true);
+    saveNotificationPreferences({ ...global, notifyApprovals: false });
+    expect(loadNotificationPreferences("home").notifyApprovals).toBe(false);
+    expect(loadNotificationPreferences("home").notifyCompletions).toBe(false);
+    clearHostNotificationOverride("home");
+    expect(loadNotificationPreferences("home")).toEqual({ ...global, notifyApprovals: false });
   });
 
   it("prevents duplicate submissions until the accepted request finishes", () => {
