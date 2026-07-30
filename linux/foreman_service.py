@@ -210,6 +210,16 @@ class Foreman:
         await self.codex.stop()
 
     async def codex_event(self, message: dict[str, Any]) -> None:
+        method = message.get("method")
+        if method in (
+            "foreman/approval/requested",
+            "foreman/approval/updated",
+            "foreman/approval/resolved",
+        ):
+            approval = (message.get("params") or {}).get("approval")
+            if isinstance(approval, dict):
+                await self.approval_event(method.rsplit("/", 1)[-1], approval)
+            return
         thread_id, event = normalize_event(message)
         if not thread_id:
             return
@@ -240,6 +250,59 @@ class Foreman:
         ]
         await asyncio.gather(
             *(client.send(outgoing) for client in targets), return_exceptions=True
+        )
+
+    async def approval_event(self, action: str, approval: dict[str, Any]) -> None:
+        thread_id = approval.get("sessionId")
+        if not isinstance(thread_id, str) or not thread_id:
+            return
+        overlay = self.session_overlays.setdefault(thread_id, {})
+        observed_at = int(time.time())
+        if action in ("requested", "updated"):
+            request_type = approval.get("type")
+            labels = {
+                "command": "Waiting for command approval",
+                "fileChange": "Waiting for file-change approval",
+                "permission": "Waiting for permission grant",
+                "unsupportedInput": "Waiting for unsupported user input",
+                "unsupportedForm": "Waiting for unsupported user input",
+            }
+            overlay.update(
+                {
+                    "status": "waiting",
+                    "attention": True,
+                    "activeTurnId": approval.get("turnId"),
+                    "waitType": "input" if str(request_type).startswith("unsupported") else "approval",
+                    "waitDescription": labels.get(request_type, "Approval required"),
+                    "activityLabel": labels.get(request_type, "Approval required"),
+                    "statusChangedAt": overlay.get("statusChangedAt") or observed_at,
+                    "lastActivity": observed_at,
+                }
+            )
+        else:
+            if not any(
+                item.get("sessionId") == thread_id
+                for item in self.codex.list_approvals()
+            ):
+                overlay["attention"] = False
+                if overlay.get("status") == "waiting":
+                    overlay["status"] = "working"
+                overlay["waitType"] = None
+                overlay["waitDescription"] = None
+                overlay["activityLabel"] = "Approval resolved"
+                overlay["lastActivity"] = observed_at
+        outgoing = {
+            "version": VERSION,
+            "type": f"approval.{action}",
+            "payload": {"approval": approval},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
         )
 
     async def broadcast_service_status(self) -> None:
@@ -709,7 +772,7 @@ class Foreman:
                     "interrupt": True,
                     "archive": self.codex.supports("thread/archive"),
                     "delete": self.codex.supports("thread/delete"),
-                    "approvals": False,
+                    "approvals": True,
                     "structuredInput": False,
                     "models": self.codex.supports("model/list"),
                     "access": self.codex.supports("permissionProfile/list"),
@@ -767,6 +830,15 @@ class Foreman:
                     refresh=payload.get("refresh") is True
                 )
             }
+        if message_type == "approval.list":
+            return {"approvals": self.codex.list_approvals()}
+        if message_type == "approval.respond":
+            approval_id = required_text(payload, "approvalId", 100)
+            decision = payload.get("decision")
+            if not isinstance(decision, dict):
+                raise ValueError("decision must be an object")
+            approval = await self.codex.respond_approval(approval_id, decision)
+            return {"accepted": True, "approval": approval}
         if message_type == "session.list":
             return {
                 "sessions": [
@@ -872,6 +944,7 @@ class Foreman:
             turn_id = required_text(payload, "turnId", 100)
             async with self.thread_lock(thread_id):
                 await self.codex.interrupt(thread_id, turn_id)
+                await self.codex.expire_turn(thread_id, turn_id, "interrupted")
             return {"accepted": True}
         raise ValueError(f"unknown message type: {message_type}")
 

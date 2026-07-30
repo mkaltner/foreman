@@ -20,6 +20,8 @@ if VENDOR_DIR.is_dir():
 
 from websockets.asyncio.client import unix_connect
 
+from approvals import APPROVAL_METHODS, ApprovalError, PendingApproval, approval_key
+
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 APP_SERVER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MODEL_CACHE_SECONDS = 30
@@ -89,6 +91,10 @@ class Codex:
         self.process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._approvals: dict[str, PendingApproval] = {}
+        self._approval_requests: dict[str, str] = {}
+        self._approval_tombstones: dict[str, str] = {}
+        self._items: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._websocket: Any | None = None
@@ -359,6 +365,7 @@ class Codex:
             await asyncio.gather(self._reader_task, return_exceptions=True)
             self._reader_task = None
         self._fail_pending("Codex app-server disconnected")
+        await self._expire_approvals("disconnected")
         await self._retire_owned_process()
 
     async def _retire_owned_process(self) -> None:
@@ -390,6 +397,7 @@ class Codex:
             await asyncio.gather(self._reader_task, return_exceptions=True)
             self._reader_task = None
         self._fail_pending("Codex app-server disconnected")
+        await self._expire_approvals("disconnected", connection=websocket)
 
     async def _socket_accepts_connections(self) -> bool:
         try:
@@ -458,8 +466,13 @@ class Codex:
                     if future and not future.done():
                         future.set_result(message)
                     continue
+                if request_id is not None and isinstance(message.get("method"), str):
+                    await self._server_request(message, websocket)
+                    continue
                 self.last_event = time.time()
                 self._remember_settings_event(message)
+                self._remember_item_event(message)
+                await self._approval_lifecycle(message)
                 await self.on_event(message)
         except Exception as error:
             failure = error
@@ -469,10 +482,165 @@ class Codex:
             self._loaded.clear()
             reason = f"Codex app-server connection closed: {failure or 'closed'}"
             self._fail_pending(reason)
+            await self._expire_approvals("disconnected", connection=websocket)
             if not self._stopping and (
                 self._reconnect_task is None or self._reconnect_task.done()
             ):
                 self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    def _remember_item_event(self, message: dict[str, Any]) -> None:
+        if message.get("method") not in ("item/started", "item/completed"):
+            return
+        params = message.get("params")
+        if not isinstance(params, dict) or not isinstance(params.get("item"), dict):
+            return
+        item = params["item"]
+        values = (params.get("threadId"), params.get("turnId"), item.get("id"))
+        if all(isinstance(value, str) for value in values):
+            self._items[values] = item
+            if len(self._items) > 1_000:
+                self._items.pop(next(iter(self._items)))
+
+    async def _server_request(
+        self, message: dict[str, Any], websocket: Any
+    ) -> None:
+        method = message.get("method")
+        if method not in APPROVAL_METHODS:
+            # Unknown server requests are intentionally left to compatible
+            # clients; they must never be projected as notifications.
+            return
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        upstream_id = message.get("id")
+        key = approval_key(upstream_id)
+        existing_id = self._approval_requests.get(key)
+        if existing_id and existing_id in self._approvals:
+            return
+        values = (params.get("threadId"), params.get("turnId"), params.get("itemId"))
+        item = self._items.get(values) if all(isinstance(value, str) for value in values) else None
+        approval = PendingApproval(
+            upstream_id=upstream_id,
+            method=method,
+            params=params,
+            item=item,
+            connection=websocket,
+        )
+        # Register before any client can observe the request.
+        self._approvals[approval.id] = approval
+        self._approval_requests[key] = approval.id
+        self.last_event = time.time()
+        await self.on_event(
+            {
+                "method": "foreman/approval/requested",
+                "params": {"approval": approval.projection()},
+            }
+        )
+
+    def list_approvals(self) -> list[dict[str, Any]]:
+        return [
+            approval.projection()
+            for approval in self._approvals.values()
+            if approval.status in ("pending", "submitting")
+        ]
+
+    async def respond_approval(
+        self, approval_id: str, decision: dict[str, Any]
+    ) -> dict[str, Any]:
+        approval = self._approvals.get(approval_id)
+        if approval is None:
+            if approval_id in self._approval_tombstones:
+                raise ApprovalError("Already resolved")
+            raise ApprovalError("Approval is no longer available")
+        async with approval.lock:
+            if approval.status != "pending":
+                raise ApprovalError("Already resolved")
+            if approval.connection is not self._websocket:
+                await self._resolve_approval(approval, "expired", "reconnected")
+                raise ApprovalError("Approval expired during reconnect")
+            result, resolution = approval.response_result(decision)
+            approval.status = "submitting"
+            approval.resolution = resolution
+            await self.on_event(
+                {
+                    "method": "foreman/approval/updated",
+                    "params": {"approval": approval.projection()},
+                }
+            )
+            try:
+                await self._send({"id": approval.upstream_id, "result": result})
+            except CodexError:
+                await self._resolve_approval(approval, "expired", "disconnected")
+                raise ApprovalError("Approval expired while the response was sent")
+            return approval.projection()
+
+    async def expire_turn(self, thread_id: str, turn_id: str, reason: str) -> None:
+        await self._expire_approvals(reason, thread_id=thread_id, turn_id=turn_id)
+
+    async def _approval_lifecycle(self, message: dict[str, Any]) -> None:
+        method = message.get("method")
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        if method == "serverRequest/resolved":
+            approval_id = self._approval_requests.get(approval_key(params.get("requestId")))
+            approval = self._approvals.get(approval_id or "")
+            if approval:
+                await self._resolve_approval(
+                    approval, "resolved", approval.resolution or "resolvedElsewhere"
+                )
+        elif method == "turn/started":
+            turn = params.get("turn")
+            turn_id = turn.get("id") if isinstance(turn, dict) else params.get("turnId")
+            thread_id = params.get("threadId")
+            if isinstance(thread_id, str) and isinstance(turn_id, str):
+                for approval in list(self._approvals.values()):
+                    if approval.thread_id == thread_id and approval.turn_id != turn_id:
+                        await self._resolve_approval(approval, "expired", "replaced")
+        elif method == "turn/completed":
+            turn = params.get("turn")
+            turn_id = turn.get("id") if isinstance(turn, dict) else params.get("turnId")
+            thread_id = params.get("threadId")
+            if isinstance(thread_id, str) and isinstance(turn_id, str):
+                await self._expire_approvals(
+                    "turnEnded", thread_id=thread_id, turn_id=turn_id
+                )
+
+    async def _expire_approvals(
+        self,
+        reason: str,
+        *,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+        connection: Any | None = None,
+    ) -> None:
+        for approval in list(self._approvals.values()):
+            if thread_id is not None and approval.thread_id != thread_id:
+                continue
+            if turn_id is not None and approval.turn_id != turn_id:
+                continue
+            if connection is not None and approval.connection is not connection:
+                continue
+            await self._resolve_approval(approval, "expired", reason)
+
+    async def _resolve_approval(
+        self, approval: PendingApproval, status: str, resolution: str
+    ) -> None:
+        if approval.id not in self._approvals:
+            return
+        approval.status = status
+        approval.resolution = resolution
+        self._approvals.pop(approval.id, None)
+        self._approval_requests.pop(approval_key(approval.upstream_id), None)
+        self._approval_tombstones[approval.id] = resolution
+        while len(self._approval_tombstones) > 500:
+            self._approval_tombstones.pop(next(iter(self._approval_tombstones)))
+        await self.on_event(
+            {
+                "method": "foreman/approval/resolved",
+                "params": {"approval": approval.projection()},
+            }
+        )
 
     def _remember_settings_event(self, message: dict[str, Any]) -> None:
         if message.get("method") != "thread/settings/updated":

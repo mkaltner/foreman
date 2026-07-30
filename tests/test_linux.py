@@ -35,6 +35,15 @@ from codex import (  # noqa: E402
     status,
     user_input,
 )
+from approvals import (  # noqa: E402
+    COMMAND_METHOD,
+    FILE_METHOD,
+    MCP_ELICITATION_METHOD,
+    PERMISSION_METHOD,
+    USER_INPUT_METHOD,
+    ApprovalError,
+    PendingApproval,
+)
 from foreman_service import (  # noqa: E402
     Client,
     Foreman,
@@ -92,6 +101,8 @@ class FakeCodex:
         self.deleted: list[str] = []
         self.prompts: list[dict[str, Any]] = []
         self.reads: list[str] = []
+        self.approvals: list[dict[str, Any]] = []
+        self.approval_responses: list[tuple[str, dict[str, Any]]] = []
 
     async def start(self) -> None:
         pass
@@ -247,6 +258,26 @@ class FakeCodex:
 
     async def delete_thread(self, thread_id: str) -> None:
         self.deleted.append(thread_id)
+
+    def list_approvals(self) -> list[dict[str, Any]]:
+        return self.approvals
+
+    async def respond_approval(
+        self, approval_id: str, decision: dict[str, Any]
+    ) -> dict[str, Any]:
+        match = next((item for item in self.approvals if item["id"] == approval_id), None)
+        if match is None:
+            raise ApprovalError("Approval is no longer available")
+        self.approval_responses.append((approval_id, decision))
+        match = {**match, "status": "submitting"}
+        self.approvals = [match if item["id"] == approval_id else item for item in self.approvals]
+        return match
+
+    async def expire_turn(self, thread_id: str, turn_id: str, reason: str) -> None:
+        self.approvals = [
+            item for item in self.approvals
+            if item.get("sessionId") != thread_id or item.get("turnId") != turn_id
+        ]
 
 
 class ProtocolTests(unittest.TestCase):
@@ -671,6 +702,198 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_server_requests_register_before_event_and_correlate_response(self) -> None:
+        events: list[dict[str, Any]] = []
+
+        async def on_event(event: dict[str, Any]) -> None:
+            if event["method"] == "foreman/approval/requested":
+                self.assertEqual(len(adapter.list_approvals()), 1)
+            events.append(event)
+
+        class Socket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send(self, value: str) -> None:
+                self.sent.append(value)
+
+        adapter = Codex("unused", on_event)
+        socket = Socket()
+        adapter._websocket = socket
+        request = {
+            "id": "upstream-request-7",
+            "method": COMMAND_METHOD,
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "startedAtMs": 1_720_000_000_000,
+                "command": "printf safe",
+                "cwd": "/tmp/example",
+                "availableDecisions": ["accept", "decline"],
+            },
+        }
+
+        await adapter._server_request(request, socket)
+        approval = adapter.list_approvals()[0]
+        self.assertNotEqual(approval["id"], request["id"])
+        self.assertEqual([item["type"] for item in approval["availableDecisions"]], ["accept", "decline"])
+        await adapter.respond_approval(approval["id"], {"type": "accept"})
+
+        self.assertEqual(
+            json.loads(socket.sent[0]),
+            {"id": "upstream-request-7", "result": {"decision": "accept"}},
+        )
+        self.assertEqual(adapter.list_approvals()[0]["status"], "submitting")
+        await adapter._approval_lifecycle(
+            {
+                "method": "serverRequest/resolved",
+                "params": {"threadId": "thread-1", "requestId": "upstream-request-7"},
+            }
+        )
+        self.assertEqual(adapter.list_approvals(), [])
+        self.assertEqual(events[-1]["params"]["approval"]["status"], "resolved")
+        with self.assertRaisesRegex(ApprovalError, "Already resolved"):
+            await adapter.respond_approval(approval["id"], {"type": "accept"})
+
+    async def test_structured_command_amendment_and_response_race(self) -> None:
+        class Socket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send(self, value: str) -> None:
+                await asyncio.sleep(0)
+                self.sent.append(value)
+
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        socket = Socket()
+        adapter._websocket = socket
+        amendment = {
+            "acceptWithExecpolicyAmendment": {
+                "execpolicy_amendment": ["git", "status"]
+            }
+        }
+        await adapter._server_request(
+            {
+                "id": 41,
+                "method": COMMAND_METHOD,
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-1",
+                    "startedAtMs": 1,
+                    "availableDecisions": [amendment, "cancel"],
+                },
+            },
+            socket,
+        )
+        approval = adapter.list_approvals()[0]
+        option = approval["availableDecisions"][0]
+        results = await asyncio.gather(
+            adapter.respond_approval(
+                approval["id"],
+                {"type": option["type"], "optionId": option["optionId"]},
+            ),
+            adapter.respond_approval(approval["id"], {"type": "cancel"}),
+            return_exceptions=True,
+        )
+        self.assertEqual(len(socket.sent), 1)
+        self.assertEqual(json.loads(socket.sent[0])["result"], {"decision": amendment})
+        self.assertEqual(sum(isinstance(item, ApprovalError) for item in results), 1)
+
+    async def test_file_permission_and_unsupported_normalization(self) -> None:
+        file_approval = PendingApproval(
+            1,
+            FILE_METHOD,
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "file-1",
+                "startedAtMs": 1,
+                "reason": "Review edits",
+                "grantRoot": "/tmp/safe",
+            },
+            item={
+                "id": "file-1",
+                "type": "fileChange",
+                "changes": [
+                    {"path": "/tmp/safe/a.txt", "kind": "update", "diff": "-old\n+new"}
+                ],
+            },
+        ).projection()
+        self.assertEqual(file_approval["fileCount"], 1)
+        self.assertEqual(file_approval["fileChanges"][0]["summary"], {"addedLines": 1, "removedLines": 1})
+        self.assertEqual(
+            [item["type"] for item in file_approval["availableDecisions"]],
+            ["accept", "acceptForSession", "decline", "cancel"],
+        )
+
+        requested = {
+            "fileSystem": {"write": ["/tmp/a", "/tmp/b"], "read": ["/tmp/c"]},
+            "network": {"enabled": True},
+        }
+        permission = PendingApproval(
+            2,
+            PERMISSION_METHOD,
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "permission-1",
+                "startedAtMs": 1,
+                "cwd": "/tmp",
+                "permissions": requested,
+            },
+        )
+        result, resolution = permission.response_result(
+            {
+                "type": "grant",
+                "scope": "session",
+                "permissions": {"fileSystem": {"write": ["/tmp/a"]}},
+            }
+        )
+        self.assertEqual(resolution, "grant")
+        self.assertEqual(result["scope"], "session")
+        self.assertEqual(result["permissions"]["fileSystem"]["write"], ["/tmp/a"])
+        with self.assertRaisesRegex(ApprovalError, "subset"):
+            permission.response_result(
+                {"type": "grant", "permissions": {"fileSystem": {"write": ["/private"]}}}
+            )
+        self.assertEqual(permission.response_result({"type": "deny"})[0], {"permissions": {}, "scope": "turn"})
+
+        unsupported = PendingApproval(
+            3,
+            USER_INPUT_METHOD,
+            {"threadId": "thread-1", "turnId": "turn-1", "itemId": "input-1", "questions": []},
+        )
+        self.assertEqual(unsupported.projection()["availableDecisions"], [])
+        with self.assertRaisesRegex(ApprovalError, "cannot be answered"):
+            unsupported.response_result({"type": "decline"})
+        mcp = PendingApproval(
+            4,
+            MCP_ELICITATION_METHOD,
+            {"threadId": "thread-1", "turnId": "turn-1", "serverName": "test"},
+        )
+        self.assertEqual(mcp.response_result({"type": "cancel"})[0], {"action": "cancel", "content": None})
+
+    async def test_resolution_disconnect_and_turn_completion_expire_without_replay(self) -> None:
+        events: list[dict[str, Any]] = []
+        adapter = Codex("unused", lambda event: events.append(event) or asyncio.sleep(0))
+        socket = object()
+        await adapter._server_request(
+            {
+                "id": 9,
+                "method": COMMAND_METHOD,
+                "params": {"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1", "startedAtMs": 1},
+            },
+            socket,
+        )
+        approval_id = adapter.list_approvals()[0]["id"]
+        await adapter._expire_approvals("disconnected", connection=socket)
+        self.assertEqual(adapter.list_approvals(), [])
+        self.assertEqual(events[-1]["params"]["approval"]["resolution"], "disconnected")
+        with self.assertRaisesRegex(ApprovalError, "Already resolved"):
+            await adapter.respond_approval(approval_id, {"type": "accept"})
+
     async def test_lists_up_to_five_hundred_summaries_with_bounded_pages(self) -> None:
         adapter = Codex("unused", lambda _: asyncio.sleep(0))
         requested: list[dict[str, Any]] = []
@@ -1024,6 +1247,46 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(deleted["deleted"])
         self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_approval_protocol_requires_authentication_and_validates_ids(self) -> None:
+        unauthenticated = await self.request_error("approval.list")
+        self.assertEqual(unauthenticated["code"], "unauthorized")
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Approval test"},
+        )
+        approval = {
+            "id": "apr_safe",
+            "sessionId": "thread-1",
+            "turnId": "turn-1",
+            "itemId": "item-1",
+            "type": "command",
+            "title": "Approval required",
+            "status": "pending",
+            "availableDecisions": [
+                {"type": "accept", "label": "Allow once", "optionId": "decision-0"}
+            ],
+        }
+        self.app.codex.approvals = [approval]
+        listed = await self.request("approval.list")
+        self.assertEqual(listed["approvals"], [approval])
+        malformed = await self.request_error(
+            "approval.respond", {"approvalId": "apr_safe", "decision": "accept"}
+        )
+        self.assertEqual(malformed["code"], "requestFailed")
+        unknown = await self.request_error(
+            "approval.respond", {"approvalId": "apr_missing", "decision": {"type": "accept"}}
+        )
+        self.assertIn("no longer available", unknown["message"])
+        response = await self.request(
+            "approval.respond",
+            {
+                "approvalId": "apr_safe",
+                "decision": {"type": "accept", "optionId": "decision-0"},
+            },
+        )
+        self.assertTrue(response["accepted"])
+        self.assertEqual(len(self.app.codex.approval_responses), 1)
 
     async def test_authenticated_bounded_session_search_composes_filters(self) -> None:
         await self.request(
