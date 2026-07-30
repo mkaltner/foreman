@@ -241,9 +241,13 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .health-details dd{white-space:nowrap;text-overflow:ellipsis;margin:3px 0 0;font-size:12px;overflow:hidden}
 .health-details dd.quiet{color:#b54708}
 .health-details .health-root{grid-column:span 2}
-.client-diagnostics,.runtime-diagnostics{border-top:1px solid var(--border);margin-top:13px;padding-top:10px}
-.client-diagnostics summary,.runtime-diagnostics summary{color:var(--muted);cursor:pointer;font-size:12px;font-weight:750}
+.client-diagnostics,.runtime-diagnostics,.host-operations{border-top:1px solid var(--border);margin-top:13px;padding-top:10px}
+.client-diagnostics summary,.runtime-diagnostics summary,.host-operations summary{color:var(--muted);cursor:pointer;font-size:12px;font-weight:750}
 .client-diagnostics summary span{background:var(--surface-alt);border-radius:999px;margin-left:5px;padding:2px 7px;font-size:10px}
+.host-operations summary span{float:right;font-size:10px;font-weight:600}
+.diagnostic-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.diagnostic-actions button{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);border-radius:7px;padding:6px 9px;font-size:11px;font-weight:750}.diagnostic-actions .restart-service{margin-left:auto;border-color:color-mix(in srgb,var(--danger) 32%,var(--border));color:var(--danger)}.diagnostic-actions button:disabled{cursor:not-allowed;opacity:.5}
+.diagnostic-note,.diagnostic-error,.restart-progress{font-size:11px;margin:9px 0 0}.diagnostic-note{color:var(--muted)}.diagnostic-error,.restart-progress.failed,.restart-progress.timedOut{color:var(--danger)}.restart-progress.succeeded{color:var(--success)}
+.diagnostic-list{display:grid;gap:7px;list-style:none;margin:10px 0 0;padding:0;max-height:280px;overflow:auto}.diagnostic-list li{display:grid;grid-template-columns:auto auto 1fr;gap:3px 7px;background:var(--surface-alt);border-radius:8px;padding:8px}.diagnostic-list time{color:var(--muted);font-size:9px}.diagnostic-list strong{font-size:10px}.diagnostic-list>li>span:last-child{grid-column:1/-1;font-size:10px}.diagnostic-severity{border-radius:999px;padding:1px 5px;font-size:8px;text-transform:uppercase}.diagnostic-severity.warning,.diagnostic-severity.error{color:var(--danger)}
 .client-list{margin-top:9px;display:grid}
 .client-row{border-top:1px solid var(--border);grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:9px;padding:9px 0;display:grid}
 .client-row:first-child{border-top:0}

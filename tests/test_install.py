@@ -189,6 +189,7 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("<div id=\"root\"></div>", (install_dir / "web/index.html").read_text())
             self.assertTrue(any((install_dir / "web/assets").iterdir()))
+            self.assertTrue((install_dir / "diagnostics.py").is_file())
 
             paired = await self.run_command(
                 [str(launcher), "pair"],

@@ -503,6 +503,9 @@ class Codex:
             self._fail_pending(reason)
             await self._expire_approvals("disconnected", connection=websocket)
             await self._expire_inputs("disconnected", connection=websocket)
+            await self.on_event(
+                {"method": "foreman/runtime/disconnected", "params": {}}
+            )
             if not self._stopping and (
                 self._reconnect_task is None or self._reconnect_task.done()
             ):
@@ -813,6 +816,9 @@ class Codex:
         while not self._stopping:
             try:
                 await self._connect()
+                await self.on_event(
+                    {"method": "foreman/runtime/reconnected", "params": {}}
+                )
                 return
             except asyncio.CancelledError:
                 raise

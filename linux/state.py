@@ -72,6 +72,18 @@ class State:
         key = self._locked(update)
         return key, expires_at
 
+    def active_pairing_count(self) -> int:
+        def update(data: dict[str, Any]) -> int:
+            now = int(time.time())
+            data["pairings"] = [
+                item
+                for item in data.get("pairings", [])
+                if item.get("expiresAt", 0) > now
+            ]
+            return len(data["pairings"])
+
+        return self._locked(update)
+
     def pair(
         self, key: str, device_name: str, device_type: str = "unknown"
     ) -> str | None:

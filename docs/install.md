@@ -46,6 +46,7 @@ FOREMAN_HOST=0.0.0.0
 FOREMAN_PORT=8765
 FOREMAN_WEB_HOST=0.0.0.0
 FOREMAN_WEB_PORT=8766
+FOREMAN_REMOTE_RESTART=0
 FOREMAN_REPOSITORY_ROOT=/home/you/projects
 FOREMAN_CODEX_EXECUTABLE=/absolute/path/to/codex
 # Optional:
@@ -59,6 +60,12 @@ FOREMAN_WEB_ORIGINS=https://foreman.example.internal
 listener there. The fallback defaults to
 `~/.local/state/foreman/codex-app-server.sock` and cannot provide Desktop live
 co-presence.
+
+Leave `FOREMAN_REMOTE_RESTART=0` unless authenticated clients should be able to
+restart Foreman. Setting it to `1` enables only `foreman.service` restart through
+the user systemd manager; it does not grant shell access and never restarts or
+stops Desktop Codex. Restarting clients show progress until they reconnect or a
+45-second timeout expires.
 
 After edits, use `foreman restart`. `foreman logs` follows the user journal.
 `foreman web` prints the configured local web URL; replace `localhost` with the
@@ -106,6 +113,9 @@ file-change, permission approval, and supported bounded input cards open inline
 from **Needs attention**. Arbitrary MCP forms and unsupported schemas require
 another compatible client unless a valid decline or cancel action is shown.
 Recent activity is intentionally not a persistent audit history.
+Host Status also includes a compact sanitized Diagnostics disclosure with manual
+refresh, copy, and—when enabled—a confirmed Foreman restart. Android exposes the
+same bounded view from Settings. Neither client streams logs.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.
 Browsers require HTTPS or localhost for system notifications; plain LAN HTTP

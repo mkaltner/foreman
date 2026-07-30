@@ -109,6 +109,15 @@ data class RepositoryInfo(
 )
 
 @Serializable
+data class DiagnosticEvent(
+    val timestamp: String,
+    val severity: String,
+    val category: String,
+    val message: String,
+    val requestCategory: String? = null,
+)
+
+@Serializable
 data class ImagePayload(
     val mimeType: String,
     val data: String,

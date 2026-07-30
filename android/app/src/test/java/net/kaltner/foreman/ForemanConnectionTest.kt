@@ -169,6 +169,47 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun restartUiReportsSuccessOnlyAfterReconnectAndHasTimeoutState() {
+        assertEquals(
+            RestartPhase.Scheduled,
+            restartPhaseAfterConnection(RestartPhase.Scheduled, connected = true),
+        )
+        assertEquals(
+            RestartPhase.Reconnecting,
+            restartPhaseAfterConnection(RestartPhase.Scheduled, connected = false),
+        )
+        assertEquals(
+            RestartPhase.Succeeded,
+            restartPhaseAfterConnection(RestartPhase.Reconnecting, connected = true),
+        )
+        assertTrue(restartProgressLabel(RestartPhase.Scheduled).contains("waiting"))
+        assertTrue(restartProgressLabel(RestartPhase.Reconnecting).contains("reconnecting"))
+        assertTrue(restartProgressLabel(RestartPhase.Succeeded).contains("complete"))
+        assertTrue(restartProgressLabel(RestartPhase.TimedOut).contains("timed out"))
+    }
+
+    @Test
+    fun androidDiagnosticsCopyUsesOnlyTheSafeProjection() {
+        val text =
+            diagnosticsText(
+                listOf(
+                    DiagnosticEvent(
+                        timestamp = "2026-07-30T12:00:00+00:00",
+                        severity = "warning",
+                        category = "request.failed",
+                        message = "Request category failed",
+                        requestCategory = "service",
+                    ),
+                ),
+            )
+        assertTrue(text.contains("request.failed"))
+        assertTrue(text.contains("[service]"))
+        assertFalse(text.contains("prompt"))
+        assertFalse(text.contains("token"))
+        assertFalse(text.contains("/home/"))
+    }
+
+    @Test
     fun parsesSupportedHostForms() {
         assertEquals(HostPort("192.168.1.59", 8765), parseHost("192.168.1.59"))
         assertEquals(HostPort("codex.local", 9999), parseHost("codex.local:9999"))
