@@ -10,7 +10,7 @@ describe("Foreman setup", () => {
 
     expect(screen.getByLabelText("Web port")).toHaveValue(String(inferPagePort()));
     expect([...container.querySelectorAll("form label")].map((label) => label.firstChild?.textContent))
-      .toEqual(["Host", "Host display name", "Web port", "Pairing code", "Device name"]);
+      .toEqual(["Host", "Web port", "Host display name", "Pairing code", "Device name"]);
     fireEvent.change(screen.getByLabelText("Host"), {
       target: { value: "foreman.local" },
     });
