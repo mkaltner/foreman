@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { LinkedUserText, RouteSelect, SetupView } from "./App";
+import { appShellClassName, LinkedUserText, RouteSelect, SetupView } from "./App";
 import { inferPagePort } from "./client";
 
 describe("Foreman setup", () => {
@@ -29,6 +29,15 @@ describe("Foreman setup", () => {
       },
       "123456",
     );
+  });
+});
+
+describe("page scrolling", () => {
+  it("uses a content-height shell only for settings", () => {
+    expect(appShellClassName("settings")).toBe("app-shell settings-shell");
+    expect(appShellClassName("dashboard")).toBe("app-shell");
+    expect(appShellClassName("sessions")).toBe("app-shell");
+    expect(appShellClassName("detail")).toBe("app-shell");
   });
 });
 

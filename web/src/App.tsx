@@ -113,7 +113,11 @@ import {
   type WebRoute,
 } from "./ui";
 
-type View = "dashboard" | "sessions" | "detail" | "settings";
+export type View = "dashboard" | "sessions" | "detail" | "settings";
+
+export function appShellClassName(view: View): string {
+  return view === "settings" ? "app-shell settings-shell" : "app-shell";
+}
 type PairingSettings = Omit<NewStoredHost, "deviceToken"> & { deviceName: string };
 
 function App() {
@@ -989,7 +993,7 @@ function App() {
 
   const connected = connection === "connected";
   return (
-    <div className="app-shell">
+    <div className={appShellClassName(view)}>
       <header className="topbar">
         <button className="brand" onClick={() => showDashboard()} aria-label="Dashboard">
           <span className="brand-mark">F</span>
