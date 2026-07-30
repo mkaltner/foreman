@@ -62,10 +62,25 @@ request exposes a token or digest, and revocation does not alter Codex sessions.
 Session summaries include authoritative active-turn start, terminal time,
 duration, safe failure, and wait metadata when Codex supplies it.
 `session.event` carries normalized status, lifecycle, assistant delta, public
-activity, and command/tool item events. Approval and structured-input events
-identify the unsupported wait type without exposing response controls.
+activity, and command/tool item events.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
+
+Approval support keeps protocol version 1. Authenticated clients use:
+
+- `approval.list` → `{approvals:[...]}` for current pending/submitting requests;
+- `approval.respond` with `{approvalId,decision}`;
+- `approval.requested`, `approval.updated`, and `approval.resolved` server events.
+
+Approval IDs are opaque Foreman IDs, never upstream JSON-RPC IDs. Projections are
+bounded and include the request class, session/turn/item correlation, safe
+display details, and only available decisions. Command/file responses identify
+an advertised decision, including structured policy amendments. Permission
+responses contain `type: grant`, an explicit turn/session scope, and only a
+selected subset, or `type: deny`. Unknown, stale, duplicate, malformed, or
+unadvertised responses fail. All authenticated clients observe the winning
+lifecycle; older clients may ignore these event types and keep generic waiting
+UI.
 
 `session.search` is authenticated and accepts `query`, one canonical
 `repository`/workspace path or `null`, a `statuses` array, `dateFrom`, `dateTo`,

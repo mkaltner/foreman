@@ -93,8 +93,10 @@ groups, attention states, oldest active work, event freshness, connected-client
 counts, a disclosure for paired-client token revocation, and a bounded recent
 feed while the browser is connected. Revocation disconnects that client but
 does not delete its sessions. “No recent
-activity” is a ten-minute browser heuristic and never changes a turn. Approval
-and structured-input waits must be resolved in another compatible Codex client.
+activity” is a ten-minute browser heuristic and never changes a turn. Command,
+file-change, and permission approvals open inline from **Needs attention**.
+General structured user-input and arbitrary MCP forms require another compatible
+Codex client unless a valid decline or cancel choice is shown.
 Recent activity is intentionally not a persistent audit history.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.
@@ -157,7 +159,8 @@ restarting Foreman reconnects with that token and reloads current Codex state.
 To receive completion and attention alerts for active turns, enable **Notify
 for active turns** in Foreman's settings and grant Android's notification
 permission. A foreground-service notification remains visible only while turns
-are being monitored. Tapping a result notification reopens its session.
+are being monitored. Approval notifications use generic privacy-safe text;
+tapping one reopens its exact pending card, and resolution elsewhere removes it.
 
 Linux installation never runs Gradle or requires Java.
 

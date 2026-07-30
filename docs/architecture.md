@@ -29,6 +29,7 @@ Linux files:
 
 - `foreman_service.py`: listener, request switch, repository discovery;
 - `codex.py`: app-server lifecycle, calls, and event normalization;
+- `approvals.py`: bounded in-memory approval projection, correlation, and validation;
 - `protocol.py`: bounded JSONL frames;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
@@ -48,13 +49,21 @@ session workspaces. Lifecycle events observed during the browser session feed a
 coalesced 20-entry recent list; stale-turn observation and feed entries are not
 persisted by the service.
 
+Pending approvals live only in the Codex adapter. Each has an opaque Foreman ID,
+the exact upstream JSON-RPC ID and connection, and one small lock. The adapter
+registers before broadcasting, validates one response, sends it on the original
+connection, and waits for `serverRequest/resolved`. Disconnect or turn cleanup
+expires the mapping without replay. There is no approval history or Foreman
+permission policy.
+
 Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed token store. Its cache is in memory and
 disposable. When the user enables active-turn notifications, an on-demand
 foreground service opens its own authenticated connection and subscribes only
-to turns the user opens or starts. The service stops after every subscribed turn
-is terminal or needs attention; it is not an always-running poller or push
-client.
+to turns the user opens or starts. Approval notifications are deduplicated by
+opaque request ID, contain no command or path, and are cancelled when another
+client resolves the request. The service stops after every subscribed turn is
+terminal; it is not an always-running poller or push client.
 
 Only pairing keys and safe client authentication metadata (opaque IDs, token
 SHA-256 digests, labels, client types, and pairing times) are persisted by Linux.
