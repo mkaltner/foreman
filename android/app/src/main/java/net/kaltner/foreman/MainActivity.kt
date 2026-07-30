@@ -2092,14 +2092,6 @@ private fun SetupScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
-                value = state.displayName,
-                onValueChange = viewModel::setDisplayName,
-                label = { Text("Host display name") },
-                placeholder = { Text("Home server") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
                 value = state.host,
                 onValueChange = viewModel::setHost,
                 label = { Text("Host") },
@@ -2108,9 +2100,17 @@ private fun SetupScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
+                value = state.displayName,
+                onValueChange = viewModel::setDisplayName,
+                label = { Text("Host display name") },
+                placeholder = { Text("Home server") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
                 value = state.pairingKey,
                 onValueChange = viewModel::setPairingKey,
-                label = { Text("Pairing key") },
+                label = { Text("Pairing code") },
                 placeholder = { Text("6-digit code") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,

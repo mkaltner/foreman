@@ -1252,8 +1252,8 @@ export function SetupView({
           }}
         >
           <label>Host<input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.59" autoComplete="url" required /></label>
+          <label>Host display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Home server" autoComplete="off" /></label>
           <label>Web port<input value={webPort} onChange={(event) => setWebPort(event.target.value)} inputMode="numeric" min="1" max="65535" required /></label>
-          <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Home server" autoComplete="off" /></label>
           <label>Pairing code<input value={pairingKey} onChange={(event) => setPairingKey(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>
           <label>Device name<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} autoComplete="name" required /></label>
           <button className="primary full" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button>

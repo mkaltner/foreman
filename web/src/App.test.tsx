@@ -6,9 +6,11 @@ import { inferPagePort } from "./client";
 describe("Foreman setup", () => {
   it("captures a display name and explicit web port for each host", () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
-    render(<SetupView error="" busy={false} onConnect={onConnect} />);
+    const { container } = render(<SetupView error="" busy={false} onConnect={onConnect} />);
 
     expect(screen.getByLabelText("Web port")).toHaveValue(String(inferPagePort()));
+    expect([...container.querySelectorAll("form label")].map((label) => label.firstChild?.textContent))
+      .toEqual(["Host", "Host display name", "Web port", "Pairing code", "Device name"]);
     fireEvent.change(screen.getByLabelText("Host"), {
       target: { value: "foreman.local" },
     });
