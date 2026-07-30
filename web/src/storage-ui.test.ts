@@ -18,6 +18,7 @@ import {
   saveNotificationPreferences,
   saveSessionOrganization,
   suggestedHostDisplayName,
+  updateStoredHost,
 } from "./storage";
 import {
   confirmSessionAction,
@@ -46,6 +47,21 @@ describe("storage, appearance, and interaction helpers", () => {
     saveHostRegistry(registry);
     expect(loadHostRegistry().hosts).toHaveLength(1);
     expect(loadHostRegistry().hosts[0].deviceToken).toBe("fmt_home");
+  });
+
+  it("does not resurrect a forgotten host when a stale socket update arrives", () => {
+    const host = createStoredHost({ displayName: "Home", host: "home.local", webPort: 8766, deviceToken: "fmt_home" });
+    const paired = addStoredHost({ hosts: [], activeHostId: null }, host);
+    const forgotten = forgetStoredHost(paired, host.id);
+    saveHostRegistry(forgotten);
+
+    const afterStaleDisconnect = updateStoredHost(forgotten, host.id, {
+      lastKnownStatus: "disconnected",
+    });
+    expect(afterStaleDisconnect).toBe(forgotten);
+    saveHostRegistry(afterStaleDisconnect);
+    expect(loadHostRegistry()).toEqual({ hosts: [], activeHostId: null });
+    expect(localStorage.getItem("foreman.hosts.v2")).not.toContain("fmt_home");
   });
 
   it("migrates the prior single-host record and its local preferences", () => {

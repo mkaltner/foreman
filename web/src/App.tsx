@@ -200,12 +200,11 @@ function App() {
   }, []);
 
   const mutateHost = useCallback((hostId: string, update: Parameters<typeof updateStoredHost>[2]) => {
-    setHostRegistry((previous) => {
-      const next = updateStoredHost(previous, hostId, update);
-      hostRegistryRef.current = next;
-      saveHostRegistry(next);
-      return next;
-    });
+    const next = updateStoredHost(hostRegistryRef.current, hostId, update);
+    if (next === hostRegistryRef.current) return;
+    hostRegistryRef.current = next;
+    saveHostRegistry(next);
+    setHostRegistry(next);
   }, []);
 
   const updateRoute = useCallback((route: WebRoute, replace = false) => {

@@ -139,6 +139,7 @@ export function updateStoredHost(
   hostId: string,
   update: Partial<Omit<StoredHost, "id" | "deviceToken" | "pairedAt">>,
 ): HostRegistry {
+  if (!registry.hosts.some((host) => host.id === hostId)) return registry;
   return normalizeRegistry({
     ...registry,
     hosts: registry.hosts.map((host) => host.id === hostId ? { ...host, ...update } : host),
