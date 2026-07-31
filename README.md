@@ -266,14 +266,6 @@ rebuild the committed assets with the pinned Node version as documented in the
   </tr>
 </table>
 
-### Web
-
-<p align="center">
-  <img src="docs/screenshots/web-dashboard.png" alt="Foreman web unified host overview with session search results" width="860">
-  <br>
-  <em>Bounded multi-host health and host-scoped session discovery</em>
-</p>
-
 ## Architecture
 
 ```text
