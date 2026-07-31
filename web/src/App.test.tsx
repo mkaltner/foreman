@@ -1,8 +1,130 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { appShellClassName, ConversationView, LinkedUserText, RouteSelect, SetupView } from "./App";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import App, { appShellClassName, ConversationView, LinkedUserText, RouteSelect, SetupView } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
+import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
+
+const clientMock = vi.hoisted(() => ({
+  pair: vi.fn(),
+  start: vi.fn(),
+  request: vi.fn(),
+  disconnect: vi.fn(),
+}));
+
+vi.mock("./client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./client")>();
+  return {
+    ...actual,
+    ForemanWebClient: class {
+      pair = clientMock.pair;
+      start = clientMock.start;
+      request = clientMock.request;
+      disconnect = clientMock.disconnect;
+    },
+  };
+});
+
+vi.mock("./unified-client", () => ({
+  UnifiedHostConnections: class {
+    start() {}
+    stop() {}
+    reconnect() {}
+  },
+}));
+
+function storedHost(id: string, displayName: string, isDefault: boolean): StoredHost {
+  return {
+    id,
+    displayName,
+    host: `${id}.local`,
+    tcpPort: 8765,
+    webPort: 8766,
+    deviceToken: `token-${id}`,
+    pairedAt: 1,
+    lastConnectedAt: null,
+    lastKnownStatus: "disconnected",
+    runtimeMode: null,
+    isDefault,
+  };
+}
+
+function forgetButton(displayName: string): HTMLButtonElement {
+  const card = [...document.querySelectorAll<HTMLElement>(".saved-host")].find(
+    (candidate) => candidate.querySelector("strong")?.textContent === displayName,
+  );
+  if (!card) throw new Error(`Saved host ${displayName} was not rendered`);
+  return within(card).getByRole("button", { name: "Forget" });
+}
+
+describe("host navigation history", () => {
+  const home = storedHost("home", "Home", true);
+  const work = storedHost("work", "Work", false);
+
+  beforeEach(() => {
+    localStorage.clear();
+    window.history.replaceState(null, "", "/");
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    clientMock.pair.mockReset().mockResolvedValue("paired-token");
+    clientMock.start.mockReset().mockResolvedValue(undefined);
+    clientMock.request.mockReset().mockResolvedValue({});
+    clientMock.disconnect.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("opens the sessions root after pairing a host", async () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "new.local" } });
+    fireEvent.change(screen.getByLabelText("Pairing code"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
+    expect(window.location.pathname).toBe("/");
+    expect(new URLSearchParams(window.location.search).get("host")).toBe(loadHostRegistry().activeHostId);
+  });
+
+  it("opens the sessions root for the replacement host after forgetting the active host", async () => {
+    saveHostRegistry({ hosts: [home, work], activeHostId: home.id });
+    window.history.replaceState(null, "", `/settings?host=${home.id}`);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    fireEvent.click(forgetButton(home.displayName));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe(`?host=${work.id}`);
+    expect(loadHostRegistry().activeHostId).toBe(work.id);
+  });
+
+  it("keeps the active host while opening the sessions root after forgetting another host", async () => {
+    saveHostRegistry({ hosts: [home, work], activeHostId: home.id });
+    window.history.replaceState(null, "", `/settings?host=${home.id}`);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    fireEvent.click(forgetButton(work.displayName));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe(`?host=${home.id}`);
+    expect(loadHostRegistry()).toMatchObject({
+      activeHostId: home.id,
+      hosts: [{ id: home.id }],
+    });
+  });
+});
 
 describe("Foreman setup", () => {
   it("captures a display name and explicit web port for each host", () => {
