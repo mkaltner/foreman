@@ -254,9 +254,9 @@ restarting Foreman reconnects with that token and reloads authoritative provider
 state without replaying prompts or controls. One paired host token exposes Codex
 and every available Claude Code capability on that host.
 
-The Android host screen reports Codex and Claude Code availability separately,
-including safe runtime/version information and unavailable reasons. New Claude
-sessions select a workspace, `sonnet` or `haiku`, and one exact permission mode:
+The Android new-session provider selector reports Codex and Claude Code
+availability separately and shows a safe reason when a provider is unavailable.
+New Claude sessions select a workspace, `sonnet` or `haiku`, and one exact permission mode:
 `default`, `dontAsk`, `acceptEdits`, `plan`, `auto`, or
 `bypassPermissions`. Bypass permissions is never selected by default and
 requires a high-risk confirmation. External Claude CLI sessions are shown as

@@ -3756,7 +3756,6 @@ private fun HostDashboardScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item { DashboardHealthCard(state) }
-                    item { ProviderStatusPanel(state.providers) }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4079,9 +4078,6 @@ private fun SessionsScreen(
                     }
                 }
             }
-            if (state.connected && state.providers.isNotEmpty()) {
-                ProviderStatusPanel(state.providers)
-            }
             if (state.showSearch) {
                 Text(
                     "Transcript search covers Codex. Claude Code sessions are filtered by title, workspace, state, pins, and hidden status only.",
@@ -4208,55 +4204,6 @@ private fun SessionsScreen(
             onChange = { viewModel.setSearchFilters(it, true) },
             onDismiss = { viewModel.setSearchFiltersOpen(false) },
         )
-    }
-}
-
-@Composable
-private fun ProviderStatusPanel(providers: List<ProviderInfo>) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            providers.forEach { provider ->
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    ProviderBadge(provider.id)
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (provider.available) "Available" else "Unavailable",
-                            fontWeight = FontWeight.SemiBold,
-                            color =
-                                if (provider.available) Color(0xFF17B26A)
-                                else MaterialTheme.colorScheme.error,
-                        )
-                        if (!provider.available) {
-                            Text(
-                                providerUnavailableDescription(provider.unavailableReason),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            val versions = buildList {
-                                provider.cliVersion?.let { add("CLI $it") }
-                                provider.nodeVersion?.let { add("Node $it") }
-                                provider.sdkVersion?.let { add("SDK $it") }
-                                if (provider.id == PROVIDER_CODEX) provider.version?.let { add(it) }
-                            }
-                            if (versions.isNotEmpty()) {
-                                Text(
-                                    versions.joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
