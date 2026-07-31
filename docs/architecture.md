@@ -11,6 +11,12 @@ Browser Foreman ── static HTTP + authenticated WS :8766 ─┘
                                                     Desktop codex app-server
 ```
 
+The Linux service also owns one optional Node companion for the official Claude
+Agent SDK. That adapter is intentionally internal: it has lifecycle/status and a
+test harness, but protocol v1, Android, and web remain Codex-only. The companion
+uses bounded request-ID JSON over stdio, persists only Claude `{sessionId, cwd}`
+mappings, and never mirrors transcripts or attaches to external live processes.
+
 The Linux process treats Codex's Desktop control socket as attach-only. It never
 unlinks, replaces, or launches a process on that path. When attachment is
 unavailable it may own a child only on Foreman's separate fallback socket and
@@ -39,6 +45,8 @@ Linux files:
 - `inputs.py`: verified structured-input normalization and response validation;
 - `protocol.py`: bounded JSONL frames;
 - `diagnostics.py`: fixed-message, 100-entry sanitized in-memory event ring;
+- `claude_code.py` and `claude_bridge/bridge.mjs`: optional Linux-only Claude SDK lifecycle boundary;
+- `session_identity.py`: the small explicit `provider + hostId + sessionId` identity value;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 

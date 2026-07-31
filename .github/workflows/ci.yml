@@ -47,6 +47,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
       - name: Verify vendored Python dependency
         run: >-
           PYTHONPATH=linux/vendor python -c
@@ -72,6 +75,9 @@ jobs:
           grep -Fxq 'web/dist/index.html' <<<"$archive_listing"
           grep -Fxq 'release.properties' <<<"$archive_listing"
           grep -Fxq 'THIRD_PARTY_NOTICES.md' <<<"$archive_listing"
+          grep -Fxq 'linux/claude_code.py' <<<"$archive_listing"
+          grep -Fxq 'linux/claude_bridge/bridge.mjs' <<<"$archive_listing"
+          grep -Fxq 'linux/claude_bridge/package-lock.json' <<<"$archive_listing"
           if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
             echo "Linux archive contains Python cache files" >&2
             exit 1
@@ -81,6 +87,31 @@ jobs:
           name: foreman-linux
           path: foreman-linux.tar.gz
           if-no-files-found: error
+
+  claude-adapter:
+    name: Optional Claude Code adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: linux/claude_bridge/package-lock.json
+      - name: Install pinned bridge dependencies
+        working-directory: linux/claude_bridge
+        run: npm ci --ignore-scripts
+      - name: Build and test bridge
+        working-directory: linux/claude_bridge
+        run: npm run build && npm test
+      - name: Test Python adapter
+        run: python -m unittest tests.test_claude_code -v
+      - name: Verify tracked bridge output is clean
+        run: git diff --exit-code -- linux/claude_bridge
 
   android:
     name: Android app

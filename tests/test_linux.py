@@ -341,6 +341,44 @@ class FakeCodex:
         ]
 
 
+class FakeClaude:
+    instances: list["FakeClaude"] = []
+
+    def __init__(
+        self,
+        repository_root: Path,
+        state_path: Path,
+        on_event,
+        node_executable: str,
+        bridge_path: str | Path | None,
+    ) -> None:
+        self.repository_root = repository_root
+        self.state_path = state_path
+        self.on_event = on_event
+        self.node_executable = node_executable
+        self.bridge_path = bridge_path
+        self.started = False
+        self.stopped = False
+        self.status_value = {
+            "provider": "claude-code",
+            "installed": True,
+            "available": True,
+            "cliVersion": "2.1.220",
+            "sdkVersion": "0.3.220",
+        }
+        self.instances.append(self)
+
+    async def start(self) -> dict[str, Any]:
+        self.started = True
+        return self.status_value
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def status(self) -> dict[str, Any]:
+        return self.status_value
+
+
 class ProtocolTests(unittest.TestCase):
     def test_frame_round_trip_and_validation(self) -> None:
         message = {"version": 1, "id": "1", "type": "ping", "payload": {}}
@@ -455,6 +493,36 @@ class PairingLimiterTests(unittest.TestCase):
         limiter.failed("attacker")
         limiter.succeeded("attacker")
         self.assertTrue(limiter.allowed("attacker"))
+
+
+class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_optional_adapter_lifecycle_and_internal_provider_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FakeClaude.instances.clear()
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                claude_node="node-test",
+                claude_bridge=root / "bridge.mjs",
+            )
+            await app.start()
+            try:
+                claude = FakeClaude.instances[-1]
+                self.assertTrue(claude.started)
+                self.assertEqual(claude.node_executable, "node-test")
+                self.assertEqual(claude.state_path.name, "claude-code-sessions.json")
+                statuses = await app.provider_status()
+                self.assertEqual([item["provider"] for item in statuses], ["codex", "claude-code"])
+                self.assertTrue(statuses[1]["available"])
+            finally:
+                await app.stop()
+            self.assertTrue(claude.stopped)
 
 
 class DiagnosticBufferTests(unittest.TestCase):
