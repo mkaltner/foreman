@@ -142,6 +142,64 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            overviewReturnTarget(Screen.Sessions, "host-a", null),
+        )
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Dashboard),
+            overviewReturnTarget(Screen.Dashboard, "host-a", null),
+        )
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Detail, "thread-1"),
+            overviewReturnTarget(Screen.Detail, "host-a", "thread-1"),
+        )
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            overviewReturnTarget(Screen.Detail, "host-a", null),
+        )
+        assertNull(overviewReturnTarget(Screen.Sessions, null, null))
+        assertNull(overviewReturnTarget(Screen.Overview, "host-a", null))
+        assertNull(overviewReturnTarget(Screen.Setup, "host-a", null))
+        assertNull(overviewReturnTarget(Screen.Diagnostics, "host-a", null))
+    }
+
+    @Test
+    fun unifiedOverviewReturnLifecycleIsHostBoundAndConsumedOnce() {
+        val navigation = OverviewNavigationState()
+
+        navigation.capture(Screen.Detail, "host-a", "thread-1")
+        assertTrue(navigation.hasReturnTarget())
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Detail, "thread-1"),
+            navigation.consume("host-a"),
+        )
+        assertFalse(navigation.hasReturnTarget())
+        assertNull(navigation.consume("host-a"))
+
+        navigation.capture(Screen.Sessions, "host-a", null)
+        navigation.invalidateForHost("host-b")
+        assertFalse(navigation.hasReturnTarget())
+        assertNull(navigation.consume("host-b"))
+
+        navigation.capture(Screen.Sessions, "host-a", null)
+        assertNull(navigation.consume("host-b"))
+        assertFalse(navigation.hasReturnTarget())
+
+        navigation.capture(Screen.Sessions, "host-a", null)
+        navigation.capture(Screen.Dashboard, "host-a", null)
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Dashboard),
+            navigation.consume("host-a"),
+        )
+
+        navigation.capture(Screen.Sessions, "host-a", null)
+        navigation.clear()
+        assertFalse(navigation.hasReturnTarget())
+    }
+
+    @Test
     fun restartIsBlockedForActiveSessionsAndPendingInput() {
         assertFalse(restartBlocked(UiState()))
         assertTrue(
