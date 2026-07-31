@@ -77,6 +77,13 @@ jobs:
         run: |
           python -m compileall -q linux scripts tests
           python -m unittest discover -s tests -v
+      - name: Build optional Claude Code bridge
+        working-directory: linux/claude_bridge
+        run: |
+          npm ci --omit=dev --ignore-scripts
+          npm run build
+          npm test
+          git diff --exit-code -- package-lock.json bridge.mjs
       - name: Test and build web client
         working-directory: web
         run: |
@@ -126,6 +133,10 @@ jobs:
           require_archive_entry 'web/dist/index.html'
           require_archive_entry 'release.properties'
           require_archive_entry 'THIRD_PARTY_NOTICES.md'
+          require_archive_entry 'linux/claude_code.py'
+          require_archive_entry 'linux/claude_bridge/bridge.mjs'
+          require_archive_entry 'linux/claude_bridge/package-lock.json'
+          require_archive_entry 'linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json'
           if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
             echo "Linux archive contains Python cache files" >&2
             exit 1

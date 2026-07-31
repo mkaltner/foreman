@@ -38,6 +38,13 @@ python3 scripts/verify_release.py --tag v1.0.0
 The tagged Linux archive from a GitHub release contains the same install
 payload and is an alternative to cloning the repository.
 
+Optional Claude Code adapter development requires native Claude Code, Node.js
+20 or newer, and the exact SDK lock under `linux/claude_bridge`. Tagged Linux
+archives include that SDK dependency. A source install attempts the reproducible
+install only when Claude, Node, and npm are present; failure does not affect the
+Codex service. Check the local-only adapter state with `foreman claude-status`.
+Claude sessions are not exposed to Android, web, or protocol v1.
+
 The rootless installer copies Foreman to `~/.local/share/foreman`, installs the
 CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
 
