@@ -344,22 +344,40 @@ describe("NewSessionDialog", () => {
     });
   });
 
-  it("requires a repository selection and carries changed route settings", () => {
+  it("defaults to the workspace root and orders route settings like the composer", () => {
     const create = vi.fn().mockResolvedValue(undefined);
-    render(<NewSessionDialog repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+    const { container } = render(<NewSessionDialog repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
 
     const button = screen.getByRole("button", { name: "Create" });
-    expect(button).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "foreman" } });
+    expect(screen.getByLabelText("Workspace")).toHaveValue(".");
+    expect(button).toBeEnabled();
+    expect([...container.querySelectorAll(".new-session-settings > label")].map((label) => label.firstChild?.textContent))
+      .toEqual(["Access", "Model", "Reasoning"]);
+    fireEvent.click(button);
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repositoryId: "." }));
+
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "foreman" } });
     fireEvent.change(screen.getByLabelText("Reasoning"), { target: { value: "low" } });
     fireEvent.change(screen.getByLabelText("Access"), { target: { value: "full" } });
     fireEvent.click(button);
 
-    expect(create).toHaveBeenCalledWith({
+    expect(create).toHaveBeenLastCalledWith({
       repositoryId: "foreman",
       model: "model-test",
       reasoningEffort: "low",
       accessLevel: "full",
     });
+  });
+
+  it("returns to the workspace root when repository discovery removes the selection", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const repository = { id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false };
+    const view = render(<NewSessionDialog repositories={[repository]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "foreman" } });
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+    fireEvent.click(screen.getByRole("button", { name: "Start in workspace" }));
+
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repositoryId: "." }));
   });
 });
