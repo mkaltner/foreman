@@ -3,24 +3,27 @@
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/foreman_logo.png" alt="Foreman logo" width="128">
   <br>
-  <strong>A fast, self-hosted control plane for Codex.</strong>
+  <strong>A fast, self-hosted control plane for Codex and Claude Code.</strong>
 </p>
 
-Foreman provides lightweight Android and web interfaces for monitoring and
-controlling Codex sessions running on Linux hosts. It connects directly to the
-local Codex app-server and is designed for fast, LAN-first operation.
+Foreman provides self-hosted Android and web control for Codex and
+Foreman-managed Claude Code sessions running on Linux hosts. It connects
+directly to the local Codex app-server and uses the official Claude Agent SDK
+through a bounded host-side bridge. Foreman is designed for fast, LAN-first
+operation.
 
-> Experimental Claude Code web support is available when the Linux host has an
-> authenticated Claude Code CLI, Node.js 20+, and the packaged pinned Agent SDK.
-> Android remains Codex-only.
+> Claude Code support requires an authenticated local Claude Code CLI, Node.js
+> 20 or newer, and the packaged pinned Agent SDK. External Claude sessions are
+> discoverable and resumable, but Foreman cannot live-attach to their running
+> CLI process or use Claude Remote Control.
 
 ## Why Foreman?
 
-Foreman is for people who want a dedicated Codex monitoring interface, fast
-local interaction, and direct control of an always-on Linux host. It provides
-self-hosted Android and browser access, visibility across active and recent
-sessions, and controls for prompting, steering, interrupting, model, reasoning
-effort, and access level.
+Foreman is for people who want a dedicated coding-agent monitoring interface,
+fast local interaction, and direct control of an always-on Linux host. It
+provides self-hosted Android and browser access, visibility across active and
+recent Codex and Claude Code sessions, with provider-appropriate controls for
+prompts, interrupts, models, reasoning, access, and permission modes.
 
 ## Foreman and Codex Remote
 
@@ -30,7 +33,7 @@ good fit for people who want remote control integrated with the broader ChatGPT
 experience.
 
 Foreman is aimed at users who prefer a dedicated, self-hosted, LAN-first
-interface and want direct access to their own Linux Codex host. It is designed
+interface and want direct access to their own Linux Foreman host. It is designed
 for low-latency local use and does not attempt to replace every first-party
 Remote capability.
 
@@ -83,6 +86,11 @@ root access, or network access. Tagged Linux archives and signed Android APKs
 are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
 as an alternative.
 
+Claude Code is optional. Enabling it requires Node.js 20+, local Claude CLI
+authentication, and the packaged pinned Agent SDK. A missing or failed Claude
+bridge leaves Codex and Foreman startup unaffected. Pairing remains host-level:
+one paired client can use every provider available on that host.
+
 ## Features
 
 - Pair clients with a short-lived, six-digit, one-time code.
@@ -94,12 +102,15 @@ as an alternative.
   runtime and version health, stale offline snapshots, and compound
   host/session attention navigation. Web uses at most four live sockets;
   Android uses one foreground-only sequential probe alongside the active host.
-- Discover Git repositories and browse active and recent Codex sessions.
-- Search session titles and bounded, normalized visible transcript text.
+- Discover provider availability and browse active, recent, or resumable Codex
+  and Claude Code sessions with visible provider identity.
+- Search Codex session titles and bounded, normalized visible transcript text;
+  Claude transcript search is not currently available.
 - Filter by repository/workspace, status, local date range, pins, and hidden sessions.
 - Pin important sessions or non-destructively hide noisy sessions per client.
-- List, read, start, resume, archive, and delete sessions.
-- Prompt, steer, and interrupt active work.
+- List, read, start, resume, and delete sessions. Codex also supports archive;
+  Claude Code does not expose an archive operation.
+- Prompt and interrupt managed work; Codex additionally supports steering.
 - Stream live status, assistant deltas, tool activity, and progress updates.
 - Review command, file-change, and permission approvals inline, including
   schema-advertised session and policy-amendment choices.
@@ -107,15 +118,17 @@ as an alternative.
   Foreman client live when Codex confirms the result.
 - Answer bounded Codex choice/text questions and supported MCP choice, text,
   boolean, or confirmation requests inline on web and Android.
-- Show current reasoning, plans, commands, tool names, and other meaningful
-  live activity while Codex works.
+- Show safe plans, commands, tool names, and other meaningful live activity
+  without exposing hidden reasoning or unrestricted tool output.
 - Choose **Focused** activity detail to group routine successful commands and
-  tools, or **Full** to show every activity item. This is presentation-only.
-- Select installed models, Android-style reasoning levels, and Codex access
-  profiles from descriptive themed menus.
-- Attach or paste up to four JPEG, PNG, or WebP images into a prompt or steer.
-- Notify Android devices and supported background browser tabs when monitored
-  turns finish or need attention.
+  tools from finished turns while keeping current-turn work visible, or
+  **Full** to show every activity item. This is presentation-only.
+- Select installed Codex models, reasoning levels, and access profiles, or
+  Claude Sonnet/Haiku and exact Claude permission modes.
+- Attach or paste up to four JPEG, PNG, or WebP images into Codex prompts or
+  steers.
+- Notify Android devices for monitored Codex or managed Claude lifecycle, and
+  supported background browser tabs for Codex turns.
 - Follow light, dark, or system themes with a configurable accent color.
 - Use dedicated Android and responsive web clients.
 - Install as a rootless user-level systemd service without pip or a Python venv.
@@ -136,6 +149,15 @@ pending approval or input when present. Android Back from the dashboard returns
 to the unified saved-host overview; **Home** and **Sessions** provide the same
 explicit in-app navigation.
 
+Android loads the host provider catalog after ordinary authentication. The new
+session dialog selects Codex or Claude Code, then shows only the applicable
+workspace, model, reasoning/access, or Claude permission controls. Claude
+supports Sonnet, Haiku, and `default`, `dontAsk`, `acceptEdits`, `plan`, `auto`,
+or `bypassPermissions`; bypass mode is prominently marked high risk and never
+selected silently. External Claude sessions appear as **Resumable · Not
+live-attached** and can be resumed under the same session ID with **Resume in
+Foreman**.
+
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
 The Sessions screen provides expandable search and a compact filter dialog for
@@ -143,14 +165,18 @@ repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
 and Hidden management. Search choices, pins, and hidden IDs use per-host local
 preferences; transcripts and image data are never stored there.
 Activity detail defaults to **Focused** on Android and web. It groups consecutive
-routine, successfully completed command/tool cards behind an expandable summary.
-Running or failed work, unknown states, approvals, structured input, and search
-targets remain visible; **Full** restores the ungrouped transcript.
+routine, successfully completed command/tool cards from finished turns behind
+an expandable summary. Current-turn, running, failed, denied, or unknown work,
+approvals, structured input, and search targets remain visible; **Full** restores
+the ungrouped transcript.
 Approval cards stay inside the existing conversation. Permission cards grant
 only selected requested access, and reconnect reloads only currently pending
 requests. Background approval notifications contain generic text and open the
 exact host and session/card without exposing commands or paths on the lock
 screen. Background monitoring is intentionally limited to the active host.
+Provider-aware Claude completion, failure, interruption, and attention alerts
+use the same privacy-safe Android notification preferences and open the exact
+host/provider/session. Merely resumable external sessions never notify.
 
 ## Web
 
@@ -193,12 +219,12 @@ The responsive dashboard provides:
 The full web client also supports:
 
 - the session list, conversation history, and live assistant/tool activity;
-- starting sessions and sending prompts, steers, or interrupts;
-- model, reasoning-effort, and access selection;
-- file-picker and clipboard image attachments;
-- inline command, file-change, and permission approval cards;
-- archive and delete actions;
-- opt-in browser notifications for background tabs;
+- provider-aware Codex and Claude session start, resume, prompts, and interrupts;
+- Codex model/reasoning/access and Claude model/permission selection;
+- Codex file-picker and clipboard image attachments;
+- inline Codex command, file-change, and permission approval cards;
+- provider-appropriate archive and delete actions;
+- opt-in Codex browser notifications for background tabs;
 - bounded reconnect without request replay;
 - confirmed, gated restart of Foreman with reconnect progress;
 - durable host/session URLs with Back, Forward, and refresh restoration;
@@ -260,7 +286,7 @@ rebuild the committed assets with the pinned Node version as documented in the
 <table>
   <tr>
     <td align="center"><img src="docs/screenshots/pairing.png" alt="Pair Foreman with a Linux host" width="260"></td>
-    <td align="center"><img src="docs/screenshots/session-list.png" alt="Browse active and recent Codex sessions" width="260"></td>
+    <td align="center"><img src="docs/screenshots/session-list.png" alt="Browse active and recent coding-agent sessions" width="260"></td>
     <td align="center"><img src="docs/screenshots/live-session.png" alt="Monitor work in progress" width="260"></td>
   </tr>
   <tr>
@@ -274,14 +300,15 @@ rebuild the committed assets with the pinned Node version as documented in the
 
 ```text
 Android ── authenticated JSONL/TCP :8765 ─┐
-                                          ├─ Foreman service ── Codex app-server
-Browser ── HTTP + authenticated WS :8766 ─┘
+                                          ├─ Foreman service ─┬─ Codex app-server
+Browser ── HTTP + authenticated WS :8766 ─┘                   └─ Claude Agent SDK bridge
 ```
 
 - Android and browser clients use the same protocol-v1 messages.
 - TCP uses newline-delimited JSON; WebSocket uses one JSON text message per frame.
 - HTTP serves static assets and operational health only; there is no application REST API.
-- Foreman connects to Codex over a Unix-socket WebSocket.
+- Foreman connects to Codex over a Unix-socket WebSocket and to its optional
+  Claude companion over bounded request-ID JSONL on stdio.
 
 ## Security
 
@@ -300,12 +327,15 @@ Foreman does not terminate TLS. When a trusted reverse proxy uses a different
 origin, add its exact HTTPS origin to `FOREMAN_WEB_ORIGINS`; permissive wildcard
 CORS is not enabled.
 
-A paired client can control Codex with the access level selected for a turn, so
-treat its token and network access as sensitive. Foreman does not expose a
+A paired client can control every provider available on its host, so treat its
+token and network access as sensitive. Foreman does not expose a
 standalone shell or Git-write endpoint. Its authenticated approval and bounded
 input endpoints only return validated responses to pending Codex requests;
 they never execute command text themselves. Codex can still run tools and
 modify files according to its selected access profile.
+Claude can run tools according to its selected native permission mode. Foreman
+never maps Claude permission callbacks to Codex approvals or silently approves
+them; unsupported Claude permission requests must be resolved in Claude Code.
 Any authenticated Foreman client may revoke another paired token. Client lists
 contain only the saved label, client type, pairing time, and live connection
 state—never token values, token hashes, pairing codes, or source addresses.
@@ -332,6 +362,12 @@ does not stop Desktop's Codex runtime.
   transcripts, active monitoring, and notifications remain scoped to one host.
 - Recent dashboard activity is not a persistent audit history.
 - Dashboard stale activity is an observation, not a failure or automatic action.
+- Claude support requires Node.js 20+, an authenticated local Claude CLI, and
+  the packaged pinned Agent SDK.
+- External Claude sessions are resumable but not live-attachable. Foreman cannot
+  stream or interrupt their current external process or answer its approvals.
+- Claude Remote Control, Claude images, Claude transcript search, and Claude
+  approval responses from Foreman clients are not supported.
 - Chrome and Firefox are the supported 1.0 browsers; Edge is best-effort.
 
 ## Stable status
@@ -339,7 +375,9 @@ does not stop Desktop's Codex runtime.
 Foreman 1.0 is the first stable release. Protocol v1 and the documented
 state-preserving upgrade behavior are the compatibility contract for the 1.x
 series; incompatible wire or configuration changes will not be made silently.
-Android remains distributed by sideloading. The
+Current main adds compatible multi-provider functionality intended for v1.1.0;
+it does not change protocol version 1. Android remains distributed by
+sideloading. The
 [v1.0 acceptance record](docs/acceptance-v1.0.0.md) tracks release evidence.
 Issues and feedback are welcome in the
 [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
@@ -349,6 +387,8 @@ Issues and feedback are welcome in the
 - [Installation guide](docs/install.md)
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
+- [Claude Code integration](docs/claude-code-integration.md)
+- [Codex integration](docs/codex-integration.md)
 - [Compatibility policy](docs/compatibility.md)
 - [Release guide](docs/releasing.md)
 - [v1.0 acceptance record](docs/acceptance-v1.0.0.md)
