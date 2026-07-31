@@ -27,6 +27,36 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun focusedActivityGroupsOnlyRoutineSuccessfulWork() {
+        val messages =
+            listOf(
+                ConversationItem("user", "user", text = "Please test"),
+                ConversationItem("command", "command", description = "git status", status = "completed", exitCode = 0),
+                ConversationItem("tool", "tool", description = "Read file", status = "completed"),
+                ConversationItem("failed", "command", description = "run tests", status = "completed", exitCode = 1),
+                ConversationItem("assistant", "assistant", text = "I found the issue"),
+                ConversationItem("approval-item", "tool", description = "Protected", status = "completed"),
+            )
+
+        val focused =
+            conversationBlocks(
+                messages,
+                ActivityDetail.Focused,
+                protectedItemIds = setOf("approval-item"),
+            )
+        assertEquals(5, focused.size)
+        assertEquals(listOf("command", "tool"), focused[1].items.map { it.id })
+        assertTrue(focused[1].collapsedActivity)
+        assertEquals("failed", focused[2].items.single().id)
+        assertFalse(focused[2].collapsedActivity)
+        assertEquals("approval-item", focused.last().items.single().id)
+
+        val full = conversationBlocks(messages, ActivityDetail.Full)
+        assertEquals(messages.map { it.id }, full.map { it.items.single().id })
+        assertTrue(full.none { it.collapsedActivity })
+    }
+
+    @Test
     fun androidDashboardProjectsLiveAttentionAndRecentWork() {
         val now = 2_000_000_000_000L
         val working =
@@ -99,6 +129,7 @@ class ForemanConnectionTest {
 
     @Test
     fun dashboardDestinationSurvivesReconnectUnlessOpeningAConversation() {
+        assertEquals(Screen.Overview, dashboardBackDestination())
         assertEquals(Screen.Dashboard, reconnectDestination(Screen.Dashboard, null))
         assertEquals(Screen.Sessions, reconnectDestination(Screen.Overview, null))
         assertEquals(Screen.Detail, reconnectDestination(Screen.Dashboard, "thread-1"))

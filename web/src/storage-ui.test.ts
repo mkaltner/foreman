@@ -93,11 +93,11 @@ describe("storage, appearance, and interaction helpers", () => {
   });
 
   it("persists theme and accent with safe defaults", () => {
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple" });
-    saveAppearance({ theme: "dark", accent: "teal" });
-    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
+    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full" });
+    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full" });
     localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
   });
 
   it("persists bounded browser-local dashboard presentation choices", () => {

@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -422,6 +421,8 @@ internal fun reconnectDestination(current: Screen, selectedSessionId: String?): 
         else -> Screen.Sessions
     }
 
+internal fun dashboardBackDestination(): Screen = Screen.Overview
+
 internal enum class RestartPhase { Idle, Scheduling, Scheduled, Reconnecting, Succeeded, TimedOut, Failed }
 
 internal fun restartPhaseAfterConnection(
@@ -666,6 +667,7 @@ internal data class UiState(
     val showNewSession: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
+    val activityDetail: ActivityDetail = ActivityDetail.Focused,
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
@@ -804,6 +806,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 activeHostId = activeHost?.id,
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
+                activityDetail = savedPreferences.activityDetail,
                 followNewMessages = savedPreferences.followNewMessages,
                 hapticsEnabled = savedPreferences.hapticsEnabled,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
@@ -884,7 +887,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
 
-    fun showOverview() = state.update { it.copy(screen = Screen.Overview, selected = null, error = null) }
+    fun showOverview() = state.update { it.copy(screen = dashboardBackDestination(), selected = null, error = null) }
 
     fun showDashboard() = state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
 
@@ -1175,6 +1178,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(accentColor = color) }
     }
 
+    fun setActivityDetail(detail: ActivityDetail) {
+        preferences.setActivityDetail(detail)
+        state.update { it.copy(activityDetail = detail) }
+    }
+
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.setFollowNewMessages(enabled)
         state.update { it.copy(followNewMessages = enabled) }
@@ -1318,6 +1326,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         hiddenSessionIds = restored.hiddenSessionIds,
                         themeMode = restored.themeMode,
                         accentColor = restored.accentColor,
+                        activityDetail = restored.activityDetail,
                         followNewMessages = restored.followNewMessages,
                         hapticsEnabled = restored.hapticsEnabled,
                         monitorActiveTurns = restored.monitorActiveTurns,
@@ -1618,6 +1627,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 restartPhase = RestartPhase.Idle,
                 themeMode = restored.themeMode,
                 accentColor = restored.accentColor,
+                activityDetail = restored.activityDetail,
                 followNewMessages = restored.followNewMessages,
                 hapticsEnabled = restored.hapticsEnabled,
                 monitorActiveTurns = restored.monitorActiveTurns,
@@ -3103,7 +3113,6 @@ private fun HostDashboardScreen(
     viewModel: ForemanViewModel,
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
-    val activity = LocalActivity.current
     val pendingApprovals = state.approvals.filter { it.status == "pending" || it.status == "submitting" }
     val pendingInputs = state.inputs.filter { it.status == "pending" || it.status == "submitting" }
     val dashboard =
@@ -3113,7 +3122,7 @@ private fun HostDashboardScreen(
                 (pendingApprovals.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet(),
         )
 
-    BackHandler { activity?.moveTaskToBack(true) }
+    BackHandler(onBack = viewModel::showOverview)
 
     Scaffold(
         topBar = {
@@ -3801,6 +3810,20 @@ private fun SessionDetailScreen(
     val selected = state.selected
     val selectedApprovals = state.approvals.filter { it.sessionId == selected?.id }
     val selectedInputs = state.inputs.filter { it.sessionId == selected?.id }
+    val messages = selected?.messages.orEmpty()
+    val messageItemIds = messages.mapTo(mutableSetOf()) { it.id }
+    val protectedItemIds =
+        buildSet {
+            state.highlightedItemId?.let(::add)
+            selectedApprovals.mapNotNullTo(this) { it.itemId }
+            selectedInputs.mapNotNullTo(this) { it.itemId }
+        }
+    val displayBlocks =
+        conversationBlocks(messages, state.activityDetail, protectedItemIds)
+    val detachedApprovals =
+        selectedApprovals.filter { it.itemId == null || it.itemId !in messageItemIds }
+    val detachedInputs =
+        selectedInputs.filter { it.itemId == null || it.itemId !in messageItemIds }
     val listState = rememberLazyListState()
     val lastMessage = selected?.messages?.lastOrNull()
     val hapticFeedback = LocalHapticFeedback.current
@@ -3828,15 +3851,19 @@ private fun SessionDetailScreen(
             val focusedItemId =
                 selectedApprovals.firstOrNull { approval -> approval.id == state.focusedApprovalId }?.itemId
                     ?: selectedInputs.firstOrNull { input -> input.id == state.focusedApprovalId }?.itemId
-            val matchedIndex = it.messages.indexOfFirst { item -> item.id == (focusedItemId ?: state.highlightedItemId) }
+            val matchedIndex =
+                displayBlocks.indexOfFirst { block ->
+                    block.items.any { item -> item.id == (focusedItemId ?: state.highlightedItemId) }
+                }
             listState.scrollToItem(
                 if (matchedIndex >= 0) matchedIndex + 1
-                else it.messages.size + 1,
+                else displayBlocks.size + detachedApprovals.size + detachedInputs.size,
             )
         }
     }
     LaunchedEffect(
         state.followNewMessages,
+        state.activityDetail,
         state.highlightedItemId,
         selected?.messages?.size,
         lastMessage?.text,
@@ -3849,7 +3876,8 @@ private fun SessionDetailScreen(
         if (state.followNewMessages && state.highlightedItemId == null) {
             selected?.let {
                 listState.scrollToItem(
-                    it.messages.size + if (it.status == "working") 1 else 0,
+                    displayBlocks.size + detachedApprovals.size + detachedInputs.size +
+                        if (it.status == "working") 1 else 0,
                 )
             }
         }
@@ -3948,33 +3976,38 @@ private fun SessionDetailScreen(
                         )
                     }
                     itemsIndexed(
-                        selected.messages,
-                        key = { index, item -> "${item.id}-$index" },
-                    ) { _, item ->
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ConversationRow(item)
-                            selectedApprovals.filter { it.itemId == item.id }.forEach { approval ->
-                                ApprovalCard(
-                                    approval = approval,
-                                    connected = state.connected,
-                                    submitting = approval.id in state.submittingApprovalIds,
-                                    error = state.approvalErrors[approval.id],
-                                    onRespond = { viewModel.respondToApproval(approval, it) },
-                                )
-                            }
-                            selectedInputs.filter { it.itemId == item.id }.forEach { input ->
-                                InputRequestCard(
-                                    input = input,
-                                    connected = state.connected,
-                                    submitting = input.id in state.submittingInputIds,
-                                    error = state.inputErrors[input.id],
-                                    onRespond = { viewModel.respondToInput(input, it) },
-                                )
+                        displayBlocks,
+                        key = { index, block -> "${if (block.collapsedActivity) "activity" else "message"}-${block.items.first().id}-$index" },
+                    ) { _, block ->
+                        if (block.collapsedActivity) {
+                            CollapsedActivityGroup(block.items)
+                        } else {
+                            val item = block.items.single()
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                ConversationRow(item)
+                                selectedApprovals.filter { it.itemId == item.id }.forEach { approval ->
+                                    ApprovalCard(
+                                        approval = approval,
+                                        connected = state.connected,
+                                        submitting = approval.id in state.submittingApprovalIds,
+                                        error = state.approvalErrors[approval.id],
+                                        onRespond = { viewModel.respondToApproval(approval, it) },
+                                    )
+                                }
+                                selectedInputs.filter { it.itemId == item.id }.forEach { input ->
+                                    InputRequestCard(
+                                        input = input,
+                                        connected = state.connected,
+                                        submitting = input.id in state.submittingInputIds,
+                                        error = state.inputErrors[input.id],
+                                        onRespond = { viewModel.respondToInput(input, it) },
+                                    )
+                                }
                             }
                         }
                     }
                     items(
-                        selectedApprovals.filter { approval -> approval.itemId == null || selected.messages.none { it.id == approval.itemId } },
+                        detachedApprovals,
                         key = { "approval-${it.id}" },
                     ) { approval ->
                         ApprovalCard(
@@ -3986,7 +4019,7 @@ private fun SessionDetailScreen(
                         )
                     }
                     items(
-                        selectedInputs.filter { input -> input.itemId == null || selected.messages.none { it.id == input.itemId } },
+                        detachedInputs,
                         key = { "input-${it.id}" },
                     ) { input ->
                         InputRequestCard(
@@ -4002,6 +4035,46 @@ private fun SessionDetailScreen(
                             LiveActivityRow(selected)
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollapsedActivityGroup(items: List<ConversationItem>) {
+    var expanded by remember(items.map { it.id }) { mutableStateOf(false) }
+    val commandCount = items.count { it.kind == "command" }
+    val toolCount = items.size - commandCount
+    Card(Modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("◇", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "${items.size} completed activity item${if (items.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        buildList {
+                            if (commandCount > 0) add("$commandCount command${if (commandCount == 1) "" else "s"}")
+                            if (toolCount > 0) add("$toolCount tool${if (toolCount == 1) "" else "s"}")
+                        }.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(if (expanded) "Hide" else "Show", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+            }
+            if (expanded) {
+                HorizontalDivider()
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items.forEach { ConversationRow(it) }
                 }
             }
         }
@@ -4756,6 +4829,7 @@ private fun UiSettingsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
+    var showingActivityDetail by remember { mutableStateOf(false) }
     var showingNotifications by remember { mutableStateOf(false) }
     var notificationRepositoryId by remember { mutableStateOf<String?>(null) }
     var quietStartText by remember(state.notificationPreferences.quietStart) { mutableStateOf(state.notificationPreferences.quietStart) }
@@ -4766,6 +4840,7 @@ private fun UiSettingsMenu(
         IconButton(
             onClick = {
                 showingAccentColors = false
+                showingActivityDetail = false
                 showingNotifications = false
                 notificationRepositoryId = null
                 expanded = true
@@ -4778,6 +4853,7 @@ private fun UiSettingsMenu(
             onDismissRequest = {
                 expanded = false
                 showingAccentColors = false
+                showingActivityDetail = false
                 showingNotifications = false
                 notificationRepositoryId = null
             },
@@ -4813,6 +4889,41 @@ private fun UiSettingsMenu(
                             viewModel.setAccentColor(color)
                             expanded = false
                             showingAccentColors = false
+                        },
+                    )
+                }
+            } else if (showingActivityDetail) {
+                DropdownMenuItem(
+                    text = { Text("Activity detail", style = MaterialTheme.typography.labelLarge) },
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to settings")
+                    },
+                    onClick = { showingActivityDetail = false },
+                )
+                HorizontalDivider()
+                ActivityDetail.values().forEach { detail ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(detail.name)
+                                Text(
+                                    if (detail == ActivityDetail.Focused) {
+                                        "Group routine completed commands and tools"
+                                    } else {
+                                        "Show every command and tool item"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        leadingIcon = {
+                            RadioButton(selected = state.activityDetail == detail, onClick = null)
+                        },
+                        onClick = {
+                            viewModel.setActivityDetail(detail)
+                            expanded = false
+                            showingActivityDetail = false
                         },
                     )
                 }
@@ -5016,6 +5127,20 @@ private fun UiSettingsMenu(
                         }
                     },
                     onClick = { showingAccentColors = true },
+                )
+                DropdownMenuItem(
+                    text = { Text("Activity detail") },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                state.activityDetail.name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+                        }
+                    },
+                    onClick = { showingActivityDetail = true },
                 )
                 HorizontalDivider()
                 DropdownMenuItem(

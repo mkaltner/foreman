@@ -14,6 +14,7 @@ import ReactMarkdown from "react-markdown";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { InputCard, inputAttentionLabel } from "./InputCard";
 import { Dashboard } from "./Dashboard";
+import { conversationBlocks, type ActivityDetail } from "./activity-detail";
 import { messageDraft, updateMessageDraft } from "./drafts";
 import { UnifiedDashboard } from "./UnifiedDashboard";
 import { UnifiedHostConnections } from "./unified-client";
@@ -1295,6 +1296,7 @@ function App() {
                 models={models}
                 accessLevels={accessLevels}
                 connected={connected}
+                activityDetail={appearance.activityDetail}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
                 draft={messageDraft(messageDrafts, activeHost.id, current.id)}
@@ -1533,6 +1535,7 @@ export function ConversationView({
   models,
   accessLevels,
   connected,
+  activityDetail = "focused",
   highlightItemId,
   focusedApprovalId,
   draft,
@@ -1547,6 +1550,7 @@ export function ConversationView({
   models: ModelInfo[];
   accessLevels: AccessLevelInfo[];
   connected: boolean;
+  activityDetail?: ActivityDetail;
   highlightItemId: string | null;
   focusedApprovalId: string | null;
   draft: string;
@@ -1568,6 +1572,15 @@ export function ConversationView({
   const transcriptRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [jumpVisible, setJumpVisible] = useState(false);
+  const protectedItemIds = useMemo(() => new Set([
+    ...(highlightItemId ? [highlightItemId] : []),
+    ...approvals.flatMap(({ itemId }) => itemId ? [itemId] : []),
+    ...inputs.flatMap(({ itemId }) => itemId ? [itemId] : []),
+  ]), [approvals, highlightItemId, inputs]);
+  const displayBlocks = useMemo(
+    () => conversationBlocks(session.messages ?? [], activityDetail, protectedItemIds),
+    [activityDetail, protectedItemIds, session.messages],
+  );
 
   useEffect(() => {
     setModel(initialRoute.model);
@@ -1742,7 +1755,13 @@ export function ConversationView({
         }}
       >
         {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>Choose a route below and send the first prompt.</p></div>}
-        {session.messages?.map((item) => <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>)}
+        {displayBlocks.map((block) => {
+          if (block.collapsedActivity) {
+            return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} />;
+          }
+          const item = block.items[0];
+          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
+        })}
         {approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
         {inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
         {(session.status === "working" || session.status === "waiting") && (
@@ -1895,6 +1914,16 @@ function ConversationItemView({ item, highlighted = false }: { item: NonNullable
   );
 }
 
+function CollapsedActivityGroup({ items }: { items: NonNullable<SessionSummary["messages"]> }) {
+  const commands = items.filter(({ kind }) => kind === "command").length;
+  const tools = items.length - commands;
+  const breakdown = [
+    commands ? `${commands} command${commands === 1 ? "" : "s"}` : "",
+    tools ? `${tools} tool${tools === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+  return <details className="collapsed-activity"><summary><span aria-hidden="true">◇</span><span><strong>{items.length} completed activity item{items.length === 1 ? "" : "s"}</strong><small>{breakdown}</small></span><i>Details</i></summary><div>{items.map((item) => <ConversationItemView key={item.id} item={item} />)}</div></details>;
+}
+
 export function LinkedUserText({ text }: { text: string }) {
   return <p className="user-text">{linkifyPlainText(text).map((segment, index) => segment.href
     ? <a key={`${segment.href}-${index}`} href={segment.href} target="_blank" rel="noreferrer noopener">{segment.text}</a>
@@ -2001,7 +2030,7 @@ function SettingsView({
   return <main className="settings-page">
     <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
     <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
-    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
+    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
       <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p></div><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button></div>

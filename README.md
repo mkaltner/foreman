@@ -105,6 +105,8 @@ as an alternative.
   boolean, or confirmation requests inline on web and Android.
 - Show current reasoning, plans, commands, tool names, and other meaningful
   live activity while Codex works.
+- Choose **Focused** activity detail to group routine successful commands and
+  tools, or **Full** to show every activity item. This is presentation-only.
 - Select installed models, Android-style reasoning levels, and Codex access
   profiles from descriptive themed menus.
 - Attach or paste up to four JPEG, PNG, or WebP images into a prompt or steer.
@@ -126,8 +128,9 @@ Home opens the unified saved-host overview. **View dashboard** opens a live,
 host-scoped operations view with connection/runtime health, active and waiting
 counts, the oldest turn, concrete attention items, active work, and recent
 terminal turns. Dashboard cards open the existing conversation and focus a
-pending approval or input when present. Android Back from the dashboard moves
-Foreman to the background; use **Home** or **Sessions** for in-app navigation.
+pending approval or input when present. Android Back from the dashboard returns
+to the unified saved-host overview; **Home** and **Sessions** provide the same
+explicit in-app navigation.
 
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
@@ -135,6 +138,10 @@ The Sessions screen provides expandable search and a compact filter dialog for
 repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
 and Hidden management. Search choices, pins, and hidden IDs use per-host local
 preferences; transcripts and image data are never stored there.
+Activity detail defaults to **Focused** on Android and web. It groups consecutive
+routine, successfully completed command/tool cards behind an expandable summary.
+Running or failed work, unknown states, approvals, structured input, and search
+targets remain visible; **Full** restores the ungrouped transcript.
 Approval cards stay inside the existing conversation. Permission cards grant
 only selected requested access, and reconnect reloads only currently pending
 requests. Background approval notifications contain generic text and open the

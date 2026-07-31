@@ -136,6 +136,45 @@ data class ConversationItem(
     val imageCount: Int = 0,
 )
 
+enum class ActivityDetail { Focused, Full }
+
+internal data class ConversationBlock(
+    val items: List<ConversationItem>,
+    val collapsedActivity: Boolean,
+)
+
+internal fun conversationBlocks(
+    messages: List<ConversationItem>,
+    activityDetail: ActivityDetail,
+    protectedItemIds: Set<String> = emptySet(),
+): List<ConversationBlock> {
+    if (activityDetail == ActivityDetail.Full) {
+        return messages.map { ConversationBlock(listOf(it), collapsedActivity = false) }
+    }
+    val result = mutableListOf<ConversationBlock>()
+    val collapsed = mutableListOf<ConversationItem>()
+    fun flushCollapsed() {
+        if (collapsed.isEmpty()) return
+        result += ConversationBlock(collapsed.toList(), collapsedActivity = true)
+        collapsed.clear()
+    }
+    messages.forEach { item ->
+        if (item.id !in protectedItemIds && item.isRoutineCompletedActivity()) {
+            collapsed += item
+        } else {
+            flushCollapsed()
+            result += ConversationBlock(listOf(item), collapsedActivity = false)
+        }
+    }
+    flushCollapsed()
+    return result
+}
+
+private fun ConversationItem.isRoutineCompletedActivity(): Boolean =
+    kind in setOf("command", "tool") &&
+        status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done") &&
+        (exitCode == null || exitCode == 0)
+
 @Serializable
 data class SessionSummary(
     val id: String,
