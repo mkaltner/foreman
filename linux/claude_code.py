@@ -84,7 +84,10 @@ class ClaudeCode:
         bridge_path: str | Path | None = None,
         env: dict[str, str] | None = None,
         restart_delays: tuple[float, ...] = RESTART_DELAYS,
+        query_timeout: float = 30,
     ) -> None:
+        if query_timeout <= 0:
+            raise ValueError("query_timeout must be positive")
         self.repository_root = Path(repository_root).expanduser().resolve()
         self.state_path = Path(state_path).expanduser().resolve()
         self.on_event = on_event or (lambda _event: None)
@@ -92,6 +95,7 @@ class ClaudeCode:
         self.bridge_path = Path(bridge_path or Path(__file__).parent / "claude_bridge" / "bridge.mjs").resolve()
         self.env = dict(env or os.environ)
         self.restart_delays = restart_delays
+        self.query_timeout = query_timeout
         self.process: asyncio.subprocess.Process | None = None
         self.reader_task: asyncio.Task[None] | None = None
         self.stderr_task: asyncio.Task[None] | None = None
@@ -173,7 +177,7 @@ class ClaudeCode:
         permission_mode: str = "default",
     ) -> dict[str, str]:
         params = self._query_params(cwd, prompt, model, permission_mode)
-        return await self._request("start", params, timeout=30)
+        return await self._request("start", params, timeout=self.query_timeout)
 
     async def resume_session(
         self,
@@ -185,7 +189,7 @@ class ClaudeCode:
     ) -> dict[str, str]:
         params = self._query_params(cwd, prompt, model, permission_mode)
         params["sessionId"] = session_id
-        return await self._request("resume", params, timeout=30)
+        return await self._request("resume", params, timeout=self.query_timeout)
 
     async def interrupt(self, session_id: str) -> dict[str, Any]:
         return await self._request("interrupt", {"sessionId": session_id}, timeout=15)
@@ -286,6 +290,36 @@ class ClaudeCode:
                 await process.stdin.drain()
             return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as error:
+            if method in ("start", "resume"):
+                try:
+                    await self._request(
+                        "cancelRequest",
+                        {"requestId": request_id},
+                        timeout=5,
+                        ensure=False,
+                    )
+                except (ClaudeCodeError, TimeoutError, BrokenPipeError, ConnectionError):
+                    await self._terminate_process()
+                    for pending in list(self.pending.values()):
+                        if not pending.done():
+                            pending.set_exception(
+                                ClaudeCodeError("Claude bridge was stopped after cancellation failed")
+                            )
+                    self.pending.clear()
+                    self.pending_approvals.clear()
+                    self.runtime_status = unavailable_status(
+                        "Claude bridge was stopped after a query cancellation failure"
+                    )
+                    if (
+                        self.desired
+                        and not self.stopping
+                        and self.restart_attempt < len(self.restart_delays)
+                    ):
+                        delay = self.restart_delays[self.restart_attempt]
+                        self.restart_attempt += 1
+                        self.restart_task = asyncio.create_task(
+                            self._restart_after(delay)
+                        )
             raise ClaudeCodeError(f"Claude bridge {method} request timed out") from error
         finally:
             self.pending.pop(request_id, None)
@@ -381,6 +415,7 @@ class ClaudeCode:
         try:
             await self._spawn()
             self.runtime_status = await self._request("status", timeout=15)
+            self.restart_attempt = 0
         except Exception as error:
             self.runtime_status = unavailable_status(_safe_error(error))
             await self._terminate_process()

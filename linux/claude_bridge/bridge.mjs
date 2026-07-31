@@ -387,11 +387,13 @@ export class ClaudeBridge {
       sessionId: resume,
       resume,
       ready: deferred(),
+      done: deferred(),
       interruptRequested: false,
       input: null,
       query: null,
       terminal: false,
       terminalEvent: null,
+      clientRequestId: params?.clientRequestId,
     };
     this.runs.set(runId, run);
     if (resume) this.activeSessions.set(resume, run);
@@ -487,6 +489,7 @@ export class ClaudeBridge {
         // The SDK query is already closed.
       }
       if (run.terminalEvent) this.emit(run.terminalEvent);
+      run.done.resolve();
     }
   }
 
@@ -549,6 +552,17 @@ export class ClaudeBridge {
     run.interruptRequested = true;
     await run.query.interrupt();
     return { sessionId, interrupted: true };
+  }
+
+  async cancelRequest(params) {
+    const requestId = opaque(params?.requestId, "requestId");
+    const run = [...this.runs.values()].find((item) => item.clientRequestId === requestId);
+    if (!run) return { requestId, cancelled: false };
+    run.interruptRequested = true;
+    this.clearApprovals(run, "Claude query request timed out");
+    await run.query?.interrupt?.();
+    await run.done.promise;
+    return { requestId, cancelled: true };
   }
 
   attachExternal() {
@@ -615,9 +629,10 @@ async function serve() {
         result = { protocol: PROTOCOL_VERSION, maxMessageBytes: MAX_MESSAGE_BYTES, pid: process.pid };
       } else if (request.method === "status") result = await bridge.status();
       else if (request.method === "discover") result = await bridge.discover(request.params);
-      else if (request.method === "start") result = await bridge.start(request.params);
-      else if (request.method === "resume") result = await bridge.resume(request.params);
+      else if (request.method === "start") result = await bridge.start({ ...request.params, clientRequestId: request.id });
+      else if (request.method === "resume") result = await bridge.resume({ ...request.params, clientRequestId: request.id });
       else if (request.method === "interrupt") result = await bridge.interrupt(request.params);
+      else if (request.method === "cancelRequest") result = await bridge.cancelRequest(request.params);
       else if (request.method === "approval") result = bridge.approve(request.params);
       else if (request.method === "attachExternal") result = bridge.attachExternal(request.params);
       else if (request.method === "shutdown") result = await bridge.shutdown();
@@ -659,6 +674,9 @@ async function serve() {
     }
   });
   process.stdin.on("end", () => void bridge.shutdown().finally(() => process.exit(0)));
+  const terminate = () => void bridge.shutdown().finally(() => process.exit(0));
+  process.once("SIGTERM", terminate);
+  process.once("SIGINT", terminate);
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

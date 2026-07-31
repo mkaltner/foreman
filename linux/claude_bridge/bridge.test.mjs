@@ -100,7 +100,11 @@ test("start, model, permission callback, discovery, interrupt, and minimal mappi
   const bridge = new ClaudeBridge({
     statePath,
     send: (message) => messages.push(message),
-    env: { ...process.env, FOREMAN_CLAUDE_EXECUTABLE: process.execPath },
+    env: {
+      ...process.env,
+      FOREMAN_CLAUDE_EXECUTABLE: process.execPath,
+      FOREMAN_CLAUDE_SDK_MODULE: FAKE_SDK,
+    },
     sdkLoader: async () => fakeSdk,
   });
   const messages = [];

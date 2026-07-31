@@ -27,6 +27,7 @@ class ClaudeCodeTests(unittest.IsolatedAsyncioTestCase):
         events: list[dict] | None = None,
         bridge: Path = BRIDGE,
         restart_delays: tuple[float, ...] = (0.01, 0.02),
+        query_timeout: float = 30,
     ) -> ClaudeCode:
         observed = events if events is not None else []
         return ClaudeCode(
@@ -41,6 +42,7 @@ class ClaudeCodeTests(unittest.IsolatedAsyncioTestCase):
                 "FOREMAN_CLAUDE_EXECUTABLE": "node",
             },
             restart_delays=restart_delays,
+            query_timeout=query_timeout,
         )
 
     async def wait_for(self, predicate, timeout: float = 3) -> object:
@@ -255,17 +257,50 @@ class ClaudeCodeTests(unittest.IsolatedAsyncioTestCase):
                     lambda: next((event for event in events if event["kind"] == "query.completed"), None)
                 )
                 started_count = sum(event["kind"] == "query.started" for event in events)
-                old_process = adapter.process
-                self.assertIsNotNone(old_process)
-                old_process.kill()
-                await old_process.wait()
-                await self.wait_for(
-                    lambda: adapter.process is not None
-                    and adapter.process is not old_process
-                    and adapter.process.returncode is None
-                )
+                for _ in range(3):
+                    old_process = adapter.process
+                    self.assertIsNotNone(old_process)
+                    old_process.kill()
+                    await old_process.wait()
+                    await self.wait_for(
+                        lambda: adapter.process is not None
+                        and adapter.process is not old_process
+                        and adapter.process.returncode is None
+                        and adapter.restart_attempt == 0
+                    )
                 self.assertEqual(sum(event["kind"] == "query.started" for event in events), started_count)
                 self.assertTrue((await adapter.status())["available"])
+            finally:
+                await adapter.stop()
+
+    async def test_timed_out_start_is_cancelled_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events: list[dict] = []
+            adapter = self.adapter(root, events, query_timeout=0.1)
+            try:
+                await adapter.start()
+                with self.assertRaisesRegex(ClaudeCodeError, "timed out"):
+                    await adapter.start_session(root, "slow-init")
+                await self.wait_for(
+                    lambda: next((event for event in events if event["kind"] == "query.interrupted"), None)
+                )
+                process = adapter.process
+                self.assertIsNotNone(process)
+                self.assertIsNone(process.returncode)
+                index = len(events)
+                retry = await adapter.start_session(root, "retry")
+                await self.wait_for(
+                    lambda: next(
+                        (
+                            event
+                            for event in events[index:]
+                            if event["kind"] == "query.completed"
+                            and event["sessionId"] == retry["sessionId"]
+                        ),
+                        None,
+                    )
+                )
             finally:
                 await adapter.stop()
 

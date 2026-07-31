@@ -25,6 +25,7 @@ export function query({ prompt, options }) {
       text = input.message.content;
       break;
     }
+    if (text.includes("slow-init")) await sleep;
     const sessionId = options.resume || `managed-session-${++sequence}`;
     yield {
       type: "system",
