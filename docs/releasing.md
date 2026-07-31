@@ -13,7 +13,7 @@ intentional wire-compatibility change. The Linux status version, web package
 version, Android build defaults, and all three protocol constants are checked by:
 
 ```sh
-python3 scripts/verify_release.py --tag v1.0.0-rc.2
+python3 scripts/verify_release.py --tag v1.0.0
 ```
 
 Do not derive Android version code from a CI run number. Confirm the previous
@@ -67,9 +67,9 @@ exact `main` commit. A maintainer may then create and push the annotated tag:
 ```sh
 git switch main
 git pull --ff-only
-python3 scripts/verify_release.py --tag v1.0.0-rc.2
-git tag -a v1.0.0-rc.2 -m "Foreman v1.0.0-rc.2"
-git push origin v1.0.0-rc.2
+python3 scripts/verify_release.py --tag v1.0.0
+git tag -a v1.0.0 -m "Foreman v1.0.0"
+git push origin v1.0.0
 ```
 
 Use `git tag -s` instead when the project has an established signing key and

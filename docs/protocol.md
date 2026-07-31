@@ -1,8 +1,8 @@
 # Foreman protocol v1
 
-Protocol version 1 is independent of the `1.0.0-rc.2` application version.
+Protocol version 1 is independent of the `1.0.0` application version.
 The release verifier checks the Linux, web, and Android protocol constants
-against `release.properties`; this candidate does not introduce a protocol
+against `release.properties`; this release does not introduce a protocol
 version bump.
 
 Foreman uses the same versioned messages over two transports:

@@ -330,13 +330,13 @@ does not stop Desktop's Codex runtime.
 - Dashboard stale activity is an observation, not a failure or automatic action.
 - Chrome and Firefox are the supported 1.0 browsers; Edge is best-effort.
 
-## Release candidate status
+## Stable status
 
-Foreman 1.0 is in release-candidate validation. Protocol v1 and the documented
-state-preserving upgrade behavior are the intended compatibility contract for
-the 1.x series; incompatible wire or configuration changes will not be made
-silently. Android remains distributed by sideloading. Stable production status
-depends on completing the [v1.0 acceptance record](docs/acceptance-v1.0.0.md).
+Foreman 1.0 is the first stable release. Protocol v1 and the documented
+state-preserving upgrade behavior are the compatibility contract for the 1.x
+series; incompatible wire or configuration changes will not be made silently.
+Android remains distributed by sideloading. The
+[v1.0 acceptance record](docs/acceptance-v1.0.0.md) tracks release evidence.
 Issues and feedback are welcome in the
 [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
 
