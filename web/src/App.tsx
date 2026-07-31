@@ -1749,6 +1749,7 @@ export function ConversationView({
   const submissionGuard = useRef(createSubmissionGuard());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const openingScrollTop = useRef(initialScrollTop);
   const [jumpVisible, setJumpVisible] = useState(false);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
@@ -1775,14 +1776,14 @@ export function ConversationView({
   }, [highlightItemId, session.messages?.length]);
 
   useEffect(() => {
-    following.current = !highlightItemId && initialScrollTop === undefined;
+    following.current = !highlightItemId && openingScrollTop.current === undefined;
     setJumpVisible(false);
     if (!highlightItemId) {
       requestAnimationFrame(() => transcriptRef.current?.scrollTo({
-        top: initialScrollTop ?? transcriptRef.current.scrollHeight,
+        top: openingScrollTop.current ?? transcriptRef.current.scrollHeight,
       }));
     }
-  }, [highlightItemId, initialScrollTop, provider, session.id]);
+  }, [highlightItemId, provider, session.id]);
 
   const transcriptKey = `${session.messages?.length ?? 0}:${session.messages?.at(-1)?.text?.length ?? 0}:${session.activityText?.length ?? 0}:${approvals.map(({ id, status }) => `${id}:${status}`).join(",")}:${inputs.map(({ id, status }) => `${id}:${status}`).join(",")}`;
   useEffect(() => {

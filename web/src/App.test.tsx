@@ -308,6 +308,98 @@ describe("conversation drafts", () => {
     expect(screen.getByRole("textbox")).not.toBe(firstComposer);
   });
 
+  it("keeps following live messages when the saved scroll position updates", () => {
+    const frames: FrameRequestCallback[] = [];
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const onScrollPosition = vi.fn();
+    const first = {
+      ...session("one"),
+      status: "working",
+      activeTurnId: "turn-one",
+      messages: [{ id: "assistant-one", kind: "assistant" as const, text: "First" }],
+    };
+    const props = {
+      approvals: [],
+      models: [],
+      accessLevels: [],
+      connected: true,
+      highlightItemId: null,
+      focusedApprovalId: null,
+      draft: "",
+      onDraftChange: vi.fn(),
+      onBack: vi.fn(),
+      onRequest: vi.fn().mockResolvedValue({}),
+      onError: vi.fn(),
+      onScrollPosition,
+    };
+    const view = render(<ConversationView {...props} session={first} />);
+    const transcript = document.querySelector<HTMLElement>(".transcript")!;
+    Object.defineProperties(transcript, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, writable: true, value: 800 },
+      scrollTo: { configurable: true, value: vi.fn() },
+    });
+    frames.splice(0).forEach((callback) => callback(0));
+    fireEvent.scroll(transcript);
+    expect(onScrollPosition).toHaveBeenLastCalledWith(800);
+
+    view.rerender(
+      <ConversationView
+        {...props}
+        initialScrollTop={800}
+        session={{
+          ...first,
+          messages: [
+            ...first.messages,
+            { id: "assistant-two", kind: "assistant", text: "Second" },
+          ],
+        }}
+      />,
+    );
+    frames.splice(0).forEach((callback) => callback(0));
+    animationFrame.mockRestore();
+
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).not.toBeInTheDocument();
+    expect(transcript.scrollTo).toHaveBeenLastCalledWith({ top: 1_000 });
+  });
+
+  it("offers jump to latest after the user deliberately scrolls away", () => {
+    const frames: FrameRequestCallback[] = [];
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const first = {
+      ...session("one"),
+      messages: [{ id: "assistant-one", kind: "assistant" as const, text: "First" }],
+    };
+    const view = render(renderConversation(first, ""));
+    const transcript = document.querySelector<HTMLElement>(".transcript")!;
+    Object.defineProperties(transcript, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, writable: true, value: 300 },
+      scrollTo: { configurable: true, value: vi.fn() },
+    });
+    frames.splice(0).forEach((callback) => callback(0));
+    fireEvent.scroll(transcript);
+
+    view.rerender(renderConversation({
+      ...first,
+      messages: [
+        ...first.messages,
+        { id: "assistant-two", kind: "assistant", text: "Second" },
+      ],
+    }, ""));
+    animationFrame.mockRestore();
+
+    expect(screen.getByRole("button", { name: /Jump to latest/ })).toBeInTheDocument();
+  });
+
   it("updates access on the existing session as soon as it is selected", async () => {
     const onRequest = vi.fn().mockResolvedValue({ updated: true });
     render(
