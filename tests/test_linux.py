@@ -825,7 +825,8 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 active += 1
                 peak = max(peak, active)
                 try:
-                    await asyncio.sleep(0.2 if Path(cwd).name.endswith(("0", "1", "2")) else 0.01)
+                    if Path(cwd) != root:
+                        await asyncio.sleep(1)
                     return [
                         {
                             "provider": "claude-code",
@@ -845,7 +846,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "foreman_service.CLAUDE_DISCOVERY_CONCURRENCY", 3
             ):
                 sessions = await app.discover_claude_sessions()
-            self.assertLess(time.monotonic() - started_at, 0.18)
+            self.assertLess(time.monotonic() - started_at, 1)
             self.assertLessEqual(peak, 3)
             self.assertTrue(sessions)
             self.assertTrue(all(item["state"] == "resumable" for item in sessions))
