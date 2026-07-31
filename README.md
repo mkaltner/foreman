@@ -10,6 +10,10 @@ Foreman provides lightweight Android and web interfaces for monitoring and
 controlling Codex sessions running on Linux hosts. It connects directly to the
 local Codex app-server and is designed for fast, LAN-first operation.
 
+> Experimental Claude Code web support is available when the Linux host has an
+> authenticated Claude Code CLI, Node.js 20+, and the packaged pinned Agent SDK.
+> Android remains Codex-only.
+
 ## Why Foreman?
 
 Foreman is for people who want a dedicated Codex monitoring interface, fast

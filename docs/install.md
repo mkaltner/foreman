@@ -219,6 +219,11 @@ Release and CI packaging repeat a production-only install and exclude bridge
 test fixtures from the archive. The production entry point remains
 `bridge.mjs`; the installer never downloads dependencies at runtime.
 
+After ordinary automated tests, maintainers with authenticated Claude access can
+run the explicit disposable adapter and WebSocket proofs documented in
+[`claude-code-integration.md`](claude-code-integration.md). These are opt-in
+because they invoke live models and may incur usage.
+
 ## Refresh the vendored Python dependency
 
 Maintainers can refresh the committed dependency payload from the exact pin in

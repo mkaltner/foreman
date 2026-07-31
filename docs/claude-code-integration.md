@@ -71,9 +71,18 @@ Maintainers can repeat the authenticated disposable proof explicitly:
 
 ```sh
 python3 scripts/claude_adapter_proof.py --acknowledge-live-costs
+python3 scripts/claude_web_proof.py --acknowledge-live-costs
 ```
 
-The authenticated production proof on 2026-07-31 passed start, resume, partial
+The first command validates the production adapter boundary. The second starts
+an ephemeral authenticated Foreman WebSocket service and validates provider
+catalog, host pairing, list/read/start/resume, streaming, safe Read/Bash cards,
+interrupt, Sonnet/Haiku, `dontAsk`, and external-session limitations through the
+same transport used by the web client. Both commands create disposable Git
+repositories and invoke authenticated Claude requests that may incur usage.
+
+The authenticated adapter and WebSocket production proofs on 2026-07-31 passed
+provider discovery, host pairing, list/read, start, resume, partial
 streaming, safe Read and Bash visibility, `dontAsk` denial with filesystem
 non-creation, interrupt, restart/resume, and discovery/resume of a CLI-created
 session. `sonnet` resolved to `claude-sonnet-5`; `haiku` resolved to
