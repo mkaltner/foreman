@@ -430,6 +430,14 @@ class Foreman:
             else:
                 existing.update(safe_item)
         elif kind == "permission.requested":
+            item_id = f"claude-permission-{message.get('toolUseId') or run_id or 'active'}"
+            name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
+            permission_item = {
+                "id": item_id,
+                "kind": "tool",
+                "description": f"{self.claude_tool_summary(name, 'running')} · permission required",
+                "status": "running",
+            }
             overlay.update(
                 {
                     "state": "working",
@@ -449,11 +457,15 @@ class Foreman:
                 "waitDescription": overlay["waitDescription"],
                 "observedAt": observed_at,
             }
-            self.claude_session_messages.setdefault(session_id, []).append(
-                dict(outgoing_event["item"])
-            )
+            messages = self.claude_session_messages.setdefault(session_id, [])
+            existing = next((item for item in messages if item.get("id") == item_id), None)
+            if existing is None:
+                messages.append(permission_item)
+            else:
+                existing.update(permission_item)
         elif kind == "permission.denied":
             name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
+            item_id = f"claude-permission-{message.get('toolUseId') or run_id or 'active'}"
             overlay.update(
                 {
                     "status": "working",
@@ -468,13 +480,20 @@ class Foreman:
                 "phase": "completed",
                 "turnId": run_id,
                 "item": {
-                    "id": f"claude-permission-{message.get('toolUseId') or run_id or 'active'}",
+                    "id": item_id,
                     "kind": "tool",
                     "description": self.claude_tool_summary(name, "denied"),
                     "status": "denied",
                 },
                 "observedAt": observed_at,
             }
+            messages = self.claude_session_messages.setdefault(session_id, [])
+            existing = next((item for item in messages if item.get("id") == item_id), None)
+            safe_item = dict(outgoing_event["item"])
+            if existing is None:
+                messages.append(safe_item)
+            else:
+                existing.update(safe_item)
         elif kind in {"query.completed", "query.failed", "query.interrupted"}:
             state = kind.removeprefix("query.")
             overlay.update(
@@ -2156,6 +2175,14 @@ class Foreman:
         if any(
             self.projected_session(thread)["status"] in ("working", "waiting")
             for thread in threads
+        ):
+            raise ValueError(
+                "restart is unavailable while sessions are active or waiting for attention"
+            )
+        if any(
+            overlay.get("state") == "working"
+            or overlay.get("status") in ("working", "waiting")
+            for overlay in self.claude_session_overlays.values()
         ):
             raise ValueError(
                 "restart is unavailable while sessions are active or waiting for attention"

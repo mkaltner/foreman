@@ -638,6 +638,22 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(claude_provider["cliVersion"], "2.1.220")
             self.assertIn("external-running-no-live-attach", claude_provider["limitations"])
 
+            models = await app.dispatch(
+                client,
+                {"type": "provider.model.list", "payload": {"provider": "claude-code"}},
+            )
+            self.assertFalse(models["dynamic"])
+            self.assertEqual([item["id"] for item in models["models"]], ["sonnet", "haiku"])
+            permissions = await app.dispatch(
+                client,
+                {"type": "provider.permission.list", "payload": {"provider": "claude-code"}},
+            )
+            self.assertEqual(
+                [item["id"] for item in permissions["modes"]],
+                ["default", "dontAsk", "acceptEdits", "plan", "auto", "bypassPermissions"],
+            )
+            self.assertTrue(permissions["modes"][-1]["highRisk"])
+
             listed = await app.dispatch(
                 client,
                 {
@@ -739,6 +755,49 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.claude_session_overlays["external-session"]["state"],
                 "interrupted",
             )
+
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "permission.requested",
+                    "sessionId": "managed-session",
+                    "runId": "run-permission",
+                    "toolUseId": "tool-secret",
+                    "name": "Write",
+                    "input": {"content": "never project this secret"},
+                }
+            )
+            waiting = app.claude_session_overlays["managed-session"]
+            self.assertEqual(waiting["status"], "waiting")
+            self.assertIn("web approval support is not yet available", waiting["waitDescription"])
+            self.assertNotIn("never project", json.dumps(app.claude_session_messages))
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "permission.denied",
+                    "sessionId": "managed-session",
+                    "runId": "run-permission",
+                    "toolUseId": "tool-secret",
+                    "name": "Write",
+                }
+            )
+            self.assertEqual(
+                app.claude_session_messages["managed-session"][-1]["status"],
+                "denied",
+            )
+
+            claude.status_value = {
+                "provider": "claude-code",
+                "available": False,
+                "limitation": "native Claude executable was not found",
+            }
+            unavailable = await app.dispatch(
+                client,
+                {"type": "provider.list", "payload": {}},
+            )
+            self.assertFalse(unavailable["providers"][1]["available"])
+            self.assertEqual(unavailable["providers"][1]["unavailableReason"], "cli-missing")
+            self.assertEqual(unavailable["providers"][1]["capabilities"], [])
 
 
 class DiagnosticBufferTests(unittest.TestCase):
@@ -897,6 +956,14 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
 
         self.app.codex.inputs = []
         self.app.session_overlays["thread-1"] = {"status": "working"}
+        with self.assertRaisesRegex(ValueError, "sessions are active"):
+            await self.app.dispatch(client, request)
+
+        self.app.session_overlays["thread-1"] = {"status": "idle"}
+        self.app.claude_session_overlays["claude-1"] = {
+            "state": "working",
+            "status": "waiting",
+        }
         with self.assertRaisesRegex(ValueError, "sessions are active"):
             await self.app.dispatch(client, request)
 
