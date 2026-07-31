@@ -405,6 +405,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)?.let {
             foremanViewModel.openSessionFromNotification(
                 intent.getStringExtra(TurnMonitorService.EXTRA_HOST_ID),
+                intent.getStringExtra(TurnMonitorService.EXTRA_PROVIDER) ?: PROVIDER_CODEX,
                 it,
                 intent.getStringExtra(TurnMonitorService.EXTRA_APPROVAL_ID),
             )
@@ -427,18 +428,20 @@ internal data class OverviewReturnTarget(
     val hostId: String,
     val screen: Screen,
     val sessionId: String? = null,
+    val provider: String = PROVIDER_CODEX,
 )
 
 internal fun overviewReturnTarget(
     current: Screen,
     activeHostId: String?,
     selectedSessionId: String?,
+    selectedProvider: String = PROVIDER_CODEX,
 ): OverviewReturnTarget? {
     val hostId = activeHostId ?: return null
     return when (current) {
         Screen.Dashboard, Screen.Sessions -> OverviewReturnTarget(hostId, current)
         Screen.Detail ->
-            selectedSessionId?.let { OverviewReturnTarget(hostId, Screen.Detail, it) }
+            selectedSessionId?.let { OverviewReturnTarget(hostId, Screen.Detail, it, selectedProvider) }
                 ?: OverviewReturnTarget(hostId, Screen.Sessions)
         Screen.Setup, Screen.Overview, Screen.Diagnostics -> null
     }
@@ -447,8 +450,8 @@ internal fun overviewReturnTarget(
 internal class OverviewNavigationState {
     private var returnTarget: OverviewReturnTarget? = null
 
-    fun capture(current: Screen, activeHostId: String?, selectedSessionId: String?) {
-        returnTarget = overviewReturnTarget(current, activeHostId, selectedSessionId)
+    fun capture(current: Screen, activeHostId: String?, selectedSessionId: String?, selectedProvider: String = PROVIDER_CODEX) {
+        returnTarget = overviewReturnTarget(current, activeHostId, selectedSessionId, selectedProvider)
     }
 
     fun hasReturnTarget(): Boolean = returnTarget != null
@@ -505,6 +508,8 @@ internal data class PendingSessionAction(
     val sessionId: String,
     val sessionTitle: String,
     val action: SessionAction,
+    val provider: String = PROVIDER_CODEX,
+    val repositoryId: String? = null,
 )
 
 internal fun sessionDisplayTitle(session: SessionSummary?): String =
@@ -515,6 +520,17 @@ internal fun sessionCanBeManaged(status: String): Boolean =
 
 internal fun sessionActionSupported(capabilities: Set<String>, action: SessionAction): Boolean =
     capabilities.contains(if (action == SessionAction.Archive) "archive" else "delete")
+
+internal fun sessionActionSupported(
+    session: SessionSummary,
+    capabilities: Set<String>,
+    action: SessionAction,
+): Boolean =
+    if (sessionProvider(session) == PROVIDER_CLAUDE_CODE) {
+        action == SessionAction.Delete && "session.delete" in session.capabilities
+    } else {
+        sessionActionSupported(capabilities, action)
+    }
 
 internal fun sessionActionCanBeConfirmed(
     connected: Boolean,
@@ -622,18 +638,40 @@ internal fun UiState.withModelsAndSessionRoute(
     )
 }
 
+internal fun UiState.withProviderRoute(session: SessionSummary?): UiState =
+    if (session != null && sessionProvider(session) == PROVIDER_CLAUDE_CODE) {
+        val model =
+            claudeModels.firstOrNull { it.id == session.model }
+                ?: claudeModels.firstOrNull { it.id == claudeComposerModel }
+                ?: claudeModels.firstOrNull()
+        val permission =
+            claudePermissionModes.firstOrNull { it.id == session.permissionMode }
+                ?: claudePermissionModes.firstOrNull { it.id == claudeComposerPermissionMode }
+                ?: claudePermissionModes.firstOrNull { it.id == "default" }
+                ?: claudePermissionModes.firstOrNull()
+        copy(
+            claudeComposerModel = model?.id ?: session.model ?: "sonnet",
+            claudeComposerPermissionMode =
+                permission?.id ?: session.permissionMode ?: "default",
+        )
+    } else {
+        withModelsAndSessionRoute(models, session)
+            .withAccessLevelsAndSessionAccess(accessLevels, session)
+    }
+
 internal fun UiState.withSynchronizedSessions(
     sessions: List<SessionSummary>,
     repositories: List<RepositoryInfo>,
     selectedSessionId: String?,
     selectedSession: SessionSummary?,
+    selectedProvider: String = PROVIDER_CODEX,
 ): UiState =
     copy(
         sessions = sessions,
         repositories = repositories,
         selected = selectedSession,
         screen =
-            if (selectedSessionId != null && selectedSession != null) {
+            if (selectedSessionId != null && selectedSession?.matches(selectedProvider, selectedSessionId) == true) {
                 Screen.Detail
             } else if (screen == Screen.Detail) {
                 Screen.Sessions
@@ -645,13 +683,17 @@ internal fun UiState.withSynchronizedSessions(
     )
 
 internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): UiState {
-    val known = sessions.mapTo(mutableSetOf()) { it.id }
-    val additions = discovered.filter { known.add(it.id) }
+    val known = sessions.mapTo(mutableSetOf()) { it.providerKey() }
+    val additions = discovered.filter { known.add(it.providerKey()) }
     return if (additions.isEmpty()) this else copy(sessions = additions + sessions)
 }
 
-internal fun UiState.shouldDiscoverSession(sessionId: String, eventKind: String): Boolean =
-    connected && eventKind == "status" && sessions.none { it.id == sessionId }
+internal fun UiState.shouldDiscoverSession(
+    sessionId: String,
+    eventKind: String,
+    provider: String = PROVIDER_CODEX,
+): Boolean =
+    connected && eventKind == "status" && sessions.none { it.matches(provider, sessionId) }
 
 internal class SessionDiscoveryQueue(private val maximumAttempts: Int = 4) {
     private val remainingAttempts = linkedMapOf<String, Int>()
@@ -707,6 +749,7 @@ internal data class UiState(
     val submitting: Boolean = false,
     val error: String? = null,
     val sessions: List<SessionSummary> = emptyList(),
+    val providers: List<ProviderInfo> = defaultProviders(),
     val repositories: List<RepositoryInfo> = emptyList(),
     val selected: SessionSummary? = null,
     val composerDrafts: Map<ComposerDraftKey, String> = emptyMap(),
@@ -723,6 +766,11 @@ internal data class UiState(
     val pendingSessionAction: PendingSessionAction? = null,
     val capabilities: Set<String> = emptySet(),
     val accessLevels: List<AccessLevelInfo> = emptyList(),
+    val claudeModels: List<ModelInfo> = emptyList(),
+    val claudePermissionModes: List<PermissionModeInfo> = emptyList(),
+    val selectedNewSessionProvider: String = PROVIDER_CODEX,
+    val claudeComposerModel: String = "sonnet",
+    val claudeComposerPermissionMode: String = "default",
     val composerAccessLevel: String? = null,
     val models: List<ModelInfo> = emptyList(),
     val composerModel: String? = null,
@@ -755,30 +803,51 @@ internal data class UiState(
     val restartPhase: RestartPhase = RestartPhase.Idle,
 )
 
-internal data class ComposerDraftKey(val hostId: String, val sessionId: String)
+internal data class ComposerDraftKey(
+    val hostId: String,
+    val sessionId: String,
+    val provider: String = PROVIDER_CODEX,
+)
 
 internal fun composerDraft(
     drafts: Map<ComposerDraftKey, String>,
     hostId: String,
     sessionId: String,
-): String = drafts[ComposerDraftKey(hostId, sessionId)].orEmpty()
+    provider: String = PROVIDER_CODEX,
+): String = drafts[ComposerDraftKey(hostId, sessionId, provider)].orEmpty()
 
 internal fun updateComposerDraft(
     drafts: Map<ComposerDraftKey, String>,
     hostId: String,
     sessionId: String,
     text: String,
+    provider: String = PROVIDER_CODEX,
 ): Map<ComposerDraftKey, String> {
-    val key = ComposerDraftKey(hostId, sessionId)
+    val key = ComposerDraftKey(hostId, sessionId, provider)
     return if (text.isEmpty()) drafts - key else drafts + (key to text)
+}
+
+internal fun storedComposerDrafts(
+    hostId: String?,
+    drafts: Map<String, String>,
+): Map<ComposerDraftKey, String> {
+    val id = hostId ?: return emptyMap()
+    return drafts.mapNotNull { (key, text) ->
+        parseProviderSessionKey(key)?.let { (provider, sessionId) ->
+            ComposerDraftKey(id, sessionId, provider) to text
+        }
+    }.toMap()
 }
 
 private data class SyncSnapshot(
     val sessions: List<SessionSummary>,
+    val providers: List<ProviderInfo>,
     val repositories: List<RepositoryInfo>,
     val repositoryRoot: String,
     val models: List<ModelInfo>,
     val accessLevels: List<AccessLevelInfo>,
+    val claudeModels: List<ModelInfo>,
+    val claudePermissionModes: List<PermissionModeInfo>,
     val approvals: List<ApprovalRequest>,
     val inputs: List<InputRequest>,
     val foremanVersion: String?,
@@ -814,8 +883,10 @@ internal fun UiState.withForgottenConnection(): UiState =
         submitting = false,
         error = null,
         sessions = emptyList(),
+        providers = defaultProviders(),
         repositories = emptyList(),
         selected = null,
+        composerDrafts = emptyMap(),
         showNewSession = false,
         notificationPreferences = NotificationPreferences(),
         hostNotificationOverride = false,
@@ -823,6 +894,11 @@ internal fun UiState.withForgottenConnection(): UiState =
         capabilities = emptySet(),
         accessLevels = emptyList(),
         models = emptyList(),
+        claudeModels = emptyList(),
+        claudePermissionModes = emptyList(),
+        selectedNewSessionProvider = PROVIDER_CODEX,
+        claudeComposerModel = "sonnet",
+        claudeComposerPermissionMode = "default",
         searchResults = emptyList(),
         searchLoading = false,
         searchError = null,
@@ -868,6 +944,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 hasSavedConnection = activeHost != null,
                 savedHosts = hosts.all().map(SavedHost::summary),
                 activeHostId = activeHost?.id,
+                composerDrafts = storedComposerDrafts(activeHost?.id, preferences.loadDrafts()),
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
                 activityDetail = savedPreferences.activityDetail,
@@ -879,6 +956,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 composerAccessLevel = savedPreferences.accessLevel,
                 composerModel = savedPreferences.model,
                 composerEffort = savedPreferences.reasoningEffort,
+                selectedNewSessionProvider = savedPreferences.lastProvider,
+                claudeComposerModel = savedPreferences.claudeModel,
+                claudeComposerPermissionMode = savedPreferences.claudePermissionMode,
                 searchFilters = savedSearchFilters,
                 showSearch = sessionSearchActive(savedSearchFilters),
                 pinnedSessionIds = savedPreferences.pinnedSessionIds,
@@ -896,8 +976,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
     private var notificationHostId: String? = null
+    private var notificationProvider: String = PROVIDER_CODEX
     private var notificationSessionId: String? = null
     private var notificationApprovalId: String? = null
+    private var restorationProvider: String = savedPreferences.selectedSessionProvider
+    private var restorationSessionId: String? = savedPreferences.selectedSessionId
     private var searchJob: Job? = null
     private var lastSearchRequestKey = ""
     private val overviewNavigation = OverviewNavigationState()
@@ -952,17 +1035,28 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
 
-    fun setComposerDraft(hostId: String, sessionId: String, text: String) {
+    fun setComposerDraft(
+        hostId: String,
+        sessionId: String,
+        text: String,
+        provider: String = PROVIDER_CODEX,
+    ) {
+        preferences.setDraft(provider, sessionId, text)
         state.update {
             it.copy(
-                composerDrafts = updateComposerDraft(it.composerDrafts, hostId, sessionId, text),
+                composerDrafts = updateComposerDraft(it.composerDrafts, hostId, sessionId, text, provider),
             )
         }
     }
 
     fun openOverview() {
         val current = state.value
-        overviewNavigation.capture(current.screen, current.activeHostId, current.selected?.id)
+        overviewNavigation.capture(
+            current.screen,
+            current.activeHostId,
+            current.selected?.id,
+            current.selected?.let(::sessionProvider) ?: PROVIDER_CODEX,
+        )
         showOverview()
     }
 
@@ -974,7 +1068,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val target = overviewNavigation.consume(state.value.activeHostId) ?: return
         when (target.screen) {
             Screen.Dashboard -> showDashboard()
-            Screen.Detail -> target.sessionId?.let(::openSession) ?: showSessions()
+            Screen.Detail -> target.sessionId?.let { openSession(it, provider = target.provider) } ?: showSessions()
             Screen.Sessions -> showSessions()
             Screen.Setup, Screen.Overview, Screen.Diagnostics -> Unit
         }
@@ -999,12 +1093,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun openOverviewSession(item: OverviewAttentionItem) {
         overviewNavigation.clear()
         notificationHostId = item.hostId
+        notificationProvider = item.provider
         notificationSessionId = item.sessionId
         notificationApprovalId = item.approvalId
         if (item.hostId == state.value.activeHostId && state.value.connected) {
             notificationHostId = null
             notificationSessionId = null
-            openSession(item.sessionId, focusedApprovalId = item.approvalId)
+            openSession(item.sessionId, focusedApprovalId = item.approvalId, provider = item.provider)
         } else if (item.hostId == state.value.activeHostId) {
             reconnect()
         } else {
@@ -1029,20 +1124,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(showSearchFilters = open) }
     }
 
-    fun togglePinnedSession(id: String) {
+    fun togglePinnedSession(id: String, provider: String = PROVIDER_CODEX) {
         state.update { current ->
+            val key = providerSessionKey(provider, id)
             val ids = current.pinnedSessionIds.toMutableSet().apply {
-                if (!add(id)) remove(id)
+                if (!add(key)) remove(key)
             }
             preferences.setPinnedSessionIds(ids)
             current.copy(pinnedSessionIds = ids)
         }
     }
 
-    fun toggleHiddenSession(id: String) {
+    fun toggleHiddenSession(id: String, provider: String = PROVIDER_CODEX) {
         state.update { current ->
+            val key = providerSessionKey(provider, id)
             val ids = current.hiddenSessionIds.toMutableSet().apply {
-                if (!add(id)) remove(id)
+                if (!add(key)) remove(key)
             }
             preferences.setHiddenSessionIds(ids)
             current.copy(hiddenSessionIds = ids)
@@ -1258,6 +1355,38 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun setClaudeComposerModel(id: String) {
+        if (state.value.claudeModels.none { it.id == id }) return
+        val permission = state.value.claudeComposerPermissionMode
+        preferences.setClaudeRoute(id, permission)
+        state.update {
+            it.copy(
+                claudeComposerModel = id,
+                selected = it.selected?.let { selected ->
+                    if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
+                        selected.copy(model = id)
+                    } else selected
+                },
+            )
+        }
+    }
+
+    fun setClaudeComposerPermissionMode(id: String) {
+        if (state.value.claudePermissionModes.none { it.id == id }) return
+        val model = state.value.claudeComposerModel
+        preferences.setClaudeRoute(model, id)
+        state.update {
+            it.copy(
+                claudeComposerPermissionMode = id,
+                selected = it.selected?.let { selected ->
+                    if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
+                        selected.copy(permissionMode = id)
+                    } else selected
+                },
+            )
+        }
+    }
+
     fun composerError(message: String) = state.update { it.copy(error = message) }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -1342,9 +1471,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
     }
 
-    fun openSessionFromNotification(hostId: String?, id: String, approvalId: String? = null) {
+    fun openSessionFromNotification(
+        hostId: String?,
+        provider: String,
+        id: String,
+        approvalId: String? = null,
+    ) {
         if (hostId == null || hosts.load(hostId) == null) return
         notificationHostId = hostId
+        notificationProvider = provider
         notificationSessionId = id
         notificationApprovalId = approvalId
         if (state.value.activeHostId != hostId) {
@@ -1352,7 +1487,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         } else if (state.value.connected) {
             notificationHostId = null
             notificationSessionId = null
-            openSession(id, focusedApprovalId = approvalId)
+            openSession(id, focusedApprovalId = approvalId, provider = provider)
         } else {
             reconnect()
         }
@@ -1380,6 +1515,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 activeHost = saved
                 preferences = PreferenceStore(getApplication(), saved.id)
                 val restored = preferences.load()
+                restorationProvider = restored.selectedSessionProvider
+                restorationSessionId = restored.selectedSessionId
                 val filters = restored.searchFilters()
                 hosts.updateConnection(
                     saved.id,
@@ -1394,6 +1531,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         hasSavedConnection = true,
                         savedHosts = hosts.all().map { host -> host.summary() },
                         activeHostId = saved.id,
+                        composerDrafts =
+                            it.composerDrafts.filterKeys { key -> key.hostId != saved.id } +
+                                storedComposerDrafts(saved.id, preferences.loadDrafts()),
                         displayName = saved.displayName,
                         host = saved.tcpEndpoint(),
                         screen = Screen.Sessions,
@@ -1401,6 +1541,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         pairingKey = "",
                         capabilities = client.capabilities,
                         sessions = emptyList(),
+                        providers = defaultProviders(),
                         repositories = emptyList(),
                         selected = null,
                         approvals = emptyList(),
@@ -1428,6 +1569,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         composerAccessLevel = restored.accessLevel,
                         composerModel = restored.model,
                         composerEffort = restored.reasoningEffort,
+                        selectedNewSessionProvider = restored.lastProvider,
+                        claudeComposerModel = restored.claudeModel,
+                        claudeComposerPermissionMode = restored.claudePermissionMode,
                     )
                 }
                 synchronizeSessions()
@@ -1559,7 +1703,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                     error = null,
                                 )
                             }
-                            synchronizeSessions(state.value.selected?.id)
+                            synchronizeSessions(
+                                state.value.selected?.id,
+                                state.value.selected?.let(::sessionProvider) ?: PROVIDER_CODEX,
+                            )
                         }.isSuccess
                     if (connected) {
                         restartRequested = false
@@ -1627,16 +1774,29 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         notificationPreferencesStore.clearHostOverride(hostId)
         val next = hosts.forget(hostId)
         if (!forgettingActive) {
-            state.update { it.copy(savedHosts = hosts.all().map { host -> host.summary() }, overviewSnapshots = it.overviewSnapshots - hostId) }
+            state.update {
+                it.copy(
+                    savedHosts = hosts.all().map { host -> host.summary() },
+                    overviewSnapshots = it.overviewSnapshots - hostId,
+                    composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+                )
+            }
             return
         }
         activeHost = next
         if (next == null) {
+            restorationProvider = PROVIDER_CODEX
+            restorationSessionId = null
             preferences = PreferenceStore(getApplication(), null)
             state.update { it.withForgottenConnection() }
             return
         }
-        state.update { it.copy(overviewSnapshots = it.overviewSnapshots - hostId) }
+        state.update {
+            it.copy(
+                overviewSnapshots = it.overviewSnapshots - hostId,
+                composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+            )
+        }
         activateSavedHost(next)
     }
 
@@ -1673,6 +1833,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         overviewNavigation.invalidateForHost(saved.id)
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
+        restorationProvider = restored.selectedSessionProvider
+        restorationSessionId = restored.selectedSessionId
         val filters = restored.searchFilters()
         state.update {
             it.copy(
@@ -1685,11 +1847,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 hasSavedConnection = true,
                 savedHosts = hosts.all().map { host -> host.summary() },
                 activeHostId = saved.id,
+                composerDrafts =
+                    it.composerDrafts.filterKeys { key -> key.hostId != saved.id } +
+                        storedComposerDrafts(saved.id, preferences.loadDrafts()),
                 addingHost = false,
                 loading = false,
                 submitting = false,
                 error = null,
                 sessions = emptyList(),
+                providers = defaultProviders(),
                 repositories = emptyList(),
                 selected = null,
                 showNewSession = false,
@@ -1697,6 +1863,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 capabilities = emptySet(),
                 accessLevels = emptyList(),
                 models = emptyList(),
+                claudeModels = emptyList(),
+                claudePermissionModes = emptyList(),
                 repositoryRoot = "",
                 searchFilters = filters,
                 searchResults = emptyList(),
@@ -1732,6 +1900,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 composerAccessLevel = restored.accessLevel,
                 composerModel = restored.model,
                 composerEffort = restored.reasoningEffort,
+                selectedNewSessionProvider = restored.lastProvider,
+                claudeComposerModel = restored.claudeModel,
+                claudeComposerPermissionMode = restored.claudePermissionMode,
             )
         }
         launchReconnect(saved)
@@ -1750,7 +1921,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             withTimeout(5_000) { client.request("ping") }
                         }.isSuccess
                     if (healthy) {
-                        synchronizeSessions(state.value.selected?.id)
+                        synchronizeSessions(
+                            state.value.selected?.id,
+                            state.value.selected?.let(::sessionProvider) ?: PROVIDER_CODEX,
+                        )
                         return@launch
                     }
                 }
@@ -1791,8 +1965,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             try {
                 val snapshot = runCatching {
                     overviewClient.authenticate(host.tcpEndpoint(), host.deviceToken)
-                    val sessions = overviewClient.request("session.list").payload.getValue("sessions").jsonArray
+                    val codexSessions = overviewClient.request("session.list").payload.getValue("sessions").jsonArray
                         .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                    val providers = runCatching {
+                        overviewClient.request("provider.list").payload.getValue("providers").jsonArray
+                            .map { json.decodeFromJsonElement<ProviderInfo>(it) }
+                    }.getOrElse { defaultProviders() }
+                    val claudeSessions =
+                        if (providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }) {
+                            runCatching {
+                                overviewClient.request(
+                                    "provider.session.list",
+                                    buildJsonObject { put("provider", PROVIDER_CLAUDE_CODE) },
+                                ).payload.getValue("sessions").jsonArray
+                                    .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                            }.getOrElse { emptyList() }
+                        } else emptyList()
+                    val sessions = codexSessions + claudeSessions
                     val approvals = if ("approvals" in overviewClient.capabilities) {
                         overviewClient.request("approval.list").payload.getValue("approvals").jsonArray
                             .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
@@ -1819,6 +2008,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         runtimeMode = codex?.get("mode")?.jsonPrimitive?.content,
                         runtimeConnected = codex?.get("connected")?.jsonPrimitive?.content == "true",
                         inputs = inputs,
+                    ).copy(
+                        claudeUnavailable = providers.any {
+                            it.id == PROVIDER_CLAUDE_CODE && !it.available
+                        },
                     )
                 }.getOrElse {
                     state.value.overviewSnapshots[host.id]?.copy(connection = "disconnected")
@@ -1844,8 +2037,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val previous = current.overviewSnapshots[hostId]
         val snapshot = if (current.connected) {
             val projectedSessions = current.selected?.let { selected ->
-                if (current.sessions.any { it.id == selected.id }) {
-                    current.sessions.map { if (it.id == selected.id) selected else it }
+                val provider = sessionProvider(selected)
+                if (current.sessions.any { it.matches(provider, selected.id) }) {
+                    current.sessions.map {
+                        if (it.matches(provider, selected.id)) selected else it
+                    }
                 } else {
                     listOf(selected) + current.sessions
                 }
@@ -1860,6 +2056,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runtimeMode = current.runtimeMode,
                 runtimeConnected = current.runtimeConnected,
                 inputs = current.inputs,
+            ).copy(
+                claudeUnavailable = current.providers.any {
+                    it.id == PROVIDER_CLAUDE_CODE && !it.available
+                },
             )
         } else {
             previous?.copy(connection = "disconnected")
@@ -1875,7 +2075,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private suspend fun reconnectSaved(saved: SavedHost) {
-        val selectedId = notificationSessionId ?: state.value.selected?.id
+        val selectedId =
+            notificationSessionId ?: state.value.selected?.id ?: restorationSessionId
+        val selectedProvider =
+            if (notificationSessionId != null) notificationProvider
+            else state.value.selected?.let(::sessionProvider) ?: restorationProvider
         state.update { it.copy(loading = true, error = null, connectionStatus = "reconnecting") }
         runCatching {
             client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
@@ -1896,7 +2100,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     capabilities = client.capabilities,
                 )
             }
-            synchronizeSessions(selectedId)
+            synchronizeSessions(selectedId, selectedProvider)
             notificationHostId = null
             notificationSessionId = null
             state.update { it.copy(focusedApprovalId = notificationApprovalId) }
@@ -1918,7 +2122,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!state.value.connected || state.value.loading) return
         viewModelScope.launch {
             state.update { it.copy(loading = true, error = null) }
-            runCatching { synchronizeSessions(state.value.selected?.id) }.onFailure(::fail)
+            runCatching {
+                synchronizeSessions(
+                    state.value.selected?.id,
+                    state.value.selected?.let(::sessionProvider) ?: PROVIDER_CODEX,
+                )
+            }.onFailure(::fail)
         }
     }
 
@@ -1926,26 +2135,34 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         id: String,
         highlightedItemId: String? = null,
         focusedApprovalId: String? = null,
+        provider: String = PROVIDER_CODEX,
     ) {
+        restorationProvider = provider
+        restorationSessionId = id
+        preferences.setSelectedSession(provider, id)
         viewModelScope.launch {
             state.update { it.copy(screen = Screen.Detail, loading = true, error = null, highlightedItemId = highlightedItemId, focusedApprovalId = focusedApprovalId) }
             runCatching {
-                val selected = readSession(id)
+                val selected = readSession(provider, id)
                 state.update {
-                    it.copy(selected = selected, loading = false)
-                        .withModelsAndSessionRoute(it.models, selected)
-                        .withAccessLevelsAndSessionAccess(it.accessLevels, selected)
+                    it.copy(selected = selected, loading = false).withProviderRoute(selected)
                 }
                 monitorIfActive(selected)
             }.onFailure(::fail)
         }
     }
 
-    private suspend fun synchronizeSessions(selectedSessionId: String? = null) {
+    private suspend fun synchronizeSessions(
+        selectedSessionId: String? = null,
+        selectedProvider: String = PROVIDER_CODEX,
+    ) {
         state.update { it.copy(loading = true, error = null) }
         val snapshot =
             coroutineScope {
-                val sessionsRequest = async { listSessions() }
+                val providersRequest = async {
+                    runCatching { client.request("provider.list") }.getOrNull()
+                }
+                val codexSessionsRequest = async { listSessions(PROVIDER_CODEX) }
                 val approvalsRequest =
                     async {
                         if ("approvals" in client.capabilities) client.request("approval.list") else null
@@ -1972,7 +2189,39 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             null
                         }
                     }
-                val sessions = sessionsRequest.await()
+                val providers =
+                    providersRequest.await()?.payload?.get("providers")?.jsonArray
+                        ?.map { json.decodeFromJsonElement<ProviderInfo>(it) }
+                        ?: defaultProviders()
+                val claudeAvailable =
+                    providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }
+                val claudeSessions =
+                    if (claudeAvailable) {
+                        runCatching { listSessions(PROVIDER_CLAUDE_CODE) }.getOrElse { emptyList() }
+                    } else {
+                        emptyList()
+                    }
+                val sessions = codexSessionsRequest.await() + claudeSessions
+                val claudeModels =
+                    if (claudeAvailable) {
+                        runCatching {
+                            client.request(
+                                "provider.model.list",
+                                buildJsonObject { put("provider", PROVIDER_CLAUDE_CODE) },
+                            ).payload.getValue("models").jsonArray
+                                .map { json.decodeFromJsonElement<ModelInfo>(it) }
+                        }.getOrElse { emptyList() }
+                    } else emptyList()
+                val claudePermissionModes =
+                    if (claudeAvailable) {
+                        runCatching {
+                            client.request(
+                                "provider.permission.list",
+                                buildJsonObject { put("provider", PROVIDER_CLAUDE_CODE) },
+                            ).payload.getValue("modes").jsonArray
+                                .map { json.decodeFromJsonElement<PermissionModeInfo>(it) }
+                        }.getOrElse { emptyList() }
+                    } else emptyList()
                 val repositories =
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
@@ -1998,10 +2247,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         ?: emptyList()
                 SyncSnapshot(
                     sessions = sessions,
+                    providers = providers,
                     repositories = repositories,
                     repositoryRoot = repositoryRoot,
                     models = models,
                     accessLevels = accessLevels,
+                    claudeModels = claudeModels,
+                    claudePermissionModes = claudePermissionModes,
                     approvals = approvals,
                     inputs = inputs,
                     foremanVersion = serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
@@ -2009,18 +2261,33 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     runtimeMode = codexStatus?.get("mode")?.jsonPrimitive?.content,
                     runtimeConnected = codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
                 )
-            }
+        }
         val sessions = snapshot.sessions
-        val selected = selectedSessionId?.let { readSession(it) }
+        var selectedReadError: String? = null
+        val selected = selectedSessionId?.let {
+            if (selectedProvider == PROVIDER_CLAUDE_CODE) {
+                runCatching { readSession(selectedProvider, it) }.getOrElse { error ->
+                    selectedReadError =
+                        "Claude Code session history is unavailable: ${error.message ?: "provider unavailable"}"
+                    null
+                }
+            } else {
+                readSession(selectedProvider, it)
+            }
+        }
         state.update {
             it.withSynchronizedSessions(
                     sessions = sessions,
                     repositories = snapshot.repositories,
                     selectedSessionId = selectedSessionId,
                     selectedSession = selected,
+                    selectedProvider = selectedProvider,
                 )
                 .copy(
+                    providers = snapshot.providers,
                     repositoryRoot = snapshot.repositoryRoot,
+                    claudeModels = snapshot.claudeModels,
+                    claudePermissionModes = snapshot.claudePermissionModes,
                     approvals = snapshot.approvals,
                     submittingApprovalIds = emptySet(),
                     approvalErrors = emptyMap(),
@@ -2031,11 +2298,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     codexVersion = snapshot.codexVersion,
                     runtimeMode = snapshot.runtimeMode,
                     runtimeConnected = snapshot.runtimeConnected,
+                    error = selectedReadError,
                 )
-                .withModelsAndSessionRoute(snapshot.models, selected)
-                .withAccessLevelsAndSessionAccess(snapshot.accessLevels, selected)
+                .let { synchronized ->
+                    if (selected != null && sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
+                        synchronized.withProviderRoute(selected)
+                    } else {
+                        synchronized.withModelsAndSessionRoute(snapshot.models, selected)
+                            .withAccessLevelsAndSessionAccess(snapshot.accessLevels, selected)
+                    }
+                }
         }
-        val validIds = sessions.mapTo(mutableSetOf()) { it.id }
+        val validIds = sessions.mapTo(mutableSetOf()) { it.providerKey() }
         preferences.retainSessionIds(validIds)
         state.update {
             it.copy(
@@ -2048,11 +2322,30 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         updateActiveOverview()
     }
 
-    private suspend fun listSessions(): List<SessionSummary> =
-        client.request("session.list").payload.getValue("sessions").jsonArray
+    private suspend fun listSessions(provider: String = PROVIDER_CODEX): List<SessionSummary> {
+        val response =
+            if (provider == PROVIDER_CLAUDE_CODE) {
+                client.request(
+                    "provider.session.list",
+                    buildJsonObject { put("provider", provider) },
+                )
+            } else {
+                client.request("session.list")
+            }
+        return response.payload.getValue("sessions").jsonArray
             .map { json.decodeFromJsonElement<SessionSummary>(it) }
+            .map { if (it.provider == null && provider != PROVIDER_CODEX) it.copy(provider = provider) else it }
+    }
 
-    private fun discoverSession(sessionId: String) {
+    private fun discoverSession(sessionId: String, provider: String = PROVIDER_CODEX) {
+        if (provider == PROVIDER_CLAUDE_CODE) {
+            viewModelScope.launch {
+                runCatching { listSessions(provider) }.onSuccess { discovered ->
+                    state.update { it.withDiscoveredSessions(discovered) }
+                }
+            }
+            return
+        }
         synchronized(sessionDiscoveryLock) {
             sessionDiscoveryQueue.enqueue(sessionId)
             if (sessionDiscoveryJob?.isActive == true) return
@@ -2089,15 +2382,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    private suspend fun readSession(id: String): SessionSummary {
+    private suspend fun readSession(provider: String, id: String): SessionSummary {
+        val summary = state.value.sessions.firstOrNull { it.matches(provider, id) }
+        val providerPayload = buildJsonObject {
+            put("provider", provider)
+            put("sessionId", id)
+            if (provider == PROVIDER_CLAUDE_CODE) {
+                put("repositoryId", summary?.repositoryId ?: ".")
+            }
+        }
         client.request(
-            "session.subscribe",
-            buildJsonObject { put("sessionId", id) },
+            if (provider == PROVIDER_CLAUDE_CODE) "provider.session.subscribe" else "session.subscribe",
+            if (provider == PROVIDER_CLAUDE_CODE) providerPayload else buildJsonObject { put("sessionId", id) },
         )
         val response =
             client.request(
-                "session.read",
-                buildJsonObject { put("sessionId", id) },
+                if (provider == PROVIDER_CLAUDE_CODE) "provider.session.read" else "session.read",
+                if (provider == PROVIDER_CLAUDE_CODE) providerPayload else buildJsonObject { put("sessionId", id) },
             )
         return json.decodeFromJsonElement(
             response.payload.getValue("session"),
@@ -2105,12 +2406,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun backToSessions() {
+        restorationSessionId = null
+        preferences.setSelectedSession(PROVIDER_CODEX, null)
         state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null, focusedApprovalId = null) }
         refresh()
     }
 
     fun requestSessionAction(session: SessionSummary, action: SessionAction) {
-        if (!sessionActionSupported(state.value.capabilities, action)) {
+        if (!sessionActionSupported(session, state.value.capabilities, action)) {
             state.update { it.copy(error = "The connected Foreman server does not support this action.") }
             return
         }
@@ -2123,7 +2426,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update {
             it.copy(
                 pendingSessionAction =
-                    PendingSessionAction(session.id, session.title, action),
+                    PendingSessionAction(
+                        session.id,
+                        session.title,
+                        action,
+                        sessionProvider(session),
+                        session.repositoryId,
+                    ),
                 error = null,
             )
         }
@@ -2140,10 +2449,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (state.value.submitting) return
         viewModelScope.launch {
             val current = state.value
+            val pendingSession =
+                current.selected?.takeIf { it.matches(pending.provider, pending.sessionId) }
+                    ?: current.sessions.firstOrNull {
+                        it.matches(pending.provider, pending.sessionId)
+                    }
             if (
                 current.pendingSessionAction != pending ||
-                    !sessionActionCanBeConfirmed(
-                        current.connected,
+                    !current.connected || pendingSession == null ||
+                    !sessionActionSupported(
+                        pendingSession,
                         current.capabilities,
                         pending.action,
                     )
@@ -2159,27 +2474,36 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
                 client.request(
-                    if (pending.action == SessionAction.Archive) {
+                    if (pending.provider == PROVIDER_CLAUDE_CODE) {
+                        "provider.session.delete"
+                    } else if (pending.action == SessionAction.Archive) {
                         "session.archive"
                     } else {
                         "session.delete"
                     },
                     buildJsonObject {
                         put("sessionId", pending.sessionId)
+                        if (pending.provider == PROVIDER_CLAUDE_CODE) {
+                            put("provider", pending.provider)
+                            put("repositoryId", pending.repositoryId ?: ".")
+                        }
                         if (pending.action == SessionAction.Delete) put("confirm", true)
                     },
                 )
-                runCatching { TurnMonitorService.cancel(getApplication(), pending.sessionId) }
+                runCatching {
+                    TurnMonitorService.cancel(getApplication(), pending.sessionId, pending.provider)
+                }
                 state.update { current ->
-                    val wasSelected = current.selected?.id == pending.sessionId
-                    val pinned = current.pinnedSessionIds - pending.sessionId
-                    val hidden = current.hiddenSessionIds - pending.sessionId
+                    val wasSelected = current.selected?.matches(pending.provider, pending.sessionId) == true
+                    val key = providerSessionKey(pending.provider, pending.sessionId)
+                    val pinned = current.pinnedSessionIds - key
+                    val hidden = current.hiddenSessionIds - key
                     preferences.setPinnedSessionIds(pinned)
                     preferences.setHiddenSessionIds(hidden)
                     current.copy(
                         submitting = false,
                         pendingSessionAction = null,
-                        sessions = current.sessions.filterNot { it.id == pending.sessionId },
+                        sessions = current.sessions.filterNot { it.matches(pending.provider, pending.sessionId) },
                         selected = if (wasSelected) null else current.selected,
                         screen = if (wasSelected) Screen.Sessions else current.screen,
                         pinnedSessionIds = pinned,
@@ -2197,6 +2521,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         accessLevel: String?,
     ) {
         if (state.value.submitting) return
+        preferences.setLastProvider(PROVIDER_CODEX)
         viewModelScope.launch {
             state.update { it.copy(submitting = true, showNewSession = false, error = null) }
             runCatching {
@@ -2213,6 +2538,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     json.decodeFromJsonElement<SessionSummary>(
                         response.payload.getValue("session"),
                     )
+                restorationProvider = PROVIDER_CODEX
+                restorationSessionId = created.id
+                preferences.setSelectedSession(PROVIDER_CODEX, created.id)
                 state.update {
                     it.copy(
                         submitting = false,
@@ -2220,13 +2548,72 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         selected = created,
                         sessions =
                             listOf(created) +
-                                it.sessions.filterNot { session -> session.id == created.id },
+                                it.sessions.filterNot { session ->
+                                    session.matches(PROVIDER_CODEX, created.id)
+                                },
                         composerAccessLevel = created.accessLevel ?: accessLevel,
                         composerModel = created.model ?: model,
                         composerEffort = created.reasoningEffort ?: reasoningEffort,
+                        selectedNewSessionProvider = PROVIDER_CODEX,
                         screen = Screen.Detail,
                     )
                 }
+            }.onFailure(::fail)
+        }
+    }
+
+    fun startProviderSession(
+        provider: String,
+        repositoryId: String,
+        prompt: String,
+        model: String?,
+        reasoningEffort: String?,
+        permissionOrAccess: String?,
+    ) {
+        if (provider == PROVIDER_CODEX) {
+            startSession(repositoryId, model, reasoningEffort, permissionOrAccess)
+            return
+        }
+        if (state.value.submitting || prompt.isBlank()) return
+        val selectedModel = model ?: "sonnet"
+        val permissionMode = permissionOrAccess ?: "default"
+        preferences.setLastProvider(provider)
+        preferences.setClaudeRoute(selectedModel, permissionMode)
+        viewModelScope.launch {
+            state.update { it.copy(submitting = true, showNewSession = false, error = null) }
+            runCatching {
+                val response = client.request(
+                    "provider.session.start",
+                    buildJsonObject {
+                        put("provider", PROVIDER_CLAUDE_CODE)
+                        put("repositoryId", repositoryId)
+                        put("text", prompt.trim())
+                        put("model", selectedModel)
+                        put("permissionMode", permissionMode)
+                    },
+                )
+                val created = json.decodeFromJsonElement<SessionSummary>(
+                    response.payload.getValue("session"),
+                )
+                restorationProvider = PROVIDER_CLAUDE_CODE
+                restorationSessionId = created.id
+                preferences.setSelectedSession(PROVIDER_CLAUDE_CODE, created.id)
+                state.update {
+                    it.copy(
+                        submitting = false,
+                        loading = false,
+                        selected = created,
+                        sessions = listOf(created) + it.sessions.filterNot { session ->
+                            session.matches(PROVIDER_CLAUDE_CODE, created.id)
+                        },
+                        selectedNewSessionProvider = PROVIDER_CLAUDE_CODE,
+                        claudeComposerModel = created.model ?: selectedModel,
+                        claudeComposerPermissionMode =
+                            created.permissionMode ?: permissionMode,
+                        screen = Screen.Detail,
+                    )
+                }
+                monitorIfActive(created)
             }.onFailure(::fail)
         }
     }
@@ -2235,44 +2622,88 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val current = state.value
         val selected = current.selected ?: return
         if (current.submitting || (text.isBlank() && images.isEmpty())) return
-        val steering = selected.status == "working" && selected.activeTurnId != null
+        val provider = sessionProvider(selected)
+        if (provider == PROVIDER_CLAUDE_CODE &&
+            (images.isNotEmpty() || selected.status in setOf("working", "waiting"))
+        ) return
+        val steering = provider == PROVIDER_CODEX && selected.status == "working" && selected.activeTurnId != null
         val preparedMonitor = prepareMonitor(selected, active = steering)
         viewModelScope.launch {
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
-                val type = if (steering) "turn.steer" else "turn.prompt"
+                val type = when {
+                    provider == PROVIDER_CLAUDE_CODE -> providerPromptOperation(selected)
+                    steering -> "turn.steer"
+                    else -> "turn.prompt"
+                }
                 val response = client.request(
                     type,
-                    turnPayload(
-                        selected,
-                        text,
-                        images,
-                        steering,
-                        current.composerAccessLevel,
-                        current.composerModel,
-                        current.composerEffort,
-                    ),
+                    if (provider == PROVIDER_CLAUDE_CODE) {
+                        claudePromptPayload(
+                            selected,
+                            text,
+                            current.claudeComposerModel,
+                            current.claudeComposerPermissionMode,
+                        )
+                    } else {
+                        turnPayload(
+                            selected,
+                            text,
+                            images,
+                            steering,
+                            current.composerAccessLevel,
+                            current.composerModel,
+                            current.composerEffort,
+                        )
+                    },
                 )
                 val turnId = response.payload["turnId"]?.jsonPrimitive?.content
+                val acceptedClaudeSession =
+                    if (provider == PROVIDER_CLAUDE_CODE) {
+                        response.payload["session"]?.let {
+                            runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                        }
+                    } else {
+                        null
+                    }
                 var monitored: SessionSummary? = null
                 state.update {
+                    val currentSelected = it.selected
+                    val authoritativeMessages = linkedMapOf<String, ConversationItem>()
+                    acceptedClaudeSession?.messages.orEmpty().forEach { item ->
+                        authoritativeMessages[item.id] = item
+                    }
+                    currentSelected?.messages.orEmpty().forEach { item ->
+                        authoritativeMessages[item.id] = item
+                    }
+                    val base = acceptedClaudeSession ?: currentSelected
                     val updated =
-                        it.selected?.copy(
+                        base?.copy(
+                            messages = authoritativeMessages.values.toList(),
                             status = "working",
-                            activeTurnId = turnId ?: it.selected.activeTurnId,
+                            activeTurnId = turnId ?: base.activeTurnId,
                             activityLabel = "Thinking",
                             activityText = "",
                             accessLevel =
-                                if (steering) {
-                                    it.selected.accessLevel
+                                if (provider == PROVIDER_CLAUDE_CODE) {
+                                    base.accessLevel
+                                } else if (steering) {
+                                    base.accessLevel
                                 } else {
                                     current.composerAccessLevel
                                 },
                             model =
-                                if (steering) it.selected.model else current.composerModel,
+                                if (provider == PROVIDER_CLAUDE_CODE) current.claudeComposerModel
+                                else if (steering) base.model else current.composerModel,
+                            permissionMode =
+                                if (provider == PROVIDER_CLAUDE_CODE) current.claudeComposerPermissionMode
+                                else base.permissionMode,
+                            source =
+                                if (provider == PROVIDER_CLAUDE_CODE) "managed"
+                                else base.source,
                             reasoningEffort =
                                 if (steering) {
-                                    it.selected.reasoningEffort
+                                    base.reasoningEffort
                                 } else {
                                     current.composerEffort
                                 },
@@ -2287,7 +2718,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 accepted()
             }.onFailure {
                 if (preparedMonitor && !steering) {
-                    runCatching { TurnMonitorService.cancel(getApplication(), selected.id) }
+                    runCatching {
+                        TurnMonitorService.cancel(
+                            getApplication(),
+                            selected.id,
+                            sessionProvider(selected),
+                        )
+                    }
                 }
                 fail(it)
             }
@@ -2296,16 +2733,24 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun interrupt() {
         val selected = state.value.selected ?: return
+        if (!providerInterruptEligible(selected)) return
         val turnId = selected.activeTurnId ?: return
         if (state.value.submitting) return
         viewModelScope.launch {
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
                 client.request(
-                    "turn.interrupt",
+                    if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
+                        "provider.turn.interrupt"
+                    } else {
+                        "turn.interrupt"
+                    },
                     buildJsonObject {
+                        if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
+                            put("provider", PROVIDER_CLAUDE_CODE)
+                        }
                         put("sessionId", selected.id)
-                        put("turnId", turnId)
+                        if (sessionProvider(selected) == PROVIDER_CODEX) put("turnId", turnId)
                     },
                 )
                 state.update { it.copy(submitting = false) }
@@ -2356,10 +2801,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val raw = message.payload["approval"] ?: return true
         val approval = runCatching { json.decodeFromJsonElement<ApprovalRequest>(raw) }.getOrNull() ?: return true
         val terminal = approval.status == "resolved" || approval.status == "expired"
-        if (state.value.sessions.none { it.id == approval.sessionId }) discoverSession(approval.sessionId)
+        if (state.value.sessions.none { it.matches(PROVIDER_CODEX, approval.sessionId) }) discoverSession(approval.sessionId)
         state.update { current ->
             fun updateSession(session: SessionSummary): SessionSummary =
-                if (session.id != approval.sessionId) session else session.copy(
+                if (!session.matches(PROVIDER_CODEX, approval.sessionId)) session else session.copy(
                     status = if (terminal && session.status == "waiting") "working" else "waiting",
                     attention = !terminal,
                     activeTurnId = approval.turnId ?: session.activeTurnId,
@@ -2433,10 +2878,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val raw = message.payload["input"] ?: return true
         val input = runCatching { json.decodeFromJsonElement<InputRequest>(raw) }.getOrNull() ?: return true
         val terminal = input.status == "resolved" || input.status == "expired"
-        if (state.value.sessions.none { it.id == input.sessionId }) discoverSession(input.sessionId)
+        if (state.value.sessions.none { it.matches(PROVIDER_CODEX, input.sessionId) }) discoverSession(input.sessionId)
         state.update { current ->
             fun updateSession(session: SessionSummary): SessionSummary =
-                if (session.id != input.sessionId) session else session.copy(
+                if (!session.matches(PROVIDER_CODEX, input.sessionId)) session else session.copy(
                     status = if (terminal && session.status == "waiting") "working" else "waiting",
                     attention = !terminal,
                     activeTurnId = input.turnId ?: session.activeTurnId,
@@ -2464,21 +2909,43 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun handleEvent(message: WireMessage) {
         if (handleApprovalEvent(message)) return
         if (handleInputEvent(message)) return
+        if (message.type == "provider.event") {
+            val providers = message.payload["providers"]?.jsonArray?.mapNotNull {
+                runCatching { json.decodeFromJsonElement<ProviderInfo>(it) }.getOrNull()
+            } ?: return
+            val claudeAvailable =
+                providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }
+            state.update { current ->
+                fun availability(session: SessionSummary): SessionSummary =
+                    if (sessionProvider(session) == PROVIDER_CLAUDE_CODE && !claudeAvailable &&
+                        session.status !in setOf("working", "waiting")
+                    ) session.copy(status = "unavailable") else session
+                current.copy(
+                    providers = providers,
+                    sessions = current.sessions.map(::availability),
+                    selected = current.selected?.let(::availability),
+                )
+            }
+            return
+        }
         if (message.type != "session.event") return
+        val provider =
+            message.payload["provider"]?.jsonPrimitive?.content ?: PROVIDER_CODEX
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
+        val identityKey = providerSessionKey(provider, sessionId)
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
             if (action == "removed") {
                 state.update { current ->
-                    val pinned = current.pinnedSessionIds - sessionId
-                    val hidden = current.hiddenSessionIds - sessionId
+                    val pinned = current.pinnedSessionIds - identityKey
+                    val hidden = current.hiddenSessionIds - identityKey
                     preferences.setPinnedSessionIds(pinned)
                     preferences.setHiddenSessionIds(hidden)
                     current.copy(
-                        sessions = current.sessions.filterNot { it.id == sessionId },
-                        searchResults = current.searchResults.filterNot { it.session.id == sessionId },
+                        sessions = current.sessions.filterNot { it.matches(provider, sessionId) },
+                        searchResults = current.searchResults.filterNot { it.session.matches(provider, sessionId) },
                         pinnedSessionIds = pinned,
                         hiddenSessionIds = hidden,
                     )
@@ -2491,19 +2958,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             }
             if (projected != null) {
                 state.update { current ->
-                    current.copy(sessions = listOf(projected) + current.sessions.filterNot { it.id == projected.id })
+                    current.copy(
+                        sessions = listOf(projected) + current.sessions.filterNot {
+                            it.matches(sessionProvider(projected), projected.id)
+                        },
+                    )
                 }
                 scheduleSearch(0)
                 updateActiveOverview()
                 return
             }
         }
-        if (state.value.shouldDiscoverSession(sessionId, kind)) {
-            discoverSession(sessionId)
+        if (state.value.shouldDiscoverSession(sessionId, kind, provider)) {
+            discoverSession(sessionId, provider)
         }
         state.update { current ->
             val selected = current.selected
-            if (selected?.id != sessionId) {
+            if (selected?.matches(provider, sessionId) != true) {
                 val inferredStatus =
                     if (eventShowsWorkingActivity(kind)) {
                         "working"
@@ -2515,7 +2986,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 return@update current.copy(
                     sessions =
                         current.sessions.map {
-                            if (it.id == sessionId && kind == "route") {
+                            if (it.matches(provider, sessionId) && kind == "route") {
                                 it.copy(
                                     accessLevel =
                                         event["accessLevel"]?.jsonPrimitive?.content
@@ -2525,7 +2996,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                         event["reasoningEffort"]?.jsonPrimitive?.content
                                             ?: it.reasoningEffort,
                                 )
-                            } else if (it.id == sessionId && inferredStatus != null) {
+                            } else if (it.matches(provider, sessionId) && inferredStatus != null) {
                                 it.copy(
                                     status = inferredStatus,
                                     attention = inferredStatus == "waiting",
@@ -2732,6 +3203,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 repositoryId,
                 session.activeTurnId,
                 session.activeTurnStartedAt,
+                sessionProvider(session),
             )
         }.onFailure { error ->
             state.update {
@@ -3171,7 +3643,7 @@ private fun UnifiedOverviewScreen(
             if (attention.isEmpty()) {
                 item { Text("Nothing in the latest host snapshots needs attention.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
-                items(attention, key = { (host, item) -> "${host.id}:${item.sessionId}:${item.approvalId ?: item.type}" }) { (host, item) ->
+                items(attention, key = { (host, item) -> "${host.id}:${item.provider}:${item.sessionId}:${item.approvalId ?: item.type}" }) { (host, item) ->
                     val stale = state.overviewSnapshots[host.id]?.connection != "connected"
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -3284,12 +3756,19 @@ private fun HostDashboardScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item { DashboardHealthCard(state) }
+                    item { ProviderStatusPanel(state.providers) }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OverviewMetric("Active", dashboard.active.size.toString(), Modifier.weight(1f))
                                 OverviewMetric("Waiting", dashboard.waitingCount.toString(), Modifier.weight(1f))
                             }
+                            Text(
+                                "Codex ${dashboard.active.count { sessionProvider(it) == PROVIDER_CODEX }} · " +
+                                    "Claude ${dashboard.active.count { sessionProvider(it) == PROVIDER_CLAUDE_CODE }} active",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OverviewMetric("Failed", dashboard.failedCount.toString(), Modifier.weight(1f))
                                 OverviewMetric("Recent", dashboard.recent.size.toString(), Modifier.weight(1f))
@@ -3306,7 +3785,7 @@ private fun HostDashboardScreen(
                                         "${liveActivityLabel(oldest)} · ${overviewElapsed(epochMillis(oldest.activeTurnStartedAt))}",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    Button(onClick = { viewModel.openSession(oldest.id) }, modifier = Modifier.align(Alignment.End)) {
+                                    Button(onClick = { viewModel.openSession(oldest.id, provider = sessionProvider(oldest)) }, modifier = Modifier.align(Alignment.End)) {
                                         Text("Open")
                                     }
                                 }
@@ -3317,9 +3796,13 @@ private fun HostDashboardScreen(
                     if (dashboard.attention.isEmpty()) {
                         item { DashboardEmptyState("No sessions currently need attention.") }
                     } else {
-                        items(dashboard.attention, key = { "attention:${it.id}" }) { session ->
-                            val approval = pendingApprovals.firstOrNull { it.sessionId == session.id }
-                            val input = pendingInputs.firstOrNull { it.sessionId == session.id }
+                        items(dashboard.attention, key = { "attention:${it.providerKey()}" }) { session ->
+                            val approval = pendingApprovals.firstOrNull {
+                                sessionProvider(session) == PROVIDER_CODEX && it.sessionId == session.id
+                            }
+                            val input = pendingInputs.firstOrNull {
+                                sessionProvider(session) == PROVIDER_CODEX && it.sessionId == session.id
+                            }
                             val requestId = approval?.id ?: input?.id
                             DashboardSessionCard(
                                 session = session,
@@ -3330,7 +3813,7 @@ private fun HostDashboardScreen(
                                         approval != null -> "Waiting for approval"
                                         else -> dashboardSessionDetail(session)
                                     },
-                                onOpen = { viewModel.openSession(session.id, focusedApprovalId = requestId) },
+                                onOpen = { viewModel.openSession(session.id, focusedApprovalId = requestId, provider = sessionProvider(session)) },
                             )
                         }
                     }
@@ -3338,12 +3821,12 @@ private fun HostDashboardScreen(
                     if (dashboard.active.isEmpty()) {
                         item { DashboardEmptyState("No active sessions on this host.") }
                     } else {
-                        items(dashboard.active, key = { "active:${it.id}" }) { session ->
+                        items(dashboard.active, key = { "active:${it.providerKey()}" }) { session ->
                             DashboardSessionCard(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = liveActivityMessage(session) ?: liveActivityLabel(session),
-                                onOpen = { viewModel.openSession(session.id) },
+                                onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
                     }
@@ -3351,12 +3834,12 @@ private fun HostDashboardScreen(
                     if (dashboard.recent.isEmpty()) {
                         item { DashboardEmptyState("No terminal turns were observed in the last hour.") }
                     } else {
-                        items(dashboard.recent, key = { "recent:${it.id}" }) { session ->
+                        items(dashboard.recent, key = { "recent:${it.providerKey()}" }) { session ->
                             DashboardSessionCard(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = session.failureSummary ?: session.activityText.ifBlank { session.activityLabel.ifBlank { "Turn finished" } },
-                                onOpen = { viewModel.openSession(session.id) },
+                                onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
                     }
@@ -3441,7 +3924,9 @@ private fun DashboardSessionCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.width(8.dp))
-                StatusPill(session.status)
+                ProviderBadge(sessionProvider(session))
+                Spacer(Modifier.width(6.dp))
+                StatusPill(sessionDisplayStatus(session))
             }
             Text(repositoryLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (detail.isNotBlank()) {
@@ -3493,6 +3978,12 @@ private fun HostOverviewCard(
             Text("Foreman ${snapshot?.foremanVersion ?: "—"} · Codex ${snapshot?.codexVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
             Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Fallback runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
             Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
+            Text(
+                "Codex ${snapshot?.codexActive ?: 0} · Claude ${snapshot?.claudeActive ?: 0}" +
+                    if (snapshot?.claudeUnavailable == true) " · Claude unavailable" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text("Oldest ${overviewElapsed(snapshot?.oldestTurn?.timestamp)} · Latest activity ${overviewAge(snapshot?.latestActivity)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(onClick = onOpen) { Text("View dashboard") }
@@ -3588,6 +4079,17 @@ private fun SessionsScreen(
                     }
                 }
             }
+            if (state.connected && state.providers.isNotEmpty()) {
+                ProviderStatusPanel(state.providers)
+            }
+            if (state.showSearch) {
+                Text(
+                    "Transcript search covers Codex. Claude Code sessions are filtered by title, workspace, state, pins, and hidden status only.",
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (state.loading && state.sessions.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -3605,7 +4107,10 @@ private fun SessionsScreen(
                 val pinned = visible.filter { it.pinned }
                 val remaining = visible.filterNot { it.pinned }
                 val waiting = remaining.filter { it.session.status == "waiting" || it.session.attention }
-                val active = remaining.filter { it.session.status == "working" && !it.session.attention }
+                val active = remaining.filter {
+                    it.session.status == "working" && !it.session.attention &&
+                        it.session.source != "external"
+                }
                 val recent = remaining.filterNot { it in active || it in waiting }
                 PullToRefreshBox(
                     isRefreshing = state.loading,
@@ -3631,10 +4136,10 @@ private fun SessionsScreen(
                         sessionSection(
                             "Pinned",
                             pinned,
-                            viewModel::openSession,
+                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
                             viewModel::requestSessionAction,
-                            viewModel::togglePinnedSession,
-                            viewModel::toggleHiddenSession,
+                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
                             state.capabilities,
                             state.repositories,
                             state.repositoryRoot,
@@ -3642,10 +4147,10 @@ private fun SessionsScreen(
                         sessionSection(
                             "Waiting",
                             waiting,
-                            viewModel::openSession,
+                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
                             viewModel::requestSessionAction,
-                            viewModel::togglePinnedSession,
-                            viewModel::toggleHiddenSession,
+                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
                             state.capabilities,
                             state.repositories,
                             state.repositoryRoot,
@@ -3653,10 +4158,10 @@ private fun SessionsScreen(
                         sessionSection(
                             "Active",
                             active,
-                            viewModel::openSession,
+                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
                             viewModel::requestSessionAction,
-                            viewModel::togglePinnedSession,
-                            viewModel::toggleHiddenSession,
+                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
                             state.capabilities,
                             state.repositories,
                             state.repositoryRoot,
@@ -3664,10 +4169,10 @@ private fun SessionsScreen(
                         sessionSection(
                             "Recent",
                             recent,
-                            viewModel::openSession,
+                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
                             viewModel::requestSessionAction,
-                            viewModel::togglePinnedSession,
-                            viewModel::toggleHiddenSession,
+                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
                             state.capabilities,
                             state.repositories,
                             state.repositoryRoot,
@@ -3681,13 +4186,19 @@ private fun SessionsScreen(
         NewSessionDialog(
             repositories = state.repositories,
             repositoryRoot = state.repositoryRoot,
+            providers = state.providers,
             models = state.models,
             accessLevels = state.accessLevels,
+            claudeModels = state.claudeModels,
+            claudePermissionModes = state.claudePermissionModes,
+            initialProvider = state.selectedNewSessionProvider,
             initialModel = state.composerModel,
             initialEffort = state.composerEffort,
             initialAccessLevel = state.composerAccessLevel,
+            initialClaudeModel = state.claudeComposerModel,
+            initialClaudePermissionMode = state.claudeComposerPermissionMode,
             onDismiss = { viewModel.setNewSession(false) },
-            onStart = viewModel::startSession,
+            onStart = viewModel::startProviderSession,
         )
     }
     if (state.showSearchFilters) {
@@ -3700,13 +4211,62 @@ private fun SessionsScreen(
     }
 }
 
+@Composable
+private fun ProviderStatusPanel(providers: List<ProviderInfo>) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            providers.forEach { provider ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    ProviderBadge(provider.id)
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (provider.available) "Available" else "Unavailable",
+                            fontWeight = FontWeight.SemiBold,
+                            color =
+                                if (provider.available) Color(0xFF17B26A)
+                                else MaterialTheme.colorScheme.error,
+                        )
+                        if (!provider.available) {
+                            Text(
+                                providerUnavailableDescription(provider.unavailableReason),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            val versions = buildList {
+                                provider.cliVersion?.let { add("CLI $it") }
+                                provider.nodeVersion?.let { add("Node $it") }
+                                provider.sdkVersion?.let { add("SDK $it") }
+                                if (provider.id == PROVIDER_CODEX) provider.version?.let { add(it) }
+                            }
+                            if (versions.isNotEmpty()) {
+                                Text(
+                                    versions.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     title: String,
     sessions: List<VisibleSession>,
-    open: (String, String?) -> Unit,
+    open: (String, String?, String) -> Unit,
     action: (SessionSummary, SessionAction) -> Unit,
-    pin: (String) -> Unit,
-    hide: (String) -> Unit,
+    pin: (String, String) -> Unit,
+    hide: (String, String) -> Unit,
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
@@ -3721,18 +4281,19 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
-    items(sessions, key = { it.session.id }) { visible ->
+    items(sessions, key = { it.session.providerKey() }) { visible ->
         val session = visible.session
+        val provider = sessionProvider(session)
         SessionCard(
             session = session,
             matches = visible.matches,
             pinned = visible.pinned,
             hidden = visible.hidden,
             repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot).label,
-            onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId) },
+            onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId, provider) },
             onAction = { action(session, it) },
-            onPin = { pin(session.id) },
-            onHide = { hide(session.id) },
+            onPin = { pin(provider, session.id) },
+            onHide = { hide(provider, session.id) },
             capabilities = capabilities,
         )
     }
@@ -3762,7 +4323,9 @@ private fun SessionCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.width(8.dp))
-                StatusPill(session.status)
+                ProviderBadge(sessionProvider(session))
+                Spacer(Modifier.width(6.dp))
+                StatusPill(sessionDisplayStatus(session))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
                     Icon(
                         if (pinned) Icons.Default.Star else Icons.Default.StarBorder,
@@ -3775,9 +4338,17 @@ private fun SessionCard(
                 }
                 SessionActionsMenu(
                     enabled = sessionCanBeManaged(session.status),
-                    archiveSupported = sessionActionSupported(capabilities, SessionAction.Archive),
-                    deleteSupported = sessionActionSupported(capabilities, SessionAction.Delete),
+                    archiveSupported = sessionActionSupported(session, capabilities, SessionAction.Archive),
+                    deleteSupported = sessionActionSupported(session, capabilities, SessionAction.Delete),
                     onAction = onAction,
+                )
+            }
+            if (sessionProvider(session) == PROVIDER_CLAUDE_CODE && session.source == "external") {
+                Text(
+                    (if (session.status == "working") "External active" else "Resumable") +
+                        " · Not live-attached",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             Text(
@@ -3927,8 +4498,13 @@ private fun SessionDetailScreen(
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
     val selected = state.selected
-    val selectedApprovals = state.approvals.filter { it.sessionId == selected?.id }
-    val selectedInputs = state.inputs.filter { it.sessionId == selected?.id }
+    val selectedProvider = selected?.let(::sessionProvider) ?: PROVIDER_CODEX
+    val selectedApprovals = state.approvals.filter {
+        selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
+    }
+    val selectedInputs = state.inputs.filter {
+        selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
+    }
     val messages = selected?.messages.orEmpty()
     val messageItemIds = messages.mapTo(mutableSetOf()) { it.id }
     val protectedItemIds =
@@ -4014,7 +4590,7 @@ private fun SessionDetailScreen(
                         )
                         if (selected != null) {
                             Text(
-                                selected.status,
+                                sessionDisplayStatus(selected),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -4028,7 +4604,7 @@ private fun SessionDetailScreen(
                 },
                 actions = {
                     HostSelectorMenu(state, viewModel, compact = true)
-                    if (selected?.status in setOf("working", "waiting") && selected?.activeTurnId != null) {
+                    if (selected != null && providerInterruptEligible(selected)) {
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                         }
@@ -4038,9 +4614,9 @@ private fun SessionDetailScreen(
                             enabled =
                                 sessionCanBeManaged(selected.status) && !state.submitting,
                             archiveSupported =
-                                sessionActionSupported(state.capabilities, SessionAction.Archive),
+                                sessionActionSupported(selected, state.capabilities, SessionAction.Archive),
                             deleteSupported =
-                                sessionActionSupported(state.capabilities, SessionAction.Delete),
+                                sessionActionSupported(selected, state.capabilities, SessionAction.Delete),
                             onAction = { viewModel.requestSessionAction(selected, it) },
                         )
                     }
@@ -4055,23 +4631,37 @@ private fun SessionDetailScreen(
         },
         bottomBar = {
             if (selected != null) PromptBox(
-                text = state.activeHostId?.let { composerDraft(state.composerDrafts, it, selected.id) }.orEmpty(),
-                working = selected.status == "working",
+                text = state.activeHostId?.let {
+                    composerDraft(state.composerDrafts, it, selected.id, selectedProvider)
+                }.orEmpty(),
+                provider = selectedProvider,
+                resumableExternal = selected.source == "external",
+                working = selected.status in setOf("working", "waiting"),
                 routeEnabled = state.connected && !state.submitting,
-                enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" } && selectedInputs.none { it.status == "pending" || it.status == "submitting" },
-                accessLevels = state.accessLevels,
-                accessLevelId = state.composerAccessLevel,
-                models = state.models,
-                modelId = state.composerModel,
-                effort = state.composerEffort,
+                enabled = state.connected && !state.submitting &&
+                    !(selectedProvider == PROVIDER_CLAUDE_CODE && selected.status in setOf("working", "waiting")) &&
+                    selectedApprovals.none { it.status == "pending" || it.status == "submitting" } &&
+                    selectedInputs.none { it.status == "pending" || it.status == "submitting" },
+                accessLevels =
+                    if (selectedProvider == PROVIDER_CLAUDE_CODE) {
+                        state.claudePermissionModes.map {
+                            AccessLevelInfo(it.id, it.displayName, it.description)
+                        }
+                    } else state.accessLevels,
+                accessLevelId =
+                    if (selectedProvider == PROVIDER_CLAUDE_CODE) state.claudeComposerPermissionMode
+                    else state.composerAccessLevel,
+                models = if (selectedProvider == PROVIDER_CLAUDE_CODE) state.claudeModels else state.models,
+                modelId = if (selectedProvider == PROVIDER_CLAUDE_CODE) state.claudeComposerModel else state.composerModel,
+                effort = if (selectedProvider == PROVIDER_CLAUDE_CODE) null else state.composerEffort,
                 hapticsEnabled = state.hapticsEnabled,
-                selectAccessLevel = viewModel::setComposerAccessLevel,
-                selectModel = viewModel::setComposerModel,
+                selectAccessLevel = if (selectedProvider == PROVIDER_CLAUDE_CODE) viewModel::setClaudeComposerPermissionMode else viewModel::setComposerAccessLevel,
+                selectModel = if (selectedProvider == PROVIDER_CLAUDE_CODE) viewModel::setClaudeComposerModel else viewModel::setComposerModel,
                 selectEffort = viewModel::setComposerEffort,
                 showError = viewModel::composerError,
                 onTextChange = { text ->
                     state.activeHostId?.let { hostId ->
-                        viewModel.setComposerDraft(hostId, selected.id, text)
+                        viewModel.setComposerDraft(hostId, selected.id, text, selectedProvider)
                     }
                 },
                 send = viewModel::send,
@@ -4094,11 +4684,32 @@ private fun SessionDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
-                        Text(
-                            selected.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    selected.title,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                ProviderBadge(selectedProvider)
+                            }
+                            if (selectedProvider == PROVIDER_CLAUDE_CODE && selected.source == "external") {
+                                Text(
+                                    (if (selected.status == "working") "External active" else "Resumable") +
+                                        " · Not live-attached. Resume in Foreman after external work stops; the external process is not attached.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            if (selectedProvider == PROVIDER_CLAUDE_CODE && selected.status == "waiting") {
+                                Text(
+                                    "Permission required in Claude Code. This request cannot yet be answered from Android.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
                     }
                     itemsIndexed(
                         displayBlocks,
@@ -4155,7 +4766,7 @@ private fun SessionDetailScreen(
                             onRespond = { viewModel.respondToInput(input, it) },
                         )
                     }
-                    if (selected.status == "working") {
+                    if (selected.status == "working" && selected.source != "external") {
                         item(key = "live-activity") {
                             LiveActivityRow(selected)
                         }
@@ -4372,6 +4983,8 @@ private fun ImageThumbnailRow(
 @Composable
 private fun PromptBox(
     text: String,
+    provider: String,
+    resumableExternal: Boolean,
     working: Boolean,
     routeEnabled: Boolean,
     enabled: Boolean,
@@ -4392,6 +5005,7 @@ private fun PromptBox(
     var processing by remember { mutableStateOf(false) }
     var showAccessLevels by remember { mutableStateOf(false) }
     var confirmFullAccess by remember { mutableStateOf(false) }
+    var confirmBypassPermissions by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var showEfforts by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -4400,9 +5014,9 @@ private fun PromptBox(
     val selectedAccessLevel = accessLevels.firstOrNull { it.id == accessLevelId }
     val selectedModel = models.firstOrNull { it.id == modelId }
     val imageSupported =
-        selectedModel == null ||
+        provider == PROVIDER_CODEX && (selectedModel == null ||
             selectedModel.inputModalities.isEmpty() ||
-            "image" in selectedModel.inputModalities
+            "image" in selectedModel.inputModalities)
     val picker =
         androidx.activity.compose.rememberLauncherForActivityResult(
             ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES_PER_MESSAGE),
@@ -4437,6 +5051,7 @@ private fun PromptBox(
             verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             ComposerRouteRow(
+                provider = provider,
                 accessLevels = accessLevels,
                 selectedAccessLevel = selectedAccessLevel,
                 accessLevelId = accessLevelId,
@@ -4466,7 +5081,12 @@ private fun PromptBox(
                 CompactMessageField(
                     value = text,
                     onValueChange = onTextChange,
-                    placeholder = if (working) "Steer this turn…" else "Message Foreman…",
+                    placeholder = when {
+                        provider == PROVIDER_CLAUDE_CODE && working -> "Claude is working…"
+                        provider == PROVIDER_CLAUDE_CODE -> "Message Claude Code…"
+                        working -> "Steer this turn…"
+                        else -> "Message Foreman…"
+                    },
                     modifier = Modifier.weight(1f),
                     leadingIcon = {
                         IconButton(
@@ -4483,7 +5103,13 @@ private fun PromptBox(
                                     imageSupported &&
                                     images.size < MAX_IMAGES_PER_MESSAGE,
                         ) {
-                            Icon(Icons.Default.AttachFile, contentDescription = "Attach images")
+                            Icon(
+                                Icons.Default.AttachFile,
+                                contentDescription =
+                                    if (provider == PROVIDER_CLAUDE_CODE) {
+                                        "Image attachments unavailable for Claude Code"
+                                    } else "Attach images",
+                            )
                         }
                     },
                 )
@@ -4506,7 +5132,13 @@ private fun PromptBox(
                     contentPadding =
                         androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
                 ) {
-                    Text(if (working) "Steer" else "Send")
+                    Text(
+                        when {
+                            resumableExternal -> "Resume in Foreman"
+                            provider == PROVIDER_CODEX && working -> "Steer"
+                            else -> "Send"
+                        },
+                    )
                 }
             }
         }
@@ -4514,7 +5146,12 @@ private fun PromptBox(
     if (showAccessLevels) {
         AlertDialog(
             onDismissRequest = { showAccessLevels = false },
-            title = { Text("Choose access level") },
+            title = {
+                Text(
+                    if (provider == PROVIDER_CLAUDE_CODE) "Choose permission mode"
+                    else "Choose access level",
+                )
+            },
             text = {
                 Column {
                     accessLevels.forEach { level ->
@@ -4524,6 +5161,8 @@ private fun PromptBox(
                                     showAccessLevels = false
                                     if (level.id == "full") {
                                         confirmFullAccess = true
+                                    } else if (level.id == "bypassPermissions") {
+                                        confirmBypassPermissions = true
                                     } else {
                                         selectAccessLevel(level.id)
                                     }
@@ -4538,7 +5177,7 @@ private fun PromptBox(
                                     level.displayName,
                                     fontWeight = FontWeight.SemiBold,
                                     color =
-                                        if (level.id == "full") {
+                                        if (level.id in setOf("full", "bypassPermissions")) {
                                             MaterialTheme.colorScheme.error
                                         } else {
                                             Color.Unspecified
@@ -4594,6 +5233,31 @@ private fun PromptBox(
                 ) {
                     Text("Enable", color = MaterialTheme.colorScheme.error)
                 }
+            },
+        )
+    }
+    if (confirmBypassPermissions) {
+        AlertDialog(
+            onDismissRequest = { confirmBypassPermissions = false },
+            icon = {
+                Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            },
+            title = { Text("Bypass Claude permissions?") },
+            text = {
+                Text(
+                    "This high-risk mode bypasses Claude Code permission checks. It is never selected automatically.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBypassPermissions = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectAccessLevel("bypassPermissions")
+                        confirmBypassPermissions = false
+                    },
+                ) { Text("Use high-risk mode", color = MaterialTheme.colorScheme.error) }
             },
         )
     }
@@ -4699,6 +5363,7 @@ private fun CompactMessageField(
 
 @Composable
 private fun ComposerRouteRow(
+    provider: String,
     accessLevels: List<AccessLevelInfo>,
     selectedAccessLevel: AccessLevelInfo?,
     accessLevelId: String?,
@@ -4723,7 +5388,7 @@ private fun ComposerRouteRow(
                 onClick = showAccessLevels,
                 enabled = enabled && accessLevels.isNotEmpty(),
                 colors =
-                    if (accessLevelId == "full") {
+                    if (accessLevelId in setOf("full", "bypassPermissions")) {
                         ButtonDefaults.textButtonColors(
                             contentColor = MaterialTheme.colorScheme.error,
                             disabledContentColor = MaterialTheme.colorScheme.error,
@@ -4743,7 +5408,8 @@ private fun ComposerRouteRow(
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    selectedAccessLevel?.displayName ?: accessLevelId ?: "Access",
+                    selectedAccessLevel?.displayName ?: accessLevelId ?:
+                        if (provider == PROVIDER_CLAUDE_CODE) "Permission" else "Access",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -4767,7 +5433,7 @@ private fun ComposerRouteRow(
                 )
             }
         }
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+        if (provider == PROVIDER_CODEX) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
             Box {
                 TextButton(
                     onClick = showEfforts,
@@ -5545,6 +6211,22 @@ private fun SessionActionDialog(
 }
 
 @Composable
+private fun ProviderBadge(provider: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Text(
+            providerDisplayName(provider),
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun StatusPill(status: String) {
     val color = when (status) {
         "working" -> Color(0xFF2563EB)
@@ -5594,15 +6276,27 @@ private fun ErrorText(message: String?, modifier: Modifier = Modifier) {
 private fun NewSessionDialog(
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    providers: List<ProviderInfo>,
     models: List<ModelInfo>,
     accessLevels: List<AccessLevelInfo>,
+    claudeModels: List<ModelInfo>,
+    claudePermissionModes: List<PermissionModeInfo>,
+    initialProvider: String,
     initialModel: String?,
     initialEffort: String?,
     initialAccessLevel: String?,
+    initialClaudeModel: String,
+    initialClaudePermissionMode: String,
     onDismiss: () -> Unit,
-    onStart: (String, String?, String?, String?) -> Unit,
+    onStart: (String, String, String, String?, String?, String?) -> Unit,
 ) {
     var repositoryId by remember(repositories) { mutableStateOf(".") }
+    var provider by remember(providers, initialProvider) {
+        mutableStateOf(
+            providers.firstOrNull { it.id == initialProvider }?.id ?: PROVIDER_CODEX,
+        )
+    }
+    var initialPrompt by remember(provider) { mutableStateOf("") }
     var modelId by remember(models, initialModel) {
         mutableStateOf(models.firstOrNull { it.id == initialModel }?.id ?: models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id)
     }
@@ -5611,12 +6305,52 @@ private fun NewSessionDialog(
     var accessLevel by remember(accessLevels, initialAccessLevel) {
         mutableStateOf(accessLevels.firstOrNull { it.id == initialAccessLevel }?.id ?: accessLevels.firstOrNull { it.id == "ask" }?.id ?: accessLevels.firstOrNull()?.id)
     }
+    var claudeModel by remember(claudeModels, initialClaudeModel) {
+        mutableStateOf(
+            claudeModels.firstOrNull { it.id == initialClaudeModel }?.id
+                ?: claudeModels.firstOrNull()?.id ?: "sonnet",
+        )
+    }
+    var permissionMode by remember(claudePermissionModes, initialClaudePermissionMode) {
+        mutableStateOf(
+            claudePermissionModes.firstOrNull {
+                it.id == initialClaudePermissionMode && !it.highRisk
+            }?.id ?: "default",
+        )
+    }
+    var pendingHighRiskMode by remember { mutableStateOf<String?>(null) }
     val rootRepository = repositories.firstOrNull { it.id == "." }
+    val providerInfo = providers.firstOrNull { it.id == provider }
+    val providerUnavailable = providerInfo?.available != true
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New session") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                NewSessionOptionMenu(
+                    "Provider",
+                    providerInfo?.displayName ?: providerDisplayName(provider),
+                    providers.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
+                ) { provider = it }
+                if (providerUnavailable) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                "${providerDisplayName(provider)} is unavailable",
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            Text(
+                                providerUnavailableDescription(providerInfo?.unavailableReason),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
+                }
                 if (repositories.isEmpty()) {
                     Surface(shape = RoundedCornerShape(10.dp), tonalElevation = 2.dp) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -5690,7 +6424,41 @@ private fun NewSessionDialog(
                         }
                     }
                 }
-                if (accessLevels.isNotEmpty()) {
+                if (provider == PROVIDER_CLAUDE_CODE && !providerUnavailable) {
+                    OutlinedTextField(
+                        value = initialPrompt,
+                        onValueChange = { initialPrompt = it },
+                        label = { Text("Initial prompt") },
+                        placeholder = { Text("What should Claude work on?") },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    val selectedPermission = claudePermissionModes.firstOrNull { it.id == permissionMode }
+                    NewSessionOptionMenu(
+                        "Permission mode",
+                        selectedPermission?.displayName ?: "Default",
+                        claudePermissionModes.map { it.id to (it.displayName + if (it.highRisk) " · HIGH RISK" else "") },
+                    ) { selected ->
+                        if (claudePermissionModes.firstOrNull { it.id == selected }?.highRisk == true) {
+                            pendingHighRiskMode = selected
+                        } else permissionMode = selected
+                    }
+                    selectedPermission?.description?.takeIf(String::isNotBlank)?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    NewSessionOptionMenu(
+                        "Claude model",
+                        claudeModels.firstOrNull { it.id == claudeModel }?.displayName ?: claudeModel,
+                        claudeModels.map { it.id to it.displayName },
+                    ) { claudeModel = it }
+                    Text(
+                        "Claude images are not supported by the current provider protocol.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (provider == PROVIDER_CODEX && accessLevels.isNotEmpty()) {
                     val selectedAccess = accessLevels.firstOrNull { it.id == accessLevel }
                     NewSessionOptionMenu("Access", selectedAccess?.displayName ?: "Default access", accessLevels.map { it.id to it.displayName }) { accessLevel = it }
                     if (accessLevel == "full") {
@@ -5701,24 +6469,63 @@ private fun NewSessionDialog(
                         )
                     }
                 }
-                if (models.isNotEmpty()) {
+                if (provider == PROVIDER_CODEX && models.isNotEmpty()) {
                     NewSessionOptionMenu("Model", selectedModel?.displayName ?: "Default model", models.map { it.id to it.displayName }) { selected ->
                         modelId = selected
                         effort = models.firstOrNull { it.id == selected }?.let { compatibleEffort(it, null) }
                     }
                 }
-                if (!selectedModel?.reasoningEfforts.isNullOrEmpty()) {
+                if (provider == PROVIDER_CODEX && !selectedModel?.reasoningEfforts.isNullOrEmpty()) {
                     NewSessionOptionMenu("Reasoning", effort?.replaceFirstChar { it.uppercase() } ?: "Default", selectedModel.reasoningEfforts.map { it to it.replaceFirstChar { character -> character.uppercase() } }) { effort = it }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onStart(repositoryId, modelId, effort, accessLevel) }) {
-                Text(if (repositories.isEmpty()) "Start in workspace" else "Create")
+            TextButton(
+                enabled = !providerUnavailable &&
+                    (provider == PROVIDER_CODEX || initialPrompt.isNotBlank()),
+                onClick = {
+                    onStart(
+                        provider,
+                        repositoryId,
+                        initialPrompt,
+                        if (provider == PROVIDER_CLAUDE_CODE) claudeModel else modelId,
+                        if (provider == PROVIDER_CODEX) effort else null,
+                        if (provider == PROVIDER_CLAUDE_CODE) permissionMode else accessLevel,
+                    )
+                },
+            ) {
+                Text(
+                    if (provider == PROVIDER_CLAUDE_CODE) "Start Claude session"
+                    else if (repositories.isEmpty()) "Start in workspace" else "Create",
+                )
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+    if (pendingHighRiskMode != null) {
+        AlertDialog(
+            onDismissRequest = { pendingHighRiskMode = null },
+            icon = { Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Bypass Claude permissions?") },
+            text = {
+                Text(
+                    "This high-risk mode bypasses Claude Code permission checks. It is never selected automatically.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingHighRiskMode = null }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        permissionMode = requireNotNull(pendingHighRiskMode)
+                        pendingHighRiskMode = null
+                    },
+                ) { Text("Use high-risk mode", color = MaterialTheme.colorScheme.error) }
+            },
+        )
+    }
 }
 
 @Composable
