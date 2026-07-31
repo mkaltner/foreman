@@ -19,6 +19,9 @@ certificate digest. Use only a trusted LAN or private overlay.
 - [ ] Linux archive contents and exclusions verified
 - [ ] `SHA256SUMS` verifies every release artifact
 - [ ] Complete resolved dependency-license inventory and required notices
+- [ ] Every published product screenshot is captured from the exact candidate
+      build, manually compared with the real interface, and labeled as a mockup
+      if it does not depict a running product
 
 ## Install, upgrade, and rollback
 
