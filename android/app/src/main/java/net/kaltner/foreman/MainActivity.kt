@@ -5602,7 +5602,7 @@ private fun NewSessionDialog(
     onDismiss: () -> Unit,
     onStart: (String, String?, String?, String?) -> Unit,
 ) {
-    var repositoryId by remember(repositories) { mutableStateOf(repositories.firstOrNull()?.id ?: ".") }
+    var repositoryId by remember(repositories) { mutableStateOf(".") }
     var modelId by remember(models, initialModel) {
         mutableStateOf(models.firstOrNull { it.id == initialModel }?.id ?: models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id)
     }
@@ -5611,6 +5611,7 @@ private fun NewSessionDialog(
     var accessLevel by remember(accessLevels, initialAccessLevel) {
         mutableStateOf(accessLevels.firstOrNull { it.id == initialAccessLevel }?.id ?: accessLevels.firstOrNull { it.id == "ask" }?.id ?: accessLevels.firstOrNull()?.id)
     }
+    val rootRepository = repositories.firstOrNull { it.id == "." }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New session") },
@@ -5638,9 +5639,34 @@ private fun NewSessionDialog(
                     }
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Repository", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Workspace", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         LazyColumn(Modifier.height(160.dp)) {
-                            items(repositories, key = { it.id }) { repository ->
+                            item(key = "workspace-root") {
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable { repositoryId = "." }
+                                        .padding(vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(selected = repositoryId == ".", onClick = { repositoryId = "." })
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Workspace root", fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            when {
+                                                rootRepository != null -> "${repositoryRoot.ifBlank { "." }} · ${rootRepository.branch}"
+                                                repositoryRoot.isBlank() -> "No Git repository"
+                                                else -> "$repositoryRoot · no Git repository"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                HorizontalDivider()
+                            }
+                            items(repositories.filter { it.id != "." }, key = { it.id }) { repository ->
                                 Row(
                                     Modifier.fillMaxWidth()
                                         .clickable { repositoryId = repository.id }
@@ -5664,15 +5690,6 @@ private fun NewSessionDialog(
                         }
                     }
                 }
-                if (models.isNotEmpty()) {
-                    NewSessionOptionMenu("Model", selectedModel?.displayName ?: "Default model", models.map { it.id to it.displayName }) { selected ->
-                        modelId = selected
-                        effort = models.firstOrNull { it.id == selected }?.let { compatibleEffort(it, null) }
-                    }
-                }
-                if (!selectedModel?.reasoningEfforts.isNullOrEmpty()) {
-                    NewSessionOptionMenu("Reasoning", effort?.replaceFirstChar { it.uppercase() } ?: "Default", selectedModel.reasoningEfforts.map { it to it.replaceFirstChar { character -> character.uppercase() } }) { effort = it }
-                }
                 if (accessLevels.isNotEmpty()) {
                     val selectedAccess = accessLevels.firstOrNull { it.id == accessLevel }
                     NewSessionOptionMenu("Access", selectedAccess?.displayName ?: "Default access", accessLevels.map { it.id to it.displayName }) { accessLevel = it }
@@ -5683,6 +5700,15 @@ private fun NewSessionDialog(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
+                }
+                if (models.isNotEmpty()) {
+                    NewSessionOptionMenu("Model", selectedModel?.displayName ?: "Default model", models.map { it.id to it.displayName }) { selected ->
+                        modelId = selected
+                        effort = models.firstOrNull { it.id == selected }?.let { compatibleEffort(it, null) }
+                    }
+                }
+                if (!selectedModel?.reasoningEfforts.isNullOrEmpty()) {
+                    NewSessionOptionMenu("Reasoning", effort?.replaceFirstChar { it.uppercase() } ?: "Default", selectedModel.reasoningEfforts.map { it to it.replaceFirstChar { character -> character.uppercase() } }) { effort = it }
                 }
             }
         },
