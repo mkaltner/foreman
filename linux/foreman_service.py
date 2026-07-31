@@ -1074,7 +1074,24 @@ class Foreman:
         if message_type == "session.start":
             repository_id = required_text(payload, "repositoryId", 500)
             repository = self.resolve_repository(repository_id)
+            model_id, effort = await self.route(payload)
+            selected_access_level = await self.access_level(payload)
             thread = await self.codex.start_thread(str(repository))
+            if any((model_id, effort, selected_access_level)):
+                await self.codex.update_thread_settings(
+                    thread["id"],
+                    model_id,
+                    effort,
+                    selected_access_level,
+                )
+                thread = {
+                    **thread,
+                    "_foremanModel": model_id or thread.get("_foremanModel"),
+                    "_foremanReasoningEffort": effort
+                    or thread.get("_foremanReasoningEffort"),
+                    "_foremanAccessLevel": selected_access_level
+                    or thread.get("_foremanAccessLevel"),
+                }
             client.subscriptions.add(thread["id"])
             projected = self.projected_session(thread, True)
             await self.broadcast_lifecycle(thread["id"], "created", projected)
@@ -1427,7 +1444,11 @@ class Foreman:
             path.relative_to(self.repository_root)
         except ValueError as error:
             raise ValueError("repository is outside configured root") from error
-        if not path.is_dir() or not ((path / ".git").exists()):
+        if not path.is_dir():
+            raise ValueError("repository was not found")
+        if path == self.repository_root:
+            return path
+        if not (path / ".git").exists():
             raise ValueError("repository was not found")
         return path
 

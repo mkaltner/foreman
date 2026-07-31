@@ -2190,14 +2190,24 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun startSession(repository: RepositoryInfo) {
+    fun startSession(
+        repositoryId: String,
+        model: String?,
+        reasoningEffort: String?,
+        accessLevel: String?,
+    ) {
         if (state.value.submitting) return
         viewModelScope.launch {
             state.update { it.copy(submitting = true, showNewSession = false, error = null) }
             runCatching {
                 val response = client.request(
                     "session.start",
-                    buildJsonObject { put("repositoryId", repository.id) },
+                    buildJsonObject {
+                        put("repositoryId", repositoryId)
+                        model?.let { put("model", it) }
+                        reasoningEffort?.let { put("reasoningEffort", it) }
+                        accessLevel?.let { put("accessLevel", it) }
+                    },
                 )
                 val created =
                     json.decodeFromJsonElement<SessionSummary>(
@@ -2211,6 +2221,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         sessions =
                             listOf(created) +
                                 it.sessions.filterNot { session -> session.id == created.id },
+                        composerAccessLevel = created.accessLevel ?: accessLevel,
+                        composerModel = created.model ?: model,
+                        composerEffort = created.reasoningEffort ?: reasoningEffort,
                         screen = Screen.Detail,
                     )
                 }
@@ -3666,9 +3679,15 @@ private fun SessionsScreen(
     }
     if (state.showNewSession) {
         NewSessionDialog(
-            state.repositories,
+            repositories = state.repositories,
+            repositoryRoot = state.repositoryRoot,
+            models = state.models,
+            accessLevels = state.accessLevels,
+            initialModel = state.composerModel,
+            initialEffort = state.composerEffort,
+            initialAccessLevel = state.composerAccessLevel,
             onDismiss = { viewModel.setNewSession(false) },
-            onSelect = viewModel::startSession,
+            onStart = viewModel::startSession,
         )
     }
     if (state.showSearchFilters) {
@@ -5574,36 +5593,136 @@ private fun ErrorText(message: String?, modifier: Modifier = Modifier) {
 @Composable
 private fun NewSessionDialog(
     repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
+    models: List<ModelInfo>,
+    accessLevels: List<AccessLevelInfo>,
+    initialModel: String?,
+    initialEffort: String?,
+    initialAccessLevel: String?,
     onDismiss: () -> Unit,
-    onSelect: (RepositoryInfo) -> Unit,
+    onStart: (String, String?, String?, String?) -> Unit,
 ) {
+    var repositoryId by remember(repositories) { mutableStateOf(repositories.firstOrNull()?.id ?: ".") }
+    var modelId by remember(models, initialModel) {
+        mutableStateOf(models.firstOrNull { it.id == initialModel }?.id ?: models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id)
+    }
+    val selectedModel = models.firstOrNull { it.id == modelId }
+    var effort by remember(selectedModel, initialEffort) { mutableStateOf(selectedModel?.let { compatibleEffort(it, initialEffort) }) }
+    var accessLevel by remember(accessLevels, initialAccessLevel) {
+        mutableStateOf(accessLevels.firstOrNull { it.id == initialAccessLevel }?.id ?: accessLevels.firstOrNull { it.id == "ask" }?.id ?: accessLevels.firstOrNull()?.id)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New session") },
         text = {
-            if (repositories.isEmpty()) {
-                Text("No Git repositories found below the configured root.")
-            } else {
-                LazyColumn(Modifier.height(320.dp)) {
-                    items(repositories, key = { it.id }) { repository ->
-                        Column(
-                            Modifier.fillMaxWidth()
-                                .clickable { onSelect(repository) }
-                                .padding(vertical = 12.dp),
-                        ) {
-                            Text(repository.name, fontWeight = FontWeight.SemiBold)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (repositories.isEmpty()) {
+                    Surface(shape = RoundedCornerShape(10.dp), tonalElevation = 2.dp) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("No Git repositories yet", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "${repository.path} · ${repository.branch}" +
-                                    if (repository.dirty) " · dirty" else "",
+                                "Start in the configured workspace folder instead. You can initialize Git later if you need version control.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            if (repositoryRoot.isNotBlank()) {
+                                Text(
+                                    repositoryRoot,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
-                        HorizontalDivider()
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Repository", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LazyColumn(Modifier.height(160.dp)) {
+                            items(repositories, key = { it.id }) { repository ->
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable { repositoryId = repository.id }
+                                        .padding(vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(selected = repositoryId == repository.id, onClick = { repositoryId = repository.id })
+                                    Column(Modifier.weight(1f)) {
+                                        Text(repository.name, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            "${repository.path} · ${repository.branch}" + if (repository.dirty) " · dirty" else "",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                HorizontalDivider()
+                            }
+                        }
+                    }
+                }
+                if (models.isNotEmpty()) {
+                    NewSessionOptionMenu("Model", selectedModel?.displayName ?: "Default model", models.map { it.id to it.displayName }) { selected ->
+                        modelId = selected
+                        effort = models.firstOrNull { it.id == selected }?.let { compatibleEffort(it, null) }
+                    }
+                }
+                if (!selectedModel?.reasoningEfforts.isNullOrEmpty()) {
+                    NewSessionOptionMenu("Reasoning", effort?.replaceFirstChar { it.uppercase() } ?: "Default", selectedModel.reasoningEfforts.map { it to it.replaceFirstChar { character -> character.uppercase() } }) { effort = it }
+                }
+                if (accessLevels.isNotEmpty()) {
+                    val selectedAccess = accessLevels.firstOrNull { it.id == accessLevel }
+                    NewSessionOptionMenu("Access", selectedAccess?.displayName ?: "Default access", accessLevels.map { it.id to it.displayName }) { accessLevel = it }
+                    if (accessLevel == "full") {
+                        Text(
+                            "Full access allows commands outside the workspace without approval.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = {
+            TextButton(onClick = { onStart(repositoryId, modelId, effort, accessLevel) }) {
+                Text(if (repositories.isEmpty()) "Start in workspace" else "Create")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun NewSessionOptionMenu(
+    label: String,
+    selectedLabel: String,
+    options: List<Pair<String, String>>,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            FilledTonalButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { (id, optionLabel) ->
+                    DropdownMenuItem(
+                        text = { Text(optionLabel) },
+                        onClick = {
+                            onSelect(id)
+                            expanded = false
+                        },
+                        trailingIcon = {
+                            if (optionLabel == selectedLabel) Icon(Icons.Default.Check, contentDescription = "Selected")
+                        },
+                    )
+                }
+            }
+        }
+    }
 }

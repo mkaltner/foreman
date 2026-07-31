@@ -1623,6 +1623,36 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )["session"]
         self.assertEqual(started["messages"], [])
         self.assertNotIn(started["id"], self.app.codex.reads)
+        root_started = (
+            await self.request(
+                "session.start",
+                {
+                    "repositoryId": ".",
+                    "model": "model-test",
+                    "reasoningEffort": "high",
+                    "accessLevel": "ask",
+                },
+            )
+        )["session"]
+        self.assertEqual(root_started["repository"], str(self.repository_root.resolve()))
+        self.assertEqual(root_started["model"], "model-test")
+        self.assertEqual(root_started["reasoningEffort"], "high")
+        self.assertEqual(root_started["accessLevel"], "ask")
+        self.assertEqual(
+            self.app.codex.settings_updates[-1],
+            {
+                "threadId": root_started["id"],
+                "model": "model-test",
+                "effort": "high",
+                "accessLevel": "ask",
+            },
+        )
+        plain_directory = self.repository_root / "not-a-repository"
+        plain_directory.mkdir()
+        invalid_workspace = await self.request_error(
+            "session.start", {"repositoryId": plain_directory.name}
+        )
+        self.assertIn("repository was not found", invalid_workspace["message"])
         created = next(
             message
             for message in self.unsolicited

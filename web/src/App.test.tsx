@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, RouteSelect, SetupView } from "./App";
+import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SetupView } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
@@ -319,5 +319,47 @@ describe("conversation activity detail", () => {
     const { container } = render(<ConversationView {...props} activityDetail="full" />);
     expect(container.querySelector("details.collapsed-activity")).toBeNull();
     expect(container.querySelectorAll(".transcript > .tool-card")).toHaveLength(3);
+  });
+});
+
+describe("NewSessionDialog", () => {
+  const routeProps = {
+    models: [{ id: "model-test", displayName: "Model Test", reasoningEfforts: ["low", "high"], defaultReasoningEffort: "high", visible: true, isDefault: true }],
+    accessLevels: [{ id: "ask", displayName: "Ask for approval" }, { id: "full", displayName: "Full access" }],
+  };
+
+  it("starts in the configured workspace when no repositories exist", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    render(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+
+    expect(screen.getByText("No Git repositories yet")).toBeInTheDocument();
+    expect(screen.getByText("/projects")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start in workspace" }));
+
+    expect(create).toHaveBeenCalledWith({
+      repositoryId: ".",
+      model: "model-test",
+      reasoningEffort: "high",
+      accessLevel: "ask",
+    });
+  });
+
+  it("requires a repository selection and carries changed route settings", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    render(<NewSessionDialog repositories={[{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+
+    const button = screen.getByRole("button", { name: "Create" });
+    expect(button).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "foreman" } });
+    fireEvent.change(screen.getByLabelText("Reasoning"), { target: { value: "low" } });
+    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "full" } });
+    fireEvent.click(button);
+
+    expect(create).toHaveBeenCalledWith({
+      repositoryId: "foreman",
+      model: "model-test",
+      reasoningEffort: "low",
+      accessLevel: "full",
+    });
   });
 });
