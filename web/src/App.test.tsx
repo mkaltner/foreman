@@ -64,11 +64,6 @@ describe("host navigation history", () => {
   beforeEach(() => {
     localStorage.clear();
     window.history.replaceState(null, "", "/");
-    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }));
     clientMock.pair.mockReset().mockResolvedValue("paired-token");
     clientMock.start.mockReset().mockResolvedValue(undefined);
     clientMock.request.mockReset().mockResolvedValue({});
@@ -77,7 +72,6 @@ describe("host navigation history", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
     localStorage.clear();
     window.history.replaceState(null, "", "/");
   });
