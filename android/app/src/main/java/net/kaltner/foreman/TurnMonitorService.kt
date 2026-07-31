@@ -75,6 +75,10 @@ internal class MonitorLifecycle(
             monitored[sessionId] = true
             return null
         }
+        if (status in setOf("resumable", "unavailable")) {
+            monitored.remove(sessionId)
+            return null
+        }
         if (monitored[sessionId] != true) return null
         val outcome = monitorOutcome(status) ?: return null
         if (status != "waiting") monitored.remove(sessionId)
@@ -161,15 +165,18 @@ class TurnMonitorService : Service() {
         }
 
         if (intent?.action == ACTION_CANCEL) {
-            intent.getStringExtra(EXTRA_SESSION_ID)?.let {
-                lifecycle.cancel(it)
-                clearTurnState(it)
+            intent.getStringExtra(EXTRA_SESSION_ID)?.let { sessionId ->
+                val provider = intent.getStringExtra(EXTRA_PROVIDER) ?: PROVIDER_CODEX
+                val key = providerSessionKey(provider, sessionId)
+                lifecycle.cancel(key)
+                clearTurnState(key)
             }
             if (lifecycle.isEmpty()) stopMonitoring() else showForeground(reconnecting = false)
             return START_NOT_STICKY
         }
 
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
+        val provider = intent?.getStringExtra(EXTRA_PROVIDER) ?: PROVIDER_CODEX
         val hostId = intent?.getStringExtra(EXTRA_HOST_ID)
         if (intent?.action != ACTION_MONITOR || sessionId.isNullOrBlank() || hostId.isNullOrBlank()) {
             stopMonitoring()
@@ -184,20 +191,21 @@ class TurnMonitorService : Service() {
             connected = false
         }
         monitoredHostId = hostId
+        val sessionKey = providerSessionKey(provider, sessionId)
 
         val active = intent.getBooleanExtra(EXTRA_ACTIVE, false)
-        intent.getStringExtra(EXTRA_REPOSITORY_ID)?.let { repositoryIdentities[sessionId] = it }
-        lifecycle.monitor(sessionId, active)
+        intent.getStringExtra(EXTRA_REPOSITORY_ID)?.let { repositoryIdentities[sessionKey] = it }
+        lifecycle.monitor(sessionKey, active)
         if (active) {
             recordActiveTurn(
-                sessionId,
+                sessionKey,
                 intent.getStringExtra(EXTRA_TURN_ID),
                 intent.getLongExtra(EXTRA_STARTED_AT, 0L).takeIf { it > 0L },
             )
         }
         showForeground(reconnecting = false)
         scope.launch {
-            runCatching { connectAndSync(setOf(sessionId)) }
+            runCatching { connectAndSync(setOf(sessionKey)) }
                 .onFailure { scheduleReconnect() }
         }
         return START_REDELIVER_INTENT
@@ -226,38 +234,50 @@ class TurnMonitorService : Service() {
                 connected = true
             }
 
-            sessionIds.filter(lifecycle::contains).forEach { sessionId ->
+            sessionIds.filter(lifecycle::contains).forEach { sessionKey ->
+                val (provider, sessionId) = parseProviderSessionKey(sessionKey) ?: return@forEach
+                val repositoryId = repositoryIdentities[sessionKey].orEmpty().ifBlank { "." }
                 client.request(
-                    "session.subscribe",
-                    buildJsonObject { put("sessionId", sessionId) },
+                    if (provider == PROVIDER_CLAUDE_CODE) "provider.session.subscribe" else "session.subscribe",
+                    buildJsonObject {
+                        if (provider == PROVIDER_CLAUDE_CODE) put("provider", provider)
+                        put("sessionId", sessionId)
+                    },
                 )
                 val response =
                     client.request(
-                        "session.read",
-                        buildJsonObject { put("sessionId", sessionId) },
+                        if (provider == PROVIDER_CLAUDE_CODE) "provider.session.read" else "session.read",
+                        buildJsonObject {
+                            if (provider == PROVIDER_CLAUDE_CODE) {
+                                put("provider", provider)
+                                put("repositoryId", repositoryId)
+                            }
+                            put("sessionId", sessionId)
+                        },
                     )
                 val session = response.payload["session"]?.jsonObject ?: return@forEach
                 val status = session["status"]?.jsonPrimitive?.content ?: return@forEach
                 session["repository"]?.jsonPrimitive?.content?.let {
-                    if (repositoryIdentities[sessionId].isNullOrBlank()) {
-                        repositoryIdentities[sessionId] = normalizeRepositoryIdentity(it)
+                    if (repositoryIdentities[sessionKey].isNullOrBlank()) {
+                        repositoryIdentities[sessionKey] = normalizeRepositoryIdentity(it)
                     }
                 }
                 if (status == "working") {
                     recordActiveTurn(
-                        sessionId,
+                        sessionKey,
                         session["activeTurnId"]?.jsonPrimitive?.content,
                         session["activeTurnStartedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
                     )
                 }
-                lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
+                lifecycle.status(sessionKey, status)?.let { finishMonitoring(sessionKey, it) }
+                if (!lifecycle.contains(sessionKey)) clearTurnState(sessionKey)
             }
             if ("approvals" in client.capabilities) {
                 client.request("approval.list").payload["approvals"]?.jsonArray?.forEach { raw ->
                     val approval = raw.jsonObject
                     val approvalId = approval["id"]?.jsonPrimitive?.content ?: return@forEach
                     val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return@forEach
-                    notifyApproval(sessionId, approvalId)
+                    notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), approvalId)
                 }
             }
             if ("structuredInput" in client.capabilities) {
@@ -265,11 +285,11 @@ class TurnMonitorService : Service() {
                     val input = raw.jsonObject
                     val inputId = input["id"]?.jsonPrimitive?.content ?: return@forEach
                     val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return@forEach
-                    notifyApproval(sessionId, inputId)
+                    notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), inputId)
                 }
             }
             lifecycle.resetReconnectDelay()
-            if (!lifecycle.isEmpty()) showForeground(reconnecting = false)
+            if (lifecycle.isEmpty()) stopMonitoring() else showForeground(reconnecting = false)
         }
     }
 
@@ -282,7 +302,7 @@ class TurnMonitorService : Service() {
                 approvalNotifications.remove(approvalId)
                 monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, approvalId)) }
             } else {
-                notifyApproval(sessionId, approvalId)
+                notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), approvalId)
             }
             return
         }
@@ -294,25 +314,31 @@ class TurnMonitorService : Service() {
                 approvalNotifications.remove(inputId)
                 monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, inputId)) }
             } else {
-                notifyApproval(sessionId, inputId)
+                notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), inputId)
             }
             return
         }
         if (message.type != "session.event") return
+        val provider = message.payload["provider"]?.jsonPrimitive?.content ?: PROVIDER_CODEX
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
-        if (!lifecycle.contains(sessionId)) return
+        val sessionKey = providerSessionKey(provider, sessionId)
+        if (!lifecycle.contains(sessionKey)) return
         val event = message.eventObject()
         if (event["kind"]?.jsonPrimitive?.content != "status") return
         val status = event["status"]?.jsonPrimitive?.content ?: return
         if (status == "working") {
             recordActiveTurn(
-                sessionId,
+                sessionKey,
                 event["turnId"]?.jsonPrimitive?.content,
                 event["startedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
             )
         }
-        lifecycle.status(sessionId, status)?.let { finishMonitoring(sessionId, it) }
-        if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionId)
+        lifecycle.status(sessionKey, status)?.let { finishMonitoring(sessionKey, it) }
+        if (!lifecycle.contains(sessionKey)) {
+            clearTurnState(sessionKey)
+            if (lifecycle.isEmpty()) stopMonitoring()
+        }
+        if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionKey)
     }
 
     @Synchronized
@@ -362,12 +388,14 @@ class TurnMonitorService : Service() {
         if (!preferences.shouldNotify(NotificationEvent.Approval, repositoryIdentities[sessionId].orEmpty())) return
         notificationManager.cancel(resultNotificationId(hostId, sessionId))
         val outcome = approvalNotificationText()
+        val (provider, rawSessionId) =
+            parseProviderSessionKey(sessionId) ?: (PROVIDER_CODEX to sessionId)
         val notification =
             notificationBuilder(RESULT_CHANNEL)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(outcome.title)
                 .setContentText(outcome.detail)
-                .setContentIntent(openSessionIntent(hostId, sessionId, approvalId))
+                .setContentIntent(openSessionIntent(hostId, provider, rawSessionId, approvalId))
                 .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(true)
@@ -486,15 +514,18 @@ class TurnMonitorService : Service() {
         }
     }
 
-    private fun resultNotification(hostId: String, sessionId: String, outcome: MonitorOutcome): Notification =
-        notificationBuilder(RESULT_CHANNEL)
+    private fun resultNotification(hostId: String, sessionId: String, outcome: MonitorOutcome): Notification {
+        val (provider, rawSessionId) =
+            parseProviderSessionKey(sessionId) ?: (PROVIDER_CODEX to sessionId)
+        return notificationBuilder(RESULT_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(outcome.title)
             .setContentText(outcome.detail)
-            .setContentIntent(openSessionIntent(hostId, sessionId))
+            .setContentIntent(openSessionIntent(hostId, provider, rawSessionId))
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .build()
+    }
 
     @Suppress("DEPRECATION")
     private fun notificationBuilder(channelId: String): Notification.Builder =
@@ -514,12 +545,18 @@ class TurnMonitorService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun openSessionIntent(hostId: String, sessionId: String, approvalId: String? = null): PendingIntent =
+    private fun openSessionIntent(
+        hostId: String,
+        provider: String,
+        sessionId: String,
+        approvalId: String? = null,
+    ): PendingIntent =
         PendingIntent.getActivity(
             this,
-            "$hostId:$sessionId".hashCode(),
+            "$hostId:$provider:$sessionId".hashCode(),
             Intent(this, MainActivity::class.java)
                 .putExtra(EXTRA_HOST_ID, hostId)
+                .putExtra(EXTRA_PROVIDER, provider)
                 .putExtra(EXTRA_SESSION_ID, sessionId)
                 .apply { approvalId?.let { putExtra(EXTRA_APPROVAL_ID, it) } }
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -552,7 +589,7 @@ class TurnMonitorService : Service() {
                 "Background monitoring",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Shows when Foreman is monitoring active Codex turns"
+                description = "Shows when Foreman is monitoring active turns"
                 setShowBadge(false)
             },
         )
@@ -562,7 +599,7 @@ class TurnMonitorService : Service() {
                 "Turn updates",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "Alerts when a monitored Codex turn finishes or needs attention"
+                description = "Alerts when a monitored turn finishes or needs attention"
             },
         )
     }
@@ -573,6 +610,7 @@ class TurnMonitorService : Service() {
     companion object {
         const val EXTRA_SESSION_ID = "net.kaltner.foreman.extra.SESSION_ID"
         const val EXTRA_HOST_ID = "net.kaltner.foreman.extra.HOST_ID"
+        const val EXTRA_PROVIDER = "net.kaltner.foreman.extra.PROVIDER"
         const val EXTRA_APPROVAL_ID = "net.kaltner.foreman.extra.APPROVAL_ID"
         private const val EXTRA_ACTIVE = "net.kaltner.foreman.extra.ACTIVE"
         private const val EXTRA_REPOSITORY_ID = "net.kaltner.foreman.extra.REPOSITORY_ID"
@@ -594,11 +632,13 @@ class TurnMonitorService : Service() {
             repositoryId: String = "",
             turnId: String? = null,
             startedAt: Long? = null,
+            provider: String = PROVIDER_CODEX,
         ) {
             val intent =
                 Intent(context, TurnMonitorService::class.java)
                     .setAction(ACTION_MONITOR)
                     .putExtra(EXTRA_HOST_ID, hostId)
+                    .putExtra(EXTRA_PROVIDER, provider)
                     .putExtra(EXTRA_SESSION_ID, sessionId)
                     .putExtra(EXTRA_ACTIVE, active)
                     .putExtra(EXTRA_REPOSITORY_ID, repositoryId)
@@ -613,10 +653,15 @@ class TurnMonitorService : Service() {
             }
         }
 
-        fun cancel(context: Context, sessionId: String) {
+        fun cancel(
+            context: Context,
+            sessionId: String,
+            provider: String = PROVIDER_CODEX,
+        ) {
             context.startService(
                 Intent(context, TurnMonitorService::class.java)
                     .setAction(ACTION_CANCEL)
+                    .putExtra(EXTRA_PROVIDER, provider)
                     .putExtra(EXTRA_SESSION_ID, sessionId),
             )
         }
@@ -633,13 +678,17 @@ class TurnMonitorService : Service() {
         }
 
         private fun resultNotificationId(hostId: String, sessionId: String): Int =
-            2_000 + ("$hostId:$sessionId".hashCode() and 0x00ffffff)
+            parseProviderSessionKey(sessionId)?.let { (provider, rawSessionId) ->
+                providerNotificationId(hostId, provider, rawSessionId)
+            } ?: providerNotificationId(hostId, PROVIDER_CODEX, sessionId)
 
         private fun approvalNotificationId(hostId: String, approvalId: String): Int =
             30_000_000 + ("$hostId:$approvalId".hashCode() and 0x00ffffff)
 
         private fun longRunningNotificationId(hostId: String, sessionId: String): Int =
-            60_000_000 + ("$hostId:$sessionId".hashCode() and 0x00ffffff)
+            parseProviderSessionKey(sessionId)?.let { (provider, rawSessionId) ->
+                providerNotificationId(hostId, provider, rawSessionId, 60_000_000)
+            } ?: providerNotificationId(hostId, PROVIDER_CODEX, sessionId, 60_000_000)
     }
 }
 
