@@ -67,7 +67,8 @@ available.” A `dontAsk` denial appears as a bounded denied tool card. Claude w
 approvals, transcript search, images, background/browser notifications, Android
 support, and cross-provider search are deferred.
 
-Maintainers can repeat the authenticated disposable proof explicitly:
+From a source checkout, maintainers can repeat the authenticated disposable
+proof explicitly:
 
 ```sh
 python3 scripts/claude_adapter_proof.py --acknowledge-live-costs

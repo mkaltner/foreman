@@ -94,6 +94,9 @@ install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
 install -m 644 "$project_dir/linux/claude_code.py" "$staging_dir/claude_code.py"
 install -m 644 "$project_dir/linux/session_identity.py" "$staging_dir/session_identity.py"
 cp -a "$project_dir/linux/claude_bridge" "$staging_dir/claude_bridge"
+rm -f -- \
+  "$staging_dir/claude_bridge/bridge.test.mjs" \
+  "$staging_dir/claude_bridge/test_fake_sdk.mjs"
 if [[ -L "$staging_dir/claude_bridge/node_modules" ]]; then
   rm -f -- "$staging_dir/claude_bridge/node_modules"
 fi

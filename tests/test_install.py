@@ -205,6 +205,8 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((install_dir / "session_identity.py").is_file())
             self.assertTrue((install_dir / "claude_bridge/bridge.mjs").is_file())
             self.assertTrue((install_dir / "claude_bridge/package-lock.json").is_file())
+            self.assertFalse((install_dir / "claude_bridge/bridge.test.mjs").exists())
+            self.assertFalse((install_dir / "claude_bridge/test_fake_sdk.mjs").exists())
             self.assertEqual(
                 (
                     install_dir
