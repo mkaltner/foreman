@@ -114,7 +114,7 @@ jobs:
           grep -Fq "versionCode='$expected_code'" <<<"$badging" || fail "APK version code does not match release.properties"
           signing="$("$apksigner_path" verify --verbose --print-certs "$apk")"
           grep -Fq 'Verifies' <<<"$signing" || fail "APK signature verification failed"
-          actual_cert="$(sed -nE 's/^Signer #1 certificate SHA-256 digest:[[:space:]]*([0-9A-Fa-f]+)[[:space:]]*$/\1/p' <<<"$signing" | tr 'A-F' 'a-f')"
+          actual_cert="$(grep -Eio '[0-9A-Fa-f]{64}' <<<"$signing" | sed -n '1p' | tr 'A-F' 'a-f')"
           [[ -n "$actual_cert" && "$actual_cert" == "$expected_cert" ]] || fail "APK signing certificate does not match release.properties"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
           tar --exclude='__pycache__' --exclude='*.py[co]' \
