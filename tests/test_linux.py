@@ -364,6 +364,7 @@ class FakeClaude:
         self.starts: list[dict[str, Any]] = []
         self.resumes: list[dict[str, Any]] = []
         self.interrupts: list[str] = []
+        self.deletions: list[dict[str, str]] = []
         self.status_value = {
             "provider": "claude-code",
             "installed": True,
@@ -458,6 +459,12 @@ class FakeClaude:
     async def interrupt(self, session_id: str) -> dict[str, Any]:
         self.interrupts.append(session_id)
         return {"sessionId": session_id, "interrupted": True}
+
+    async def delete_session(
+        self, session_id: str, cwd: str | Path
+    ) -> dict[str, Any]:
+        self.deletions.append({"sessionId": session_id, "cwd": str(cwd)})
+        return {"sessionId": session_id, "deleted": True}
 
 
 class ProtocolTests(unittest.TestCase):
@@ -638,6 +645,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(claude_provider["available"])
             self.assertEqual(claude_provider["cliVersion"], "2.1.220")
             self.assertIn("external-running-no-live-attach", claude_provider["limitations"])
+            self.assertIn("session.delete", claude_provider["capabilities"])
 
             models = await app.dispatch(
                 client,
@@ -756,6 +764,38 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.claude_session_overlays["external-session"]["state"],
                 "interrupted",
             )
+
+            with self.assertRaisesRegex(ValueError, "confirm=true"):
+                await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.session.delete",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": "external-session",
+                            "repositoryId": ".",
+                        },
+                    },
+                )
+            deleted = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.delete",
+                    "payload": {
+                        "provider": "claude-code",
+                        "sessionId": "external-session",
+                        "repositoryId": ".",
+                        "confirm": True,
+                    },
+                },
+            )
+            self.assertTrue(deleted["deleted"])
+            self.assertEqual(
+                claude.deletions,
+                [{"sessionId": "external-session", "cwd": str(root)}],
+            )
+            self.assertNotIn("external-session", app.claude_session_overlays)
+            self.assertNotIn("external-session", app.claude_session_messages)
 
             await app.claude_event(
                 {

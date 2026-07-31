@@ -46,10 +46,14 @@ startup intact. Local status is available with `foreman claude-status`.
 The authenticated protocol-v1 provider catalog reports availability, CLI/SDK
 versions, capabilities, and explicit limitations. Web sessions use the compound
 `hostId + provider + sessionId` identity and durable provider routes. The web
-client can list/read/start/resume sessions, stream text and safe Read/Bash/edit/
-search/other tool cards, interrupt a still-active Foreman-owned query, and choose
-`sonnet`, `haiku`, or one exact SDK permission mode. Claude model aliases are an
-explicit adapter-supported list, not dynamic enumeration.
+client can list/read/start/resume/delete sessions, stream text and safe
+Read/Bash/edit/search/other tool cards, interrupt a still-active Foreman-owned
+query, and choose `sonnet`, `haiku`, or one exact SDK permission mode. Deletion
+uses the official SDK, validates the exact workspace, requires explicit
+confirmation, and is unavailable while a Foreman-owned query is active. Claude
+Code has no SDK archive/unarchive operation, so the web UI does not show a fake
+Claude archive action. Claude model aliases are an explicit adapter-supported
+list, not dynamic enumeration.
 
 The user-visible states are `working`, `completed`, `failed`, `interrupted`, and
 `resumable`; unavailable adapter entries use `unavailable`. `managed` means

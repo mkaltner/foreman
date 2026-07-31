@@ -75,6 +75,7 @@ def unavailable_status(limitation: str) -> dict[str, Any]:
             "start": False,
             "resume": False,
             "stream": False,
+            "delete": False,
             "interruptManaged": False,
             "liveAttachExternal": False,
             "approveExternal": False,
@@ -215,6 +216,16 @@ class ClaudeCode:
 
     async def interrupt(self, session_id: str) -> dict[str, Any]:
         return await self._request("interrupt", {"sessionId": session_id}, timeout=15)
+
+    async def delete_session(
+        self, session_id: str, cwd: str | Path
+    ) -> dict[str, Any]:
+        directory = self._cwd(cwd)
+        return await self._request(
+            "delete",
+            {"sessionId": session_id, "cwd": str(directory)},
+            timeout=30,
+        )
 
     async def answer_approval(self, request_id: str, allow: bool) -> dict[str, Any]:
         result = await self._request(

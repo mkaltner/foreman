@@ -59,7 +59,9 @@ Linux files:
 The React/TypeScript SPA under `web/` uses native WebSocket and local component
 state. It reloads provider-authoritative sessions and history after reconnect,
 resubscribes to the open compound identity, and never replays prompt, steer,
-interrupt, archive, or delete requests. Durable routes, selection, drafts, and
+interrupt, archive, or delete requests. Claude deletion is provider-aware and
+uses the official SDK; Claude archive is absent because the SDK has no matching
+operation. Durable routes, selection, drafts, and
 scroll state use `hostId + provider + sessionId`; Claude and Codex IDs are never
 treated as the same namespace. Its committed `web/dist` output is copied into
 the installed data directory. Node is optional at runtime and required only for

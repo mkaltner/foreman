@@ -1,4 +1,5 @@
 let sequence = 0;
+export const deletedSessions = [];
 
 export async function listSessions({ dir }) {
   return [
@@ -59,6 +60,10 @@ export async function getSessionMessages(sessionId) {
       },
     },
   ];
+}
+
+export async function deleteSession(sessionId, { dir }) {
+  deletedSessions.push({ sessionId, dir });
 }
 
 export function query({ prompt, options }) {

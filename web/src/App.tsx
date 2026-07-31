@@ -133,6 +133,33 @@ export type View = "dashboard" | "sessions" | "detail" | "settings";
 export function appShellClassName(view: View): string {
   return view === "settings" ? "app-shell settings-shell" : "app-shell";
 }
+
+export function sessionActionRequest(
+  action: "archive" | "delete",
+  session: SessionSummary,
+): { type: string; payload: Record<string, unknown> } {
+  const provider = sessionProvider(session);
+  if (provider === "claude-code") {
+    if (action !== "delete") throw new Error("Claude Code does not support session archive");
+    if (!session.repositoryId) throw new Error("Claude session workspace is unavailable");
+    return {
+      type: "provider.session.delete",
+      payload: {
+        provider,
+        sessionId: session.id,
+        repositoryId: session.repositoryId,
+        confirm: true,
+      },
+    };
+  }
+  return {
+    type: `session.${action}`,
+    payload: {
+      sessionId: session.id,
+      ...(action === "delete" ? { confirm: true } : {}),
+    },
+  };
+}
 type PairingSettings = Omit<NewStoredHost, "deviceToken"> & { deviceName: string };
 
 function App() {
@@ -1367,23 +1394,27 @@ function App() {
             onAction={async (action, session) => {
               if (!confirmSessionAction(action, session.title)) return;
               try {
-                await client.request(`session.${action}`, {
-                  sessionId: session.id,
-                  ...(action === "delete" ? { confirm: true } : {}),
+                const request = sessionActionRequest(action, session);
+                await client.request(request.type, request.payload);
+                const provider = sessionProvider(session);
+                const identityKey = providerSessionKey(provider, session.id);
+                setSessions((previous) => {
+                  const next = previous.filter((item) => providerSessionKey(sessionProvider(item), item.id) !== identityKey);
+                  sessionsRef.current = next;
+                  return next;
                 });
-                setSessions((previous) => previous.filter((item) => item.id !== session.id));
-                setSearchResults((previous) => previous.filter(({ session: result }) => result.id !== session.id));
+                setSearchResults((previous) => previous.filter(({ session: result }) => providerSessionKey(sessionProvider(result), result.id) !== identityKey));
                 if (action === "delete") {
                   setOrganization((previous) => {
                     const next = {
-                      pinnedIds: previous.pinnedIds.filter((id) => id !== session.id),
-                      hiddenIds: previous.hiddenIds.filter((id) => id !== session.id),
+                      pinnedIds: previous.pinnedIds.filter((id) => id !== identityKey),
+                      hiddenIds: previous.hiddenIds.filter((id) => id !== identityKey),
                     };
                     if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
                     return next;
                   });
                 }
-                if (selectedIdRef.current === session.id && selectedProviderRef.current === "codex") {
+                if (selectedIdRef.current === session.id && selectedProviderRef.current === provider) {
                   selectedIdRef.current = null;
                   selectedProviderRef.current = "codex";
                   setSelectedId(null);
@@ -1576,7 +1607,7 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
   </div>;
 }
 
-function SessionList({
+export function SessionList({
   results,
   filters,
   repositoryOptions,
@@ -1653,7 +1684,7 @@ function SessionList({
                       {sessionProvider(session) === "codex" && <button className={results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin("codex", session.id); }} aria-label={`${results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "★" : "☆"}</button>}
                       {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onHide("codex", session.id); }}>Hide</button>}
                       {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
-                      {sessionProvider(session) === "codex" && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
+                      {(sessionProvider(session) === "codex" || session.capabilities?.includes("session.delete")) && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
                     </span>
                   </div>
                 </article>

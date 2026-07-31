@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SetupView } from "./App";
+import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
+import { DEFAULT_SESSION_FILTERS } from "./session-search";
 import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
 
 const clientMock = vi.hoisted(() => ({
@@ -155,6 +156,59 @@ describe("page scrolling", () => {
     expect(appShellClassName("dashboard")).toBe("app-shell");
     expect(appShellClassName("sessions")).toBe("app-shell");
     expect(appShellClassName("detail")).toBe("app-shell");
+  });
+});
+
+describe("Claude session deletion", () => {
+  const session: SessionSummary = {
+    provider: "claude-code",
+    id: "claude-session",
+    sessionId: "claude-session",
+    repositoryId: "foreman",
+    repository: "/projects/foreman",
+    title: "Claude work",
+    status: "resumable",
+    source: "external",
+    capabilities: ["session.read", "session.resume", "session.delete"],
+  };
+
+  it("uses the provider-aware destructive request with exact workspace identity", () => {
+    expect(sessionActionRequest("delete", session)).toEqual({
+      type: "provider.session.delete",
+      payload: {
+        provider: "claude-code",
+        sessionId: "claude-session",
+        repositoryId: "foreman",
+        confirm: true,
+      },
+    });
+    expect(() => sessionActionRequest("archive", session)).toThrow(/does not support session archive/i);
+  });
+
+  it("shows Delete but does not invent a Claude archive action", () => {
+    const onAction = vi.fn();
+    render(<SessionList
+      results={[{ session, pinned: false, hidden: false, matches: [] }]}
+      filters={DEFAULT_SESSION_FILTERS}
+      repositoryOptions={[]}
+      searchLoading={false}
+      searchError=""
+      selectedId={null}
+      selectedProvider="codex"
+      disabled={false}
+      onOpen={vi.fn()}
+      onRefresh={vi.fn()}
+      onNew={vi.fn()}
+      onAction={onAction}
+      onFilters={vi.fn()}
+      onSearchNow={vi.fn()}
+      onPin={vi.fn()}
+      onHide={vi.fn()}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onAction).toHaveBeenCalledWith("delete", session);
   });
 });
 

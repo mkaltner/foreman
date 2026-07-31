@@ -57,7 +57,7 @@ version 1:
 - `provider.list`;
 - `provider.session.list`, `provider.session.read`, `provider.session.start`,
   `provider.session.resume`, `provider.session.subscribe`,
-  `provider.session.unsubscribe`;
+  `provider.session.unsubscribe`, `provider.session.delete`;
 - `provider.turn.prompt`, `provider.turn.interrupt`;
 - `provider.model.list`, `provider.permission.list`.
 
@@ -95,9 +95,13 @@ Claude `provider.session.list` discovers official SDK session metadata without
 loading every transcript. `provider.session.read` uses official bounded history
 access and projects only visible user and assistant messages, safe tool cards,
 permission markers, and terminal query state. Hidden reasoning, unrestricted SDK
-objects, raw tool input/output, and credentials are excluded. Claude session
-search, images, notification events, approval responses, archive, and delete are
-not supported by this surface.
+objects, raw tool input/output, and credentials are excluded. Claude
+`provider.session.delete` requires `confirm:true` plus the exact repository ID,
+rejects an active Foreman-owned query, and uses the official SDK deletion API.
+It permanently removes managed or external resumable history and its
+subagent-transcript directory. The SDK has no archive/unarchive operation, so
+Foreman does not present a Claude archive action. Claude session search, images,
+notification events, and approval responses are not supported by this surface.
 
 Claude model listing is an adapter-supported, non-dynamic list containing
 `sonnet` and `haiku`. Permission listing returns the exact SDK values `default`,

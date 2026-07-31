@@ -569,6 +569,7 @@ class Foreman:
             "session.start",
             "session.resume",
             "session.subscribe",
+            "session.delete",
             "turn.prompt",
             "turn.interrupt",
             "model.select",
@@ -758,7 +759,7 @@ class Foreman:
             "interrupted",
         }:
             state = overlay["state"]
-        capabilities = ["session.read", "session.resume"]
+        capabilities = ["session.read", "session.resume", "session.delete"]
         if source == "managed":
             capabilities.append("turn.prompt")
         if state == "working":
@@ -820,20 +821,25 @@ class Foreman:
         return self.project_claude_session(item, True)
 
     async def broadcast_claude_lifecycle(
-        self, session_id: str, session_projection: dict[str, Any]
+        self,
+        session_id: str,
+        session_projection: dict[str, Any] | None = None,
+        action: str = "created",
     ) -> None:
+        event: dict[str, Any] = {
+            "kind": "lifecycle",
+            "action": action,
+            "observedAt": int(time.time()),
+        }
+        if session_projection is not None:
+            event["session"] = session_projection
         outgoing = {
             "version": VERSION,
             "type": "session.event",
             "payload": {
                 "provider": "claude-code",
                 "sessionId": session_id,
-                "event": {
-                    "kind": "lifecycle",
-                    "action": "created",
-                    "session": session_projection,
-                    "observedAt": int(time.time()),
-                },
+                "event": event,
             },
         }
         await asyncio.gather(
@@ -1787,6 +1793,36 @@ class Foreman:
             else:
                 client.subscriptions.discard(subscription)
             return {"provider": provider, "sessionId": session_id, "subscribed": subscribed}
+        if message_type == "provider.session.delete":
+            provider = self.required_provider(payload)
+            if provider != "claude-code":
+                raise CapabilityError("Use the compatible Codex session.delete operation")
+            session_id = required_text(payload, "sessionId", 160)
+            if payload.get("confirm") is not True:
+                raise ValueError("permanent deletion requires confirm=true")
+            repository_id = required_text(payload, "repositoryId", 500)
+            cwd = self.resolve_repository(repository_id)
+            overlay = self.claude_session_overlays.get(session_id, {})
+            if overlay.get("state") == "working" or overlay.get("activeTurnId"):
+                raise ValueError("Claude session is active; interrupt it before deletion")
+            await self.require_claude()
+            assert self.claude is not None
+            async with self.thread_lock(
+                self.provider_subscription(provider, session_id)
+            ):
+                await self.claude.delete_session(session_id, cwd)
+            subscription = self.provider_subscription(provider, session_id)
+            for connected in self.clients:
+                connected.subscriptions.discard(subscription)
+            self.claude_session_overlays.pop(session_id, None)
+            self.claude_session_cwds.pop(session_id, None)
+            self.claude_session_messages.pop(session_id, None)
+            await self.broadcast_claude_lifecycle(session_id, action="removed")
+            return {
+                "provider": provider,
+                "sessionId": session_id,
+                "deleted": True,
+            }
         if message_type == "provider.turn.interrupt":
             provider = self.required_provider(payload)
             if provider != "claude-code":

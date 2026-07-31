@@ -128,6 +128,7 @@ test("history projection stays below the bridge response limit and keeps recent 
 });
 
 test("start, model, permission callback, discovery, interrupt, and minimal mapping", async () => {
+  fakeSdk.deletedSessions.length = 0;
   const directory = await mkdtemp(join(tmpdir(), "foreman-claude-unit-"));
   const statePath = join(directory, "state.json");
   const events = [];
@@ -164,8 +165,17 @@ test("start, model, permission callback, discovery, interrupt, and minimal mappi
 
   const sleeping = await bridge.start({ cwd: directory, prompt: "sleep", permissionMode: "dontAsk" });
   await waitFor(() => messages.find((message) => message.event?.sessionId === sleeping.sessionId && message.event?.kind === "tool"));
+  await assert.rejects(
+    bridge.delete({ cwd: directory, sessionId: sleeping.sessionId }),
+    /active; interrupt it before deletion/i,
+  );
   await bridge.interrupt({ sessionId: sleeping.sessionId });
   await waitFor(() => messages.find((message) => message.event?.sessionId === sleeping.sessionId && message.event?.kind === "query.interrupted"));
+  const deleted = await bridge.delete({ cwd: directory, sessionId: sleeping.sessionId });
+  assert.deepEqual(deleted, { sessionId: sleeping.sessionId, deleted: true });
+  assert.deepEqual(fakeSdk.deletedSessions, [{ sessionId: sleeping.sessionId, dir: directory }]);
+  const stateAfterDelete = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(stateAfterDelete.sessions.some((item) => item.sessionId === sleeping.sessionId), false);
   await bridge.shutdown();
 });
 

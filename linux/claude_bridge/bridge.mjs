@@ -145,6 +145,7 @@ export async function detectClaudeCode({
       start: available,
       resume: available,
       stream: available,
+      delete: available,
       interruptManaged: available,
       liveAttachExternal: false,
       approveExternal: false,
@@ -184,6 +185,23 @@ class MappingStore {
       const state = await this.read();
       const sessions = state.sessions.filter((item) => item.sessionId !== sessionId);
       sessions.push({ sessionId, cwd });
+      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+      const temporary = `${this.path}.${process.pid}.tmp`;
+      await writeFile(temporary, `${JSON.stringify({ version: 1, sessions }, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      await chmod(temporary, 0o600);
+      await rename(temporary, this.path);
+    });
+    return this.writes;
+  }
+
+  async forget(sessionId, cwd) {
+    this.writes = this.writes.then(async () => {
+      const state = await this.read();
+      const sessions = state.sessions.filter(
+        (item) => item.sessionId !== sessionId || item.cwd !== cwd,
+      );
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const temporary = `${this.path}.${process.pid}.tmp`;
       await writeFile(temporary, `${JSON.stringify({ version: 1, sessions }, null, 2)}\n`, {
@@ -506,6 +524,28 @@ export class ClaudeBridge {
     };
   }
 
+  async delete(params) {
+    const cwd = await checkedDirectory(params?.cwd);
+    const sessionId = opaque(params?.sessionId, "sessionId");
+    if (
+      this.activeSessions.has(sessionId)
+      || [...this.runs.values()].some((run) => run.sessionId === sessionId || run.resume === sessionId)
+    ) {
+      throw new Error("Session is active; interrupt it before deletion");
+    }
+    const status = await this.status();
+    if (!status.available) throw new Error(status.limitation);
+    const { deleteSession, getSessionInfo } = await this.loadSdk();
+    if (typeof deleteSession !== "function") throw new Error("Claude session deletion is unavailable");
+    const info = await getSessionInfo(sessionId, { dir: cwd });
+    if (!info || opaque(info.sessionId, "sessionId") !== sessionId) throw new Error("Claude session was not found");
+    const infoCwd = typeof info.cwd === "string" ? await checkedDirectory(info.cwd) : cwd;
+    if (infoCwd !== cwd) throw new Error("Claude session working directory does not match");
+    await deleteSession(sessionId, { dir: cwd });
+    await this.mapping.forget(sessionId, cwd);
+    return { sessionId, deleted: true };
+  }
+
   async start(params) {
     return this.startRun(params, null);
   }
@@ -781,6 +821,7 @@ async function serve() {
       else if (request.method === "read") result = await bridge.read(request.params);
       else if (request.method === "start") result = await bridge.start({ ...request.params, clientRequestId: request.id });
       else if (request.method === "resume") result = await bridge.resume({ ...request.params, clientRequestId: request.id });
+      else if (request.method === "delete") result = await bridge.delete(request.params);
       else if (request.method === "interrupt") result = await bridge.interrupt(request.params);
       else if (request.method === "cancelRequest") result = await bridge.cancelRequest(request.params);
       else if (request.method === "approval") result = bridge.approve(request.params);
