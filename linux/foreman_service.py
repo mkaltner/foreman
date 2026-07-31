@@ -1789,9 +1789,16 @@ class Foreman:
             if subscribed:
                 client.subscriptions.add(subscription)
                 if provider == "codex":
+                    # Codex event delivery predates provider-aware subscriptions
+                    # and remains keyed by the raw thread ID. Keep both keys so
+                    # provider-v1 clients receive the same live stream as legacy
+                    # session.subscribe clients.
+                    client.subscriptions.add(session_id)
                     await self.codex.subscribe_thread(session_id)
             else:
                 client.subscriptions.discard(subscription)
+                if provider == "codex":
+                    client.subscriptions.discard(session_id)
             return {"provider": provider, "sessionId": session_id, "subscribed": subscribed}
         if message_type == "provider.session.delete":
             provider = self.required_provider(payload)
@@ -2254,6 +2261,9 @@ class Foreman:
     def discard_subscriptions(self, thread_id: str) -> None:
         for connected in self.clients:
             connected.subscriptions.discard(thread_id)
+            connected.subscriptions.discard(
+                self.provider_subscription("codex", thread_id)
+            )
 
     def repositories(self) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []

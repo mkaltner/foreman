@@ -584,6 +584,83 @@ class PairingLimiterTests(unittest.TestCase):
 
 
 class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_provider_subscription_delivers_live_conversation_events(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+            )
+            client = Client(None, "test", authenticated=True)
+            client.send = AsyncMock()  # type: ignore[method-assign]
+            app.clients.add(client)
+
+            subscribed = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.subscribe",
+                    "payload": {"provider": "codex", "sessionId": "thread-live"},
+                },
+            )
+
+            self.assertTrue(subscribed["subscribed"])
+            self.assertIn("codex:thread-live", client.subscriptions)
+            self.assertIn("thread-live", client.subscriptions)
+
+            await app.codex_event(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-live",
+                        "turnId": "turn-live",
+                        "itemId": "assistant-live",
+                        "delta": "Still working",
+                    },
+                }
+            )
+            await app.codex_event(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": "thread-live",
+                        "turnId": "turn-live",
+                        "item": {
+                            "id": "command-live",
+                            "type": "commandExecution",
+                            "command": "git status",
+                            "status": "inProgress",
+                        },
+                    },
+                }
+            )
+
+            events = [
+                call.args[0]["payload"]["event"]
+                for call in client.send.await_args_list  # type: ignore[attr-defined]
+            ]
+            self.assertEqual(
+                [event["kind"] for event in events],
+                ["assistant.delta", "item"],
+            )
+            self.assertEqual(events[1]["item"]["kind"], "command")
+
+            unsubscribed = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.unsubscribe",
+                    "payload": {"provider": "codex", "sessionId": "thread-live"},
+                },
+            )
+            self.assertFalse(unsubscribed["subscribed"])
+            self.assertNotIn("codex:thread-live", client.subscriptions)
+            self.assertNotIn("thread-live", client.subscriptions)
+
     async def test_optional_adapter_lifecycle_and_internal_provider_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
