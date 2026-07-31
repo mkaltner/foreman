@@ -38,7 +38,7 @@ python3 scripts/verify_release.py --tag v1.0.0
 The tagged Linux archive from a GitHub release contains the same install
 payload and is an alternative to cloning the repository.
 
-Optional Claude Code web support requires an authenticated native Claude Code
+Optional Claude Code web and Android support requires an authenticated native Claude Code
 CLI, Node.js 20 or newer, and the exact SDK lock under `linux/claude_bridge`.
 Tagged Linux archives include the production SDK dependency and notices, so
 installation remains offline and never runs npm. When installing from a source
@@ -149,13 +149,15 @@ After authentication it opens on the live dashboard. **Sessions** retains the
 conversation list and full interaction view; **Settings** contains appearance,
 notification, and connection preferences.
 
-The web new-session dialog includes a provider selector. Claude selection shows
+The web and Android new-session dialogs include a provider selector. Claude selection shows
 workspace, adapter-supported Sonnet/Haiku, and the six exact Claude permission
 modes; bypass permissions is explicitly high risk. External Claude sessions are
 listed as resumable and not live-attached, with live controls disabled until a
-new Foreman-managed query resumes the exact session. Claude has no web approval
-responses, transcript search, images, or background notifications in this
-version. Android remains Codex-only.
+new Foreman-managed query resumes the exact session. Claude has no client
+approval responses, transcript search, or images in this version. Android shows
+a bounded permission-required state that must be resolved in Claude Code.
+Android lifecycle alerts cover only monitored Foreman-managed Claude queries;
+merely resumable external sessions never notify.
 
 The dashboard shows current session summaries, repository and non-Git workspace
 groups, attention states, oldest active work, event freshness, connected-client
@@ -248,13 +250,29 @@ app. Enter:
 - Device name: any short phone label.
 
 The device token is encrypted by an Android Keystore key. Closing the app or
-restarting Foreman reconnects with that token and reloads current Codex state.
+restarting Foreman reconnects with that token and reloads authoritative provider
+state without replaying prompts or controls. One paired host token exposes Codex
+and every available Claude Code capability on that host.
+
+The Android host screen reports Codex and Claude Code availability separately,
+including safe runtime/version information and unavailable reasons. New Claude
+sessions select a workspace, `sonnet` or `haiku`, and one exact permission mode:
+`default`, `dontAsk`, `acceptEdits`, `plan`, `auto`, or
+`bypassPermissions`. Bypass permissions is never selected by default and
+requires a high-risk confirmation. External Claude CLI sessions are shown as
+**Resumable · Not live-attached**. **Resume in Foreman** starts a new managed
+query on the same Claude session ID; Foreman cannot view current external events,
+interrupt that external process, answer its approval, or use Claude Remote
+Control. Claude images and transcript search are unavailable, while existing
+Codex images, search, approvals, and structured input remain unchanged.
 
 To receive completion and attention alerts for active turns, enable **Notify
 for active turns** in Foreman's settings and grant Android's notification
 permission. A foreground-service notification remains visible only while turns
-are being monitored. Approval notifications use generic privacy-safe text;
-tapping one reopens its exact pending card, and resolution elsewhere removes it.
+on the active host are being monitored. Provider-aware lifecycle alerts use
+generic privacy-safe text and open the exact host/provider/session. Codex
+approval notifications likewise reveal no request content; tapping one reopens
+its exact pending card, and resolution elsewhere removes it.
 
 Linux installation never runs Gradle or requires Java.
 
