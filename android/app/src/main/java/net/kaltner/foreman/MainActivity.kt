@@ -423,6 +423,23 @@ internal fun reconnectDestination(current: Screen, selectedSessionId: String?): 
 
 internal fun dashboardBackDestination(): Screen = Screen.Overview
 
+internal data class OverviewReturnTarget(
+    val screen: Screen,
+    val sessionId: String? = null,
+)
+
+internal fun overviewReturnTarget(
+    current: Screen,
+    selectedSessionId: String?,
+): OverviewReturnTarget? =
+    when (current) {
+        Screen.Dashboard, Screen.Sessions -> OverviewReturnTarget(current)
+        Screen.Detail ->
+            selectedSessionId?.let { OverviewReturnTarget(Screen.Detail, it) }
+                ?: OverviewReturnTarget(Screen.Sessions)
+        Screen.Setup, Screen.Overview, Screen.Diagnostics -> null
+    }
+
 internal enum class RestartPhase { Idle, Scheduling, Scheduled, Reconnecting, Succeeded, TimedOut, Failed }
 
 internal fun restartPhaseAfterConnection(
@@ -836,6 +853,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var notificationApprovalId: String? = null
     private var searchJob: Job? = null
     private var lastSearchRequestKey = ""
+    private var pendingOverviewReturn: OverviewReturnTarget? = null
     private var overviewJob: Job? = null
     private val overviewClient = ForemanClient(viewModelScope, onEvent = {}, onDisconnect = {})
     private val client = ForemanClient(
@@ -887,7 +905,26 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
 
+    fun openOverview() {
+        val current = state.value
+        pendingOverviewReturn = overviewReturnTarget(current.screen, current.selected?.id)
+        showOverview()
+    }
+
     fun showOverview() = state.update { it.copy(screen = dashboardBackDestination(), selected = null, error = null) }
+
+    fun hasOverviewReturnTarget(): Boolean = pendingOverviewReturn != null
+
+    fun backFromOverview() {
+        val target = pendingOverviewReturn ?: return
+        pendingOverviewReturn = null
+        when (target.screen) {
+            Screen.Dashboard -> showDashboard()
+            Screen.Detail -> target.sessionId?.let(::openSession) ?: showSessions()
+            Screen.Sessions -> showSessions()
+            Screen.Setup, Screen.Overview, Screen.Diagnostics -> Unit
+        }
+    }
 
     fun showDashboard() = state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
 
@@ -2993,6 +3030,10 @@ private fun UnifiedOverviewScreen(
     var renameHost by remember { mutableStateOf<SavedHostSummary?>(null) }
     var renameValue by remember { mutableStateOf("") }
     var forgetHost by remember { mutableStateOf<SavedHostSummary?>(null) }
+    BackHandler(
+        enabled = viewModel.hasOverviewReturnTarget(),
+        onBack = viewModel::backFromOverview,
+    )
     Scaffold(
         topBar = {
             TopAppBar(
@@ -3138,7 +3179,7 @@ private fun HostDashboardScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = viewModel::showOverview) {
+                    IconButton(onClick = viewModel::openOverview) {
                         Icon(Icons.Default.Home, contentDescription = "All hosts")
                     }
                 },
@@ -3415,7 +3456,7 @@ private fun SessionsScreen(
                     )
                 },
                 actions = {
-                    IconButton(onClick = viewModel::showOverview) {
+                    IconButton(onClick = viewModel::openOverview) {
                         Icon(Icons.Default.Home, contentDescription = "Unified overview")
                     }
                     IconButton(onClick = { viewModel.setSearchOpen(!state.showSearch) }) {
@@ -4711,7 +4752,7 @@ private fun HostSelectorMenu(
             DropdownMenuItem(
                 text = { Text("Unified overview") },
                 leadingIcon = { Icon(Icons.Default.Home, contentDescription = null) },
-                onClick = { expanded = false; viewModel.showOverview() },
+                onClick = { expanded = false; viewModel.openOverview() },
             )
             HorizontalDivider()
             Text(

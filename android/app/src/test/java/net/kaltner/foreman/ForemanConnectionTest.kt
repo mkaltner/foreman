@@ -142,6 +142,29 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
+        assertEquals(
+            OverviewReturnTarget(Screen.Sessions),
+            overviewReturnTarget(Screen.Sessions, null),
+        )
+        assertEquals(
+            OverviewReturnTarget(Screen.Dashboard),
+            overviewReturnTarget(Screen.Dashboard, null),
+        )
+        assertEquals(
+            OverviewReturnTarget(Screen.Detail, "thread-1"),
+            overviewReturnTarget(Screen.Detail, "thread-1"),
+        )
+        assertEquals(
+            OverviewReturnTarget(Screen.Sessions),
+            overviewReturnTarget(Screen.Detail, null),
+        )
+        assertNull(overviewReturnTarget(Screen.Overview, null))
+        assertNull(overviewReturnTarget(Screen.Setup, null))
+        assertNull(overviewReturnTarget(Screen.Diagnostics, null))
+    }
+
+    @Test
     fun restartIsBlockedForActiveSessionsAndPendingInput() {
         assertFalse(restartBlocked(UiState()))
         assertTrue(
