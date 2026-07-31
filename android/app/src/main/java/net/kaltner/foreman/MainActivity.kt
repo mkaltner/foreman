@@ -709,6 +709,7 @@ internal data class UiState(
     val sessions: List<SessionSummary> = emptyList(),
     val repositories: List<RepositoryInfo> = emptyList(),
     val selected: SessionSummary? = null,
+    val composerDrafts: Map<ComposerDraftKey, String> = emptyMap(),
     val showNewSession: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
@@ -753,6 +754,24 @@ internal data class UiState(
     val diagnosticsError: String? = null,
     val restartPhase: RestartPhase = RestartPhase.Idle,
 )
+
+internal data class ComposerDraftKey(val hostId: String, val sessionId: String)
+
+internal fun composerDraft(
+    drafts: Map<ComposerDraftKey, String>,
+    hostId: String,
+    sessionId: String,
+): String = drafts[ComposerDraftKey(hostId, sessionId)].orEmpty()
+
+internal fun updateComposerDraft(
+    drafts: Map<ComposerDraftKey, String>,
+    hostId: String,
+    sessionId: String,
+    text: String,
+): Map<ComposerDraftKey, String> {
+    val key = ComposerDraftKey(hostId, sessionId)
+    return if (text.isEmpty()) drafts - key else drafts + (key to text)
+}
 
 private data class SyncSnapshot(
     val sessions: List<SessionSummary>,
@@ -932,6 +951,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+
+    fun setComposerDraft(hostId: String, sessionId: String, text: String) {
+        state.update {
+            it.copy(
+                composerDrafts = updateComposerDraft(it.composerDrafts, hostId, sessionId, text),
+            )
+        }
+    }
 
     fun openOverview() {
         val current = state.value
@@ -4009,6 +4036,7 @@ private fun SessionDetailScreen(
         },
         bottomBar = {
             if (selected != null) PromptBox(
+                text = state.activeHostId?.let { composerDraft(state.composerDrafts, it, selected.id) }.orEmpty(),
                 working = selected.status == "working",
                 routeEnabled = state.connected && !state.submitting,
                 enabled = state.connected && !state.submitting && selectedApprovals.none { it.status == "pending" || it.status == "submitting" } && selectedInputs.none { it.status == "pending" || it.status == "submitting" },
@@ -4022,6 +4050,11 @@ private fun SessionDetailScreen(
                 selectModel = viewModel::setComposerModel,
                 selectEffort = viewModel::setComposerEffort,
                 showError = viewModel::composerError,
+                onTextChange = { text ->
+                    state.activeHostId?.let { hostId ->
+                        viewModel.setComposerDraft(hostId, selected.id, text)
+                    }
+                },
                 send = viewModel::send,
             )
         },
@@ -4319,6 +4352,7 @@ private fun ImageThumbnailRow(
 
 @Composable
 private fun PromptBox(
+    text: String,
     working: Boolean,
     routeEnabled: Boolean,
     enabled: Boolean,
@@ -4332,9 +4366,9 @@ private fun PromptBox(
     selectModel: (String) -> Unit,
     selectEffort: (String) -> Unit,
     showError: (String) -> Unit,
+    onTextChange: (String) -> Unit,
     send: (String, List<ImagePayload>, () -> Unit) -> Unit,
 ) {
-    var text by remember { mutableStateOf("") }
     var images by remember { mutableStateOf(emptyList<ImagePayload>()) }
     var processing by remember { mutableStateOf(false) }
     var showAccessLevels by remember { mutableStateOf(false) }
@@ -4412,7 +4446,7 @@ private fun PromptBox(
             ) {
                 CompactMessageField(
                     value = text,
-                    onValueChange = { text = it },
+                    onValueChange = onTextChange,
                     placeholder = if (working) "Steer this turn…" else "Message Foreman…",
                     modifier = Modifier.weight(1f),
                     leadingIcon = {
@@ -4440,7 +4474,7 @@ private fun PromptBox(
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
                         }
                         send(text, images) {
-                            text = ""
+                            onTextChange("")
                             images = emptyList()
                         }
                     },

@@ -494,6 +494,27 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun composerDraftsPreserveIndependentTextForEachHostAndSession() {
+        var drafts = updateComposerDraft(emptyMap(), "host-home", "session-one", "First draft")
+        drafts = updateComposerDraft(drafts, "host-home", "session-two", "Second draft")
+        drafts = updateComposerDraft(drafts, "host-work", "session-one", "Work draft")
+
+        assertEquals("First draft", composerDraft(drafts, "host-home", "session-one"))
+        assertEquals("Second draft", composerDraft(drafts, "host-home", "session-two"))
+        assertEquals("Work draft", composerDraft(drafts, "host-work", "session-one"))
+    }
+
+    @Test
+    fun clearingSubmittedComposerDraftLeavesOtherDraftsIntact() {
+        var drafts = updateComposerDraft(emptyMap(), "host-home", "same-session", "Home draft")
+        drafts = updateComposerDraft(drafts, "host-work", "same-session", "Work draft")
+        drafts = updateComposerDraft(drafts, "host-home", "same-session", "")
+
+        assertEquals("", composerDraft(drafts, "host-home", "same-session"))
+        assertEquals("Work draft", composerDraft(drafts, "host-work", "same-session"))
+    }
+
+    @Test
     fun forgettingConnectionClearsHostStateButPreservesUiPreferences() {
         val forgotten =
             UiState(
