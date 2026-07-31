@@ -10,6 +10,7 @@ import {
   ClaudeBridge,
   detectClaudeCode,
   MAX_EVENT_TEXT_BYTES,
+  MAX_HISTORY_BYTES,
   MAX_MESSAGE_BYTES,
   normalizedEvents,
   normalizedHistory,
@@ -100,6 +101,30 @@ test("history projection keeps visible messages and safe tool cards only", async
   assert.equal(history[2].status, "completed");
   assert.match(history[2].description, /output hidden/);
   assert.equal(JSON.stringify(history).includes("SECRET"), false);
+});
+
+test("history projection stays below the bridge response limit and keeps recent items", () => {
+  const messages = Array.from({ length: 500 }, (_, index) => ({
+    uuid: `history-${index}`,
+    type: "assistant",
+    message: {
+      content: [{
+        type: "text",
+        text: `${index === 499 ? "RECENT_HISTORY_MARKER " : ""}${"x".repeat(MAX_EVENT_TEXT_BYTES)}`,
+      }],
+    },
+  }));
+  const history = normalizedHistory(messages);
+  const historyBytes = Buffer.byteLength(JSON.stringify(history));
+  const responseBytes = Buffer.byteLength(`${JSON.stringify({
+    type: "response",
+    id: "history",
+    result: { sessionId: "session", cwd: "/workspace", messages: history },
+  })}\n`);
+  assert.ok(history.length < messages.length);
+  assert.ok(historyBytes <= MAX_HISTORY_BYTES);
+  assert.ok(responseBytes <= MAX_MESSAGE_BYTES);
+  assert.match(history.at(-1).text, /RECENT_HISTORY_MARKER/);
 });
 
 test("start, model, permission callback, discovery, interrupt, and minimal mapping", async () => {

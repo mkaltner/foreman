@@ -21,6 +21,7 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 export const MAX_EVENT_TEXT_BYTES = 16 * 1024;
 export const MAX_HISTORY_ITEMS = 500;
+export const MAX_HISTORY_BYTES = 192 * 1024;
 export const SUPPORTED_MODELS = Object.freeze([
   { id: "sonnet", displayName: "Sonnet", description: "Adapter-supported Claude Sonnet alias" },
   { id: "haiku", displayName: "Haiku", description: "Adapter-supported Claude Haiku alias" },
@@ -392,7 +393,18 @@ export function normalizedHistory(messages) {
       });
     }
   }
-  return items.map(({ toolName: _toolName, ...item }) => item);
+  const projected = items.map(({ toolName: _toolName, ...item }) => item);
+  const selected = [];
+  let encodedBytes = 2;
+  for (let index = projected.length - 1; index >= 0; index -= 1) {
+    const item = projected[index];
+    const itemBytes = Buffer.byteLength(JSON.stringify(item));
+    const separatorBytes = selected.length ? 1 : 0;
+    if (encodedBytes + separatorBytes + itemBytes > MAX_HISTORY_BYTES) continue;
+    selected.unshift(item);
+    encodedBytes += separatorBytes + itemBytes;
+  }
+  return selected;
 }
 
 export class ClaudeBridge {

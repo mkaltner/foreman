@@ -85,6 +85,8 @@ CLAUDE_LIMITATIONS = [
     "no-notifications",
     "no-images",
 ]
+CLAUDE_DISCOVERY_CONCURRENCY = 4
+CLAUDE_DISCOVERY_DEADLINE_SECONDS = 60
 
 
 class CapabilityError(ValueError):
@@ -686,12 +688,34 @@ class Foreman:
             return []
         repository_ids = [".", *(item["id"] for item in await asyncio.to_thread(self.repositories))]
         discovered: dict[tuple[str, str], dict[str, Any]] = {}
-        for repository_id in dict.fromkeys(repository_ids):
+        semaphore = asyncio.Semaphore(CLAUDE_DISCOVERY_CONCURRENCY)
+
+        async def discover_repository(repository_id: str) -> list[dict[str, Any]]:
             try:
                 cwd = self.resolve_repository(repository_id)
-                items = await self.claude.discover(cwd)
+                async with semaphore:
+                    return await self.claude.discover(cwd)
             except (ValueError, ClaudeCodeError):
-                continue
+                return []
+
+        tasks = [
+            asyncio.create_task(discover_repository(repository_id))
+            for repository_id in dict.fromkeys(repository_ids)
+        ]
+        completed, pending = await asyncio.wait(
+            tasks,
+            timeout=CLAUDE_DISCOVERY_DEADLINE_SECONDS,
+        )
+        for task in pending:
+            task.cancel()
+        batches = [
+            task.result()
+            for task in completed
+            if not task.cancelled() and task.exception() is None
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for items in batches:
             for item in items[:500]:
                 session_id = item.get("sessionId")
                 item_cwd = item.get("cwd")

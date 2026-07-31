@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
@@ -798,6 +799,56 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(unavailable["providers"][1]["available"])
             self.assertEqual(unavailable["providers"][1]["unavailableReason"], "cli-missing")
             self.assertEqual(unavailable["providers"][1]["capabilities"], [])
+
+    async def test_claude_discovery_is_concurrent_and_returns_before_its_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(8):
+                repository = root / f"repository-{index}"
+                repository.mkdir()
+                subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            claude = FakeClaude.instances[-1]
+            active = 0
+            peak = 0
+
+            async def delayed_discover(cwd: str | Path) -> list[dict[str, Any]]:
+                nonlocal active, peak
+                active += 1
+                peak = max(peak, active)
+                try:
+                    await asyncio.sleep(0.2 if Path(cwd).name.endswith(("0", "1", "2")) else 0.01)
+                    return [
+                        {
+                            "provider": "claude-code",
+                            "sessionId": f"session-{Path(cwd).name}",
+                            "cwd": str(cwd),
+                            "classification": "resumable",
+                            "active": False,
+                            "lastSeenAt": 200,
+                        }
+                    ]
+                finally:
+                    active -= 1
+
+            claude.discover = delayed_discover  # type: ignore[method-assign]
+            started_at = time.monotonic()
+            with patch("foreman_service.CLAUDE_DISCOVERY_DEADLINE_SECONDS", 0.08), patch(
+                "foreman_service.CLAUDE_DISCOVERY_CONCURRENCY", 3
+            ):
+                sessions = await app.discover_claude_sessions()
+            self.assertLess(time.monotonic() - started_at, 0.18)
+            self.assertLessEqual(peak, 3)
+            self.assertTrue(sessions)
+            self.assertTrue(all(item["state"] == "resumable" for item in sessions))
 
 
 class DiagnosticBufferTests(unittest.TestCase):
