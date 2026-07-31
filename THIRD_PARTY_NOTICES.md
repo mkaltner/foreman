@@ -7,6 +7,7 @@ notices supplied by each dependency.
 | Component | Version source | License |
 | --- | --- | --- |
 | `websockets` | `requirements.txt` | BSD-3-Clause; the vendored license is at `linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE` |
+| Anthropic Claude Agent SDK | `linux/claude_bridge/package-lock.json` | Anthropic commercial terms; package license text is installed with the optional Node dependency |
 | React and React DOM | `web/package-lock.json` | MIT |
 | react-markdown and its runtime dependency graph | `web/package-lock.json` | package-specific license fields, predominantly MIT |
 | AndroidX Activity, Core, Lifecycle, and Compose | `android/app/build.gradle.kts` and Gradle resolution metadata | Apache-2.0 |

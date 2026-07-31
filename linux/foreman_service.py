@@ -33,6 +33,7 @@ from codex import (
     search_matches,
     session,
 )
+from claude_code import ClaudeCode
 from diagnostics import DiagnosticBuffer, request_category
 from protocol import (
     MAX_FRAME_BYTES,
@@ -158,6 +159,9 @@ class Foreman:
         remote_restart_enabled: bool = False,
         restart_runner: Callable[[], Awaitable[int]] | None = None,
         diagnostics: DiagnosticBuffer | None = None,
+        claude_factory=None,
+        claude_node: str = "node",
+        claude_bridge: str | Path | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -182,6 +186,17 @@ class Foreman:
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
         self.stopping = False
+        self.claude = (
+            claude_factory(
+                self.repository_root,
+                self.state.directory / "claude-code-sessions.json",
+                on_event=self.claude_event,
+                node_executable=claude_node,
+                bridge_path=claude_bridge,
+            )
+            if claude_factory is not None
+            else None
+        )
 
     async def start(self) -> None:
         await self.codex.start()
@@ -190,6 +205,14 @@ class Foreman:
         elif getattr(self.codex, "process", None) is not None:
             self.diagnostics.record("runtime.fallback_started")
         print(f"Codex runtime: {self.codex.runtime_status}", flush=True)
+        if self.claude is not None:
+            try:
+                claude_status = await self.claude.start()
+            except Exception:
+                claude_status = {"available": False}
+            self.diagnostics.record(
+                "claude.available" if claude_status.get("available") else "claude.unavailable"
+            )
         self.server = await asyncio.start_server(
             self.client_connected,
             self.host,
@@ -213,6 +236,8 @@ class Foreman:
         self.diagnostics.record("service.stopping")
         self.stopping = True
         shutdown: list[Awaitable[Any]] = [self.codex.stop()]
+        if self.claude is not None:
+            shutdown.append(self.claude.stop())
         if self.server:
             self.server.close()
             shutdown.append(self.server.wait_closed())
@@ -232,6 +257,35 @@ class Foreman:
             )
         except TimeoutError:
             self.diagnostics.record("service.shutdown_timed_out")
+
+    async def claude_event(self, message: dict[str, Any]) -> None:
+        kind = message.get("kind")
+        if kind in {
+            "query.started",
+            "query.completed",
+            "query.failed",
+            "query.interrupted",
+            "permission.requested",
+            "permission.denied",
+        }:
+            self.diagnostics.record(f"claude.{kind}")
+
+    async def provider_status(self) -> list[dict[str, Any]]:
+        """Internal projection; Claude is intentionally absent from protocol v1."""
+        claude = (
+            await self.claude.status()
+            if self.claude is not None
+            else {"provider": "claude-code", "available": False}
+        )
+        return [
+            {
+                "provider": "codex",
+                "available": self.codex.is_connected,
+                "version": self.codex.version,
+                "runtime": self.codex.runtime_status,
+            },
+            claude,
+        ]
 
     async def codex_event(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -1558,6 +1612,9 @@ async def run_service(args: argparse.Namespace) -> None:
             origin.strip() for origin in args.web_origins.split(",") if origin.strip()
         ),
         remote_restart_enabled=args.remote_restart,
+        claude_factory=ClaudeCode,
+        claude_node=args.node,
+        claude_bridge=args.claude_bridge,
     )
     await app.start()
     sockets = ", ".join(str(sock.getsockname()) for sock in app.server.sockets or [])
@@ -1575,6 +1632,19 @@ async def run_service(args: argparse.Namespace) -> None:
     await app.stop()
 
 
+async def print_claude_status(args: argparse.Namespace) -> None:
+    adapter = ClaudeCode(
+        Path(args.repository_root),
+        Path(args.state_directory) / "claude-code-sessions.json",
+        node_executable=args.node,
+        bridge_path=args.claude_bridge,
+    )
+    try:
+        print(json.dumps(await adapter.start(), separators=(",", ":")))
+    finally:
+        await adapter.stop()
+
+
 def arguments() -> argparse.Namespace:
     config = Path(
         os.environ.get(
@@ -1585,6 +1655,7 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--create-pairing", action="store_true")
     parser.add_argument("--print-web-url", action="store_true")
+    parser.add_argument("--claude-status", action="store_true")
     parser.add_argument("--host", default=os.environ.get("FOREMAN_HOST", "0.0.0.0"))
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("FOREMAN_PORT", "8765"))
@@ -1620,6 +1691,17 @@ def arguments() -> argparse.Namespace:
         default=os.environ.get("FOREMAN_CODEX_EXECUTABLE", "codex"),
     )
     parser.add_argument(
+        "--node",
+        default=os.environ.get("FOREMAN_NODE_EXECUTABLE", "node"),
+    )
+    parser.add_argument(
+        "--claude-bridge",
+        default=os.environ.get(
+            "FOREMAN_CLAUDE_BRIDGE",
+            str(Path(__file__).resolve().parent / "claude_bridge" / "bridge.mjs"),
+        ),
+    )
+    parser.add_argument(
         "--state-directory",
         default=os.environ.get(
             "FOREMAN_STATE_DIRECTORY", str(Path.home() / ".local/state/foreman")
@@ -1642,6 +1724,9 @@ def main() -> None:
         key, expires_at = State(args.state_directory).create_pairing()
         print(f"Pairing key: {key}")
         print("Expires: 10 minutes")
+        return
+    if args.claude_status:
+        asyncio.run(print_claude_status(args))
         return
     asyncio.run(run_service(args))
 

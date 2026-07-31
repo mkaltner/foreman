@@ -28,8 +28,12 @@ case "${1:-}" in
     exec /usr/bin/env python3 \
       "$install_dir/foreman_service.py" --print-web-url
     ;;
+  claude-status)
+    exec /usr/bin/env python3 \
+      "$install_dir/foreman_service.py" --claude-status
+    ;;
   *)
-    echo "Usage: foreman {start|stop|restart|status|logs|pair|web}" >&2
+    echo "Usage: foreman {start|stop|restart|status|logs|pair|web|claude-status}" >&2
     exit 2
     ;;
 esac

@@ -78,6 +78,7 @@ if [[ -z "$codex_executable" ]]; then
   exit 1
 fi
 codex_executable="$(readlink -f "$codex_executable")"
+claude_executable="$(command -v claude || true)"
 
 install -d -m 700 "$config_dir" "$state_dir"
 install -d -m 755 "$install_parent" "$bin_dir" "$unit_dir"
@@ -90,6 +91,21 @@ install -m 644 "$project_dir/linux/inputs.py" "$staging_dir/inputs.py"
 install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
 install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
 install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
+install -m 644 "$project_dir/linux/claude_code.py" "$staging_dir/claude_code.py"
+install -m 644 "$project_dir/linux/session_identity.py" "$staging_dir/session_identity.py"
+cp -a "$project_dir/linux/claude_bridge" "$staging_dir/claude_bridge"
+if [[ -L "$staging_dir/claude_bridge/node_modules" ]]; then
+  rm -f -- "$staging_dir/claude_bridge/node_modules"
+fi
+if [[ ! -d "$staging_dir/claude_bridge/node_modules" ]] \
+  && [[ -n "$claude_executable" ]] \
+  && command -v node >/dev/null \
+  && command -v npm >/dev/null; then
+  if ! npm ci --omit=dev --ignore-scripts --prefix "$staging_dir/claude_bridge"; then
+    rm -rf -- "$staging_dir/claude_bridge/node_modules"
+    echo "Claude Code support is unavailable: pinned Agent SDK installation failed" >&2
+  fi
+fi
 install -m 644 "$project_dir/release.properties" "$staging_dir/release.properties"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
 cp -a "$project_dir/web/dist" "$staging_dir/web"
@@ -105,6 +121,8 @@ python3 -m compileall -q \
   "$staging_dir/protocol.py" \
   "$staging_dir/state.py" \
   "$staging_dir/diagnostics.py" \
+  "$staging_dir/claude_code.py" \
+  "$staging_dir/session_identity.py" \
   "$staging_dir/vendor"
 FOREMAN_STAGING_DIR="$staging_dir" \
 FOREMAN_WEBSOCKETS_VERSION="$pinned_version" \
@@ -130,6 +148,9 @@ if [[ ! -e "$config_file" ]]; then
     printf 'FOREMAN_REMOTE_RESTART=0\n'
     printf 'FOREMAN_REPOSITORY_ROOT=%s\n' "$HOME/projects"
     printf 'FOREMAN_CODEX_EXECUTABLE=%s\n' "$codex_executable"
+    if [[ -n "$claude_executable" ]]; then
+      printf 'FOREMAN_CLAUDE_EXECUTABLE=%s\n' "$(readlink -f "$claude_executable")"
+    fi
   } >"$config_file"
   chmod 600 "$config_file"
 fi
@@ -161,6 +182,8 @@ python3 -m compileall -q \
   "$install_dir/inputs.py" \
   "$install_dir/protocol.py" \
   "$install_dir/state.py" \
+  "$install_dir/claude_code.py" \
+  "$install_dir/session_identity.py" \
   "$install_dir/vendor"
 python3 "$install_dir/foreman_service.py" --help >/dev/null
 systemctl --user daemon-reload

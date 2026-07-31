@@ -201,6 +201,11 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("<div id=\"root\"></div>", (install_dir / "web/index.html").read_text())
             self.assertTrue(any((install_dir / "web/assets").iterdir()))
             self.assertTrue((install_dir / "diagnostics.py").is_file())
+            self.assertTrue((install_dir / "claude_code.py").is_file())
+            self.assertTrue((install_dir / "session_identity.py").is_file())
+            self.assertTrue((install_dir / "claude_bridge/bridge.mjs").is_file())
+            self.assertTrue((install_dir / "claude_bridge/package-lock.json").is_file())
+            self.assertFalse((install_dir / "claude_bridge/node_modules").exists())
             self.assertIn(
                 "foremanVersion=1.0.0",
                 (install_dir / "release.properties").read_text(encoding="utf-8"),

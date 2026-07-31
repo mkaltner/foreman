@@ -24,6 +24,14 @@ DIAGNOSTIC_MESSAGES: dict[str, tuple[str, str]] = {
     "request.failed": ("warning", "Request category failed"),
     "protocol.incompatible": ("warning", "Protocol incompatibility detected"),
     "listeners.started": ("info", "Foreman listeners started"),
+    "claude.available": ("info", "Optional Claude Code adapter available"),
+    "claude.unavailable": ("info", "Optional Claude Code adapter unavailable"),
+    "claude.query.started": ("info", "Claude Code query started"),
+    "claude.query.completed": ("info", "Claude Code query completed"),
+    "claude.query.failed": ("warning", "Claude Code query failed"),
+    "claude.query.interrupted": ("info", "Claude Code query interrupted"),
+    "claude.permission.requested": ("info", "Claude Code permission requested"),
+    "claude.permission.denied": ("info", "Claude Code permission denied"),
 }
 
 REQUEST_CATEGORIES = {
