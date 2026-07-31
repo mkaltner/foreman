@@ -52,8 +52,10 @@ query, and choose `sonnet`, `haiku`, or one exact SDK permission mode. Deletion
 uses the official SDK, validates the exact workspace, requires explicit
 confirmation, and is unavailable while a Foreman-owned query is active. Claude
 Code has no SDK archive/unarchive operation, so the web UI does not show a fake
-Claude archive action. Claude model aliases are an explicit adapter-supported
-list, not dynamic enumeration.
+Claude archive action. Pin and Hide remain browser-local organization controls
+and use the full host/provider/session identity for Claude just as they do for
+Codex. Claude model aliases are an explicit adapter-supported list, not dynamic
+enumeration.
 
 The user-visible states are `working`, `completed`, `failed`, `interrupted`, and
 `resumable`; unavailable adapter entries use `unavailable`. `managed` means

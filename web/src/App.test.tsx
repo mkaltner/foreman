@@ -187,6 +187,8 @@ describe("Claude session deletion", () => {
 
   it("shows Delete but does not invent a Claude archive action", () => {
     const onAction = vi.fn();
+    const onPin = vi.fn();
+    const onHide = vi.fn();
     render(<SessionList
       results={[{ session, pinned: false, hidden: false, matches: [] }]}
       filters={DEFAULT_SESSION_FILTERS}
@@ -202,11 +204,15 @@ describe("Claude session deletion", () => {
       onAction={onAction}
       onFilters={vi.fn()}
       onSearchNow={vi.fn()}
-      onPin={vi.fn()}
-      onHide={vi.fn()}
+      onPin={onPin}
+      onHide={onHide}
     />);
 
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pin Claude work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(onPin).toHaveBeenCalledWith("claude-code", "claude-session");
+    expect(onHide).toHaveBeenCalledWith("claude-code", "claude-session");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(onAction).toHaveBeenCalledWith("delete", session);
   });

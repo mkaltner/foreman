@@ -56,4 +56,20 @@ describe("SessionSearchControls", () => {
     expect(screen.getByText("Build Foreman monitoring dashboard")).toBeInTheDocument();
     expect(screen.queryByText(/GitHub:/)).not.toBeInTheDocument();
   });
+
+  it("pins and hides Claude results with provider-aware identity", () => {
+    const pin = vi.fn();
+    const hide = vi.fn();
+    render(<SessionSearchResults results={[{
+      session: { provider: "claude-code", id: "same-id", title: "Claude result", repository: "/repo", status: "resumable" },
+      matches: [],
+      pinned: false,
+      hidden: false,
+    }]} query="" loading={false} error="" onOpen={vi.fn()} onPin={pin} onHide={hide} />);
+
+    fireEvent.click(screen.getByLabelText("Pin Claude result"));
+    fireEvent.click(screen.getByLabelText("Hide Claude result"));
+    expect(pin).toHaveBeenCalledWith("claude-code", "same-id");
+    expect(hide).toHaveBeenCalledWith("claude-code", "same-id");
+  });
 });

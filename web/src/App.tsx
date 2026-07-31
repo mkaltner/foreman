@@ -1192,7 +1192,6 @@ function App() {
   );
   const discoveryActive = activeFilterCount(searchFilters) > 0;
   const togglePin = useCallback((provider: ProviderId, id: string) => {
-    if (provider !== "codex") return;
     const key = providerSessionKey(provider, id);
     setOrganization((previous) => {
       const pinnedIds = previous.pinnedIds.includes(key)
@@ -1204,7 +1203,6 @@ function App() {
     });
   }, []);
   const toggleHidden = useCallback((provider: ProviderId, id: string) => {
-    if (provider !== "codex") return;
     const key = providerSessionKey(provider, id);
     setOrganization((previous) => {
       const hiddenIds = previous.hiddenIds.includes(key)
@@ -1681,8 +1679,8 @@ export function SessionList({
                   <div className="session-meta">
                     <span>{formatActivity(session.lastActivity)}</span>
                     <span className="card-actions">
-                      {sessionProvider(session) === "codex" && <button className={results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin("codex", session.id); }} aria-label={`${results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "★" : "☆"}</button>}
-                      {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onHide("codex", session.id); }}>Hide</button>}
+                      <button className={results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(sessionProvider(session), session.id); }} aria-label={`${results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "★" : "☆"}</button>
+                      <button onClick={(event) => { event.stopPropagation(); onHide(sessionProvider(session), session.id); }}>Hide</button>
                       {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
                       {(sessionProvider(session) === "codex" || session.capabilities?.includes("session.delete")) && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
                     </span>

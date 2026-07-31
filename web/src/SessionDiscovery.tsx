@@ -126,8 +126,8 @@ export function SessionSearchResults({
         <time>{formatActivity(session.lastActivity)}</time>
       </button>
       <div className="search-result-actions">
-        {sessionProvider(session) === "codex" && <button className={pinned ? "selected" : ""} onClick={() => onPin("codex", session.id)} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`} title={pinned ? "Unpin session" : "Pin session"}>{pinned ? "★" : "☆"}</button>}
-        {sessionProvider(session) === "codex" && <button onClick={() => onHide("codex", session.id)} aria-label={`${hidden ? "Restore" : "Hide"} ${session.title}`}>{hidden ? "Restore" : "Hide"}</button>}
+        <button className={pinned ? "selected" : ""} onClick={() => onPin(sessionProvider(session), session.id)} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`} title={pinned ? "Unpin session" : "Pin session"}>{pinned ? "★" : "☆"}</button>
+        <button onClick={() => onHide(sessionProvider(session), session.id)} aria-label={`${hidden ? "Restore" : "Hide"} ${session.title}`}>{hidden ? "Restore" : "Hide"}</button>
       </div>
     </article>)}
   </div>;
