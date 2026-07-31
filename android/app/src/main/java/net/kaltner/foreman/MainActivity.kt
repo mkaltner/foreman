@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -52,6 +53,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
@@ -411,7 +413,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-internal enum class Screen { Setup, Overview, Sessions, Detail, Diagnostics }
+internal enum class Screen { Setup, Overview, Dashboard, Sessions, Detail, Diagnostics }
+
+internal fun reconnectDestination(current: Screen, selectedSessionId: String?): Screen =
+    when {
+        selectedSessionId != null -> Screen.Detail
+        current == Screen.Dashboard -> Screen.Dashboard
+        else -> Screen.Sessions
+    }
 
 internal enum class RestartPhase { Idle, Scheduling, Scheduled, Reconnecting, Succeeded, TimedOut, Failed }
 
@@ -877,11 +886,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun showOverview() = state.update { it.copy(screen = Screen.Overview, selected = null, error = null) }
 
+    fun showDashboard() = state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
+
+    fun showSessions() = state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
+
     fun openOverviewHost(hostId: String) {
         if (hostId == state.value.activeHostId) {
-            state.update { it.copy(screen = Screen.Sessions, selected = null) }
+            showDashboard()
         } else {
-            switchHost(hostId)
+            switchHost(hostId, Screen.Dashboard)
         }
     }
 
@@ -1524,12 +1537,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         activateSavedHost(next)
     }
 
-    fun switchHost(hostId: String) {
+    fun switchHost(hostId: String, destination: Screen = Screen.Sessions) {
         if (hostId == state.value.activeHostId) return
         val selected = hosts.select(hostId) ?: return
         stopActiveHost()
         activeHost = selected
-        activateSavedHost(selected)
+        activateSavedHost(selected, destination)
     }
 
     private fun stopActiveHost() {
@@ -1552,13 +1565,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.value.activeHostId?.let { hosts.updateConnection(it, "disconnected") }
     }
 
-    private fun activateSavedHost(saved: SavedHost) {
+    private fun activateSavedHost(saved: SavedHost, destination: Screen = Screen.Sessions) {
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
         val filters = restored.searchFilters()
         state.update {
             it.copy(
-                screen = if (notificationSessionId == null) Screen.Sessions else Screen.Detail,
+                screen = if (notificationSessionId == null) destination else Screen.Detail,
                 displayName = saved.displayName,
                 host = saved.tcpEndpoint(),
                 pairingKey = "",
@@ -1772,7 +1785,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     connected = true,
                     connectionStatus = "connected",
                     savedHosts = hosts.all().map { host -> host.summary() },
-                    screen = if (selectedId == null) Screen.Sessions else Screen.Detail,
+                    screen = reconnectDestination(state.value.screen, selectedId),
                     error = null,
                     capabilities = client.capabilities,
                 )
@@ -2645,6 +2658,7 @@ private fun ForemanApp(
             when (state.screen) {
                 Screen.Setup -> SetupScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Overview -> UnifiedOverviewScreen(state, viewModel, requestTurnMonitoring)
+                Screen.Dashboard -> HostDashboardScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Sessions -> SessionsScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Detail -> SessionDetailScreen(state, viewModel, requestTurnMonitoring)
                 Screen.Diagnostics -> DiagnosticsScreen(state, viewModel)
@@ -3081,6 +3095,258 @@ private fun OverviewMetric(label: String, value: String, modifier: Modifier = Mo
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HostDashboardScreen(
+    state: UiState,
+    viewModel: ForemanViewModel,
+    requestTurnMonitoring: (Boolean) -> Unit,
+) {
+    val activity = LocalActivity.current
+    val pendingApprovals = state.approvals.filter { it.status == "pending" || it.status == "submitting" }
+    val pendingInputs = state.inputs.filter { it.status == "pending" || it.status == "submitting" }
+    val dashboard =
+        projectAndroidDashboard(
+            state.sessions,
+            requestSessionIds =
+                (pendingApprovals.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet(),
+        )
+
+    BackHandler { activity?.moveTaskToBack(true) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("Dashboard", fontWeight = FontWeight.Bold)
+                        Text(
+                            state.displayName.ifBlank { "Foreman host" },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = viewModel::showOverview) {
+                        Icon(Icons.Default.Home, contentDescription = "All hosts")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = viewModel::showSessions) {
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Sessions")
+                    }
+                    IconButton(onClick = viewModel::refresh, enabled = state.connected && !state.loading) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh dashboard")
+                    }
+                    UiSettingsMenu(state, viewModel, requestTurnMonitoring)
+                },
+            )
+        },
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            if (!state.connected) {
+                ConnectionBanner(state.error, viewModel::reconnect)
+            } else {
+                ErrorText(state.error, Modifier.padding(horizontal = 16.dp))
+            }
+            PullToRefreshBox(
+                isRefreshing = state.loading,
+                onRefresh = viewModel::refresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    item { DashboardHealthCard(state) }
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OverviewMetric("Active", dashboard.active.size.toString(), Modifier.weight(1f))
+                                OverviewMetric("Waiting", dashboard.waitingCount.toString(), Modifier.weight(1f))
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OverviewMetric("Failed", dashboard.failedCount.toString(), Modifier.weight(1f))
+                                OverviewMetric("Recent", dashboard.recent.size.toString(), Modifier.weight(1f))
+                            }
+                        }
+                    }
+                    dashboard.oldestTurn?.let { oldest ->
+                        item {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                    Text("OLDEST ACTIVE TURN", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                    Text(sessionDisplayTitle(oldest), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "${liveActivityLabel(oldest)} · ${overviewElapsed(epochMillis(oldest.activeTurnStartedAt))}",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Button(onClick = { viewModel.openSession(oldest.id) }, modifier = Modifier.align(Alignment.End)) {
+                                        Text("Open")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    dashboardSectionHeader("Needs attention", dashboard.attention.size)
+                    if (dashboard.attention.isEmpty()) {
+                        item { DashboardEmptyState("No sessions currently need attention.") }
+                    } else {
+                        items(dashboard.attention, key = { "attention:${it.id}" }) { session ->
+                            val approval = pendingApprovals.firstOrNull { it.sessionId == session.id }
+                            val input = pendingInputs.firstOrNull { it.sessionId == session.id }
+                            val requestId = approval?.id ?: input?.id
+                            DashboardSessionCard(
+                                session = session,
+                                repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
+                                detail =
+                                    when {
+                                        input != null -> "Waiting for input"
+                                        approval != null -> "Waiting for approval"
+                                        else -> dashboardSessionDetail(session)
+                                    },
+                                onOpen = { viewModel.openSession(session.id, focusedApprovalId = requestId) },
+                            )
+                        }
+                    }
+                    dashboardSectionHeader("Active work", dashboard.active.size)
+                    if (dashboard.active.isEmpty()) {
+                        item { DashboardEmptyState("No active sessions on this host.") }
+                    } else {
+                        items(dashboard.active, key = { "active:${it.id}" }) { session ->
+                            DashboardSessionCard(
+                                session = session,
+                                repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
+                                detail = liveActivityMessage(session) ?: liveActivityLabel(session),
+                                onOpen = { viewModel.openSession(session.id) },
+                            )
+                        }
+                    }
+                    dashboardSectionHeader("Recently completed", dashboard.recent.size)
+                    if (dashboard.recent.isEmpty()) {
+                        item { DashboardEmptyState("No terminal turns were observed in the last hour.") }
+                    } else {
+                        items(dashboard.recent, key = { "recent:${it.id}" }) { session ->
+                            DashboardSessionCard(
+                                session = session,
+                                repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
+                                detail = session.failureSummary ?: session.activityText.ifBlank { session.activityLabel.ifBlank { "Turn finished" } },
+                                onOpen = { viewModel.openSession(session.id) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardHealthCard(state: UiState) {
+    val runtime =
+        when {
+            !state.runtimeConnected -> "Runtime unavailable"
+            state.runtimeMode == "shared" -> "Shared Desktop runtime"
+            state.runtimeMode == "fallback" -> "Fallback runtime"
+            else -> "Runtime connected"
+        }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("HOST HEALTH", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Text(state.host.ifBlank { "No endpoint" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    if (state.connected) "CONNECTED" else "DISCONNECTED",
+                    color = if (state.connected) Color(0xFF17B26A) else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Text(runtime, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "Foreman ${state.foremanVersion ?: "—"} · Codex ${state.codexVersion ?: "—"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.dashboardSectionHeader(title: String, count: Int) {
+    item {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(count.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun DashboardEmptyState(message: String) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp) {
+        Text(
+            message,
+            modifier = Modifier.padding(18.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun DashboardSessionCard(
+    session: SessionSummary,
+    repositoryLabel: String,
+    detail: String,
+    onOpen: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    sessionDisplayTitle(session),
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(8.dp))
+                StatusPill(session.status)
+            }
+            Text(repositoryLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (detail.isNotBlank()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                overviewAge(epochMillis(session.lastActivity ?: session.terminalAt)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun dashboardSessionDetail(session: SessionSummary): String =
+    when {
+        session.status == "failed" -> session.failureSummary ?: "The latest turn failed."
+        session.waitType == "input" -> "Waiting for input"
+        session.status == "waiting" || session.attention -> "Waiting for approval"
+        else -> session.activityText.ifBlank { session.activityLabel }
+    }
 
 @Composable
 private fun HostOverviewCard(

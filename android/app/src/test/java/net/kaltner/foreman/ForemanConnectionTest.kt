@@ -27,6 +27,90 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun androidDashboardProjectsLiveAttentionAndRecentWork() {
+        val now = 2_000_000_000_000L
+        val working =
+            SessionSummary(
+                "working",
+                "/repo",
+                "Working",
+                "working",
+                lastActivity = (now - 5_000) / 1000,
+                activeTurnStartedAt = (now - 60_000) / 1000,
+            )
+        val waiting =
+            SessionSummary(
+                "waiting",
+                "/repo",
+                "Waiting",
+                "waiting",
+                lastActivity = (now - 2_000) / 1000,
+                activeTurnStartedAt = (now - 120_000) / 1000,
+            )
+        val failed =
+            SessionSummary(
+                "failed",
+                "/repo",
+                "Failed",
+                "failed",
+                lastActivity = (now - 1_000) / 1000,
+                terminalAt = (now - 1_000) / 1000,
+            )
+        val interrupted =
+            SessionSummary(
+                "interrupted",
+                "/repo",
+                "Interrupted",
+                "interrupted",
+                lastActivity = now - 3_000,
+                terminalAt = now - 3_000,
+            )
+        val oldCompletion =
+            SessionSummary(
+                "old",
+                "/repo",
+                "Old",
+                "completed",
+                terminalAt = now - ANDROID_DASHBOARD_RECENT_WINDOW_MS - 1,
+            )
+        val pendingRequest =
+            SessionSummary(
+                "pending-request",
+                "/repo",
+                "Request",
+                "idle",
+                lastActivity = now - 500,
+            )
+
+        val dashboard =
+            projectAndroidDashboard(
+                listOf(working, waiting, failed, interrupted, oldCompletion, pendingRequest),
+                now,
+                requestSessionIds = setOf(pendingRequest.id),
+            )
+
+        assertEquals(listOf("working"), dashboard.active.map { it.id })
+        assertEquals(listOf("pending-request", "failed", "waiting"), dashboard.attention.map { it.id })
+        assertEquals(listOf("failed", "interrupted"), dashboard.recent.map { it.id })
+        assertEquals(2, dashboard.waitingCount)
+        assertEquals(1, dashboard.failedCount)
+        assertEquals("waiting", dashboard.oldestTurn?.id)
+    }
+
+    @Test
+    fun dashboardDestinationSurvivesReconnectUnlessOpeningAConversation() {
+        assertEquals(Screen.Dashboard, reconnectDestination(Screen.Dashboard, null))
+        assertEquals(Screen.Sessions, reconnectDestination(Screen.Overview, null))
+        assertEquals(Screen.Detail, reconnectDestination(Screen.Dashboard, "thread-1"))
+
+        val synchronized =
+            UiState(screen = Screen.Dashboard, loading = true)
+                .withSynchronizedSessions(emptyList(), emptyList(), null, null)
+        assertEquals(Screen.Dashboard, synchronized.screen)
+        assertFalse(synchronized.loading)
+    }
+
+    @Test
     fun restartIsBlockedForActiveSessionsAndPendingInput() {
         assertFalse(restartBlocked(UiState()))
         assertTrue(

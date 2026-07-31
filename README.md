@@ -122,6 +122,12 @@ on the Linux host, then enter the host name or IP address, pairing code, and a
 device name in the app. Port `8765` is used when no port is given. Run
 `foreman pair` again for each additional device or saved host. The compact host
 selector can add, rename, forget, and switch among independently paired hosts.
+Home opens the unified saved-host overview. **View dashboard** opens a live,
+host-scoped operations view with connection/runtime health, active and waiting
+counts, the oldest turn, concrete attention items, active work, and recent
+terminal turns. Dashboard cards open the existing conversation and focus a
+pending approval or input when present. Android Back from the dashboard moves
+Foreman to the background; use **Home** or **Sessions** for in-app navigation.
 
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.

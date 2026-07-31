@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 
 const val MAX_ANDROID_HOST_CONNECTIONS = 2
 const val ANDROID_OVERVIEW_POLL_INTERVAL_MS = 60_000L
+const val ANDROID_DASHBOARD_RECENT_WINDOW_MS = 60 * 60 * 1000L
 
 @Serializable
 data class GlobalSessionIdentity(val hostId: String, val sessionId: String)
@@ -58,6 +59,61 @@ data class UnifiedOverviewTotals(
     val oldestTurn: OverviewTurn?,
     val latestCompletion: OverviewTurn?,
 )
+
+data class AndroidDashboardProjection(
+    val active: List<SessionSummary>,
+    val attention: List<SessionSummary>,
+    val recent: List<SessionSummary>,
+    val waitingCount: Int,
+    val failedCount: Int,
+    val oldestTurn: SessionSummary?,
+)
+
+internal fun projectAndroidDashboard(
+    sessions: List<SessionSummary>,
+    now: Long = System.currentTimeMillis(),
+    requestSessionIds: Set<String> = emptySet(),
+): AndroidDashboardProjection {
+    fun latestFirst(values: List<SessionSummary>) =
+        values.sortedByDescending { epochMillis(it.lastActivity ?: it.terminalAt) ?: 0L }
+
+    val active = latestFirst(sessions.filter { it.status == "working" })
+    val attention =
+        latestFirst(
+            sessions.filter {
+                it.status == "waiting" || it.status == "failed" || it.attention ||
+                    it.id in requestSessionIds
+            },
+        )
+    val recent =
+        latestFirst(
+            sessions.filter {
+                it.status in setOf("completed", "failed", "interrupted") &&
+                    epochMillis(it.terminalAt)?.let { completedAt ->
+                        now - completedAt in 0..ANDROID_DASHBOARD_RECENT_WINDOW_MS
+                    } == true
+            },
+        )
+    val oldestTurn =
+        sessions.filter { it.status == "working" || it.status == "waiting" }
+            .mapNotNull { session ->
+                epochMillis(session.activeTurnStartedAt)?.let { startedAt -> session to startedAt }
+            }
+            .minByOrNull { it.second }
+            ?.first
+    return AndroidDashboardProjection(
+        active = active,
+        attention = attention,
+        recent = recent,
+        waitingCount =
+            sessions.count {
+                it.status != "failed" &&
+                    (it.status == "waiting" || it.attention || it.id in requestSessionIds)
+            },
+        failedCount = sessions.count { it.status == "failed" },
+        oldestTurn = oldestTurn,
+    )
+}
 
 internal fun epochMillis(value: Long?): Long? =
     value?.takeIf { it > 0 }?.let { if (it < 10_000_000_000L) it * 1000 else it }
