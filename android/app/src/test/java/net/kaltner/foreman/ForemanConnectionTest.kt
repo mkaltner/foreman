@@ -57,6 +57,32 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun focusedActivityKeepsCompletedItemsFromActiveTurnVisible() {
+        val session =
+            SessionSummary(
+                id = "active",
+                repository = "/repo",
+                title = "Active turn",
+                status = "working",
+                activeTurnId = "turn-current",
+                messages =
+                    listOf(
+                        ConversationItem("old", "command", status = "completed", turnId = "turn-old"),
+                        ConversationItem("read", "tool", status = "completed", turnId = "turn-current"),
+                        ConversationItem("bash", "command", status = "completed", turnId = "turn-current"),
+                    ),
+            )
+
+        val protected = activeTurnActivityItemIds(session)
+        val blocks = conversationBlocks(session.messages, ActivityDetail.Focused, protected)
+
+        assertEquals(setOf("read", "bash"), protected)
+        assertTrue(blocks.first().collapsedActivity)
+        assertEquals(listOf("read", "bash"), blocks.drop(1).map { it.items.single().id })
+        assertTrue(blocks.drop(1).none { it.collapsedActivity })
+    }
+
+    @Test
     fun androidDashboardProjectsLiveAttentionAndRecentWork() {
         val now = 2_000_000_000_000L
         val working =

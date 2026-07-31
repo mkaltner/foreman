@@ -3042,9 +3042,17 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 "item" -> {
                     val raw = event["item"]
                     if (raw == null || raw is JsonNull) return@update current
-                    val item = runCatching {
+                    val decodedItem = runCatching {
                         json.decodeFromJsonElement<ConversationItem>(raw)
                     }.getOrNull() ?: return@update current
+                    val item =
+                        if (decodedItem.turnId == null) {
+                            decodedItem.copy(
+                                turnId = event["turnId"]?.jsonPrimitive?.content,
+                            )
+                        } else {
+                            decodedItem
+                        }
                     val messages = selected.messages.toMutableList()
                     val existing = messages.indexOfFirst { it.id == item.id }
                     if (existing >= 0) messages[existing] = item else messages += item
@@ -4459,6 +4467,7 @@ private fun SessionDetailScreen(
             state.highlightedItemId?.let(::add)
             selectedApprovals.mapNotNullTo(this) { it.itemId }
             selectedInputs.mapNotNullTo(this) { it.itemId }
+            selected?.let { addAll(activeTurnActivityItemIds(it)) }
         }
     val displayBlocks =
         conversationBlocks(messages, state.activityDetail, protectedItemIds)
