@@ -90,23 +90,31 @@ jobs:
         run: ./gradlew --no-daemon test lint assembleRelease
       - name: Verify and package release files
         run: |
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+          require_archive_entry() {
+            grep -Fxq "$1" <<<"$archive_listing" || fail "Linux archive is missing $1"
+          }
+
           mkdir -p dist
           apk="android/app/build/outputs/apk/release/app-release.apk"
-          test -f "$apk"
+          [[ -f "$apk" ]] || fail "Signed release APK was not produced at $apk"
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           apksigner_path="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)"
           aapt2_path="$(find "$sdk_root/build-tools" -type f -name aapt2 | sort -V | tail -1)"
-          test -x "$apksigner_path"
-          test -x "$aapt2_path"
+          [[ -x "$apksigner_path" ]] || fail "Android apksigner was not found"
+          [[ -x "$aapt2_path" ]] || fail "Android aapt2 was not found"
           expected_version="$(sed -n 's/^foremanVersion=//p' release.properties)"
           expected_code="$(sed -n 's/^androidVersionCode=//p' release.properties)"
           expected_cert="$(sed -n 's/^androidSigningCertificateSha256=//p' release.properties)"
           badging="$("$aapt2_path" dump badging "$apk" | sed -n '1p')"
-          grep -Fq "versionName='$expected_version'" <<<"$badging"
-          grep -Fq "versionCode='$expected_code'" <<<"$badging"
+          grep -Fq "versionName='$expected_version'" <<<"$badging" || fail "APK version name does not match release.properties"
+          grep -Fq "versionCode='$expected_code'" <<<"$badging" || fail "APK version code does not match release.properties"
           signing="$("$apksigner_path" verify --verbose --print-certs "$apk")"
-          grep -Fq 'Verifies' <<<"$signing"
-          grep -Fq "Signer #1 certificate SHA-256 digest: $expected_cert" <<<"$signing"
+          grep -Fq 'Verifies' <<<"$signing" || fail "APK signature verification failed"
+          grep -Fq "Signer #1 certificate SHA-256 digest: $expected_cert" <<<"$signing" || fail "APK signing certificate does not match release.properties"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
           tar --exclude='__pycache__' --exclude='*.py[co]' \
             -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" \
@@ -114,16 +122,24 @@ jobs:
             scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
           archive="dist/foreman-linux-${RELEASE_TAG}.tar.gz"
           archive_listing="$(tar -tzf "$archive")"
-          grep -Fxq 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE' <<<"$archive_listing"
-          grep -Fxq 'web/dist/index.html' <<<"$archive_listing"
-          grep -Fxq 'release.properties' <<<"$archive_listing"
-          grep -Fxq 'THIRD_PARTY_NOTICES.md' <<<"$archive_listing"
+          require_archive_entry 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE'
+          require_archive_entry 'web/dist/index.html'
+          require_archive_entry 'release.properties'
+          require_archive_entry 'THIRD_PARTY_NOTICES.md'
           if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
             echo "Linux archive contains Python cache files" >&2
             exit 1
           fi
           (cd dist && sha256sum foreman-* > SHA256SUMS)
           (cd dist && sha256sum --check SHA256SUMS)
+      - name: Upload failed release candidate
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-release-${{ env.RELEASE_TAG }}-${{ github.run_id }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: warn
+          retention-days: 1
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
