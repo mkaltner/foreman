@@ -70,8 +70,6 @@ button.full{width:100%;min-height:44px}
 .status-pill.waiting,.status-pill.failed{color:#b54708;background:#ffead5}
 .status-pill.resumable{color:#175cd3;background:#eff8ff}
 .provider-badge{background:var(--surface-alt);color:var(--muted);letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;border-radius:999px;padding:2px 7px;font:800 9px/1.6 ui-sans-serif,system-ui,sans-serif;display:inline-flex;vertical-align:middle}
-.provider-badge.claude-code{color:#9a3412;background:#fff7ed}
-:root[data-theme=dark] .provider-badge.claude-code{color:#fdba74;background:#431407}
 .status-pill.stale{color:#b54708;background:#fff4e5}
 :root[data-theme=dark] .status-pill.waiting,:root[data-theme=dark] .status-pill.failed{color:#fdba74;background:#4a2810}
 .empty-list,.empty-detail,.empty-conversation{text-align:center;color:var(--muted);align-content:center;place-items:center;display:grid}
