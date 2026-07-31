@@ -195,6 +195,17 @@ data class SessionSummary(
     val turnDurationMs: Long? = null,
     val failureSummary: String? = null,
     val waitType: String? = null,
+    val provider: String? = null,
+    val sessionId: String? = null,
+    val repositoryId: String? = null,
+    val permissionMode: String? = null,
+    val source: String? = null,
+    val state: String? = null,
+    val capabilities: List<String> = emptyList(),
+    val liveAttached: Boolean? = null,
+    val externalLimitation: String? = null,
+    val waitDescription: String? = null,
+    val statusChangedAt: Long? = null,
 )
 
 @Serializable

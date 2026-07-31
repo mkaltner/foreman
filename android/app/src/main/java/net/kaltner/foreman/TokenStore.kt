@@ -371,6 +371,17 @@ class PreferenceStore(context: Context, hostId: String?) {
             searchDateTo = preferences.getString("sessionSearchDateTo", "").orEmpty(),
             pinnedSessionIds = sessionIds("pinnedSessionIds"),
             hiddenSessionIds = sessionIds("hiddenSessionIds"),
+            lastProvider = preferences.getString("lastProvider", PROVIDER_CODEX)
+                ?.takeIf { it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) }
+                ?: PROVIDER_CODEX,
+            claudeModel = preferences.getString("claudeModel", "sonnet") ?: "sonnet",
+            claudePermissionMode =
+                preferences.getString("claudePermissionMode", "default") ?: "default",
+            selectedSessionProvider =
+                preferences.getString("selectedSessionProvider", PROVIDER_CODEX)
+                    ?.takeIf { it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) }
+                    ?: PROVIDER_CODEX,
+            selectedSessionId = preferences.getString("selectedSessionId", null),
         )
 
     fun setThemeMode(mode: ThemeMode) { preferences.edit().putString("themeMode", mode.name).apply() }
@@ -383,6 +394,34 @@ class PreferenceStore(context: Context, hostId: String?) {
         preferences.edit().putString("model", model).putString("reasoningEffort", reasoningEffort).apply()
     }
     fun setAccessLevel(accessLevel: String?) { preferences.edit().putString("accessLevel", accessLevel).apply() }
+    fun setClaudeRoute(model: String, permissionMode: String) {
+        preferences.edit()
+            .putString("claudeModel", model)
+            .putString("claudePermissionMode", permissionMode)
+            .apply()
+    }
+    fun setLastProvider(provider: String) {
+        preferences.edit().putString("lastProvider", provider).apply()
+    }
+    fun setSelectedSession(provider: String, sessionId: String?) {
+        preferences.edit()
+            .putString("selectedSessionProvider", provider)
+            .putString("selectedSessionId", sessionId)
+            .apply()
+    }
+    fun loadDrafts(): Map<String, String> =
+        preferences.all.mapNotNull { (key, value) ->
+            if (!key.startsWith("draft.")) return@mapNotNull null
+            val rawKey = key.removePrefix("draft.")
+            val providerKey = legacySessionKey(rawKey)
+            (value as? String)?.take(100_000)?.let { providerKey to it }
+        }.toMap()
+
+    fun setDraft(provider: String, sessionId: String, text: String) {
+        val key = "draft.${providerSessionKey(provider, sessionId)}"
+        if (text.isEmpty()) preferences.edit().remove(key).apply()
+        else preferences.edit().putString(key, text.take(100_000)).apply()
+    }
     fun setSessionSearch(filters: SessionSearchFilters) {
         preferences.edit()
             .putString("sessionSearchQuery", filters.query.take(500))
@@ -406,7 +445,11 @@ class PreferenceStore(context: Context, hostId: String?) {
     private inline fun <reified T : Enum<T>> enumPreference(key: String, fallback: T): T =
         runCatching { enumValueOf<T>(preferences.getString(key, fallback.name)!!) }.getOrDefault(fallback)
     private fun sessionIds(key: String): Set<String> =
-        preferences.getStringSet(key, emptySet()).orEmpty().filterTo(linkedSetOf()) { it.length <= 100 }
+        preferences.getStringSet(key, emptySet()).orEmpty()
+            .asSequence()
+            .filter { it.length <= 300 }
+            .map(::legacySessionKey)
+            .toCollection(linkedSetOf())
 }
 
 enum class ThemeMode { System, Light, Dark }
@@ -432,6 +475,11 @@ data class UiPreferences(
     val searchDateTo: String = "",
     val pinnedSessionIds: Set<String> = emptySet(),
     val hiddenSessionIds: Set<String> = emptySet(),
+    val lastProvider: String = PROVIDER_CODEX,
+    val claudeModel: String = "sonnet",
+    val claudePermissionMode: String = "default",
+    val selectedSessionProvider: String = PROVIDER_CODEX,
+    val selectedSessionId: String? = null,
 )
 
 private fun validPort(value: Int) = value in 1..65535

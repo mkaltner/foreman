@@ -67,11 +67,16 @@ internal fun filterSessions(
     repositoryRoot: String,
     nowMillis: Long = System.currentTimeMillis(),
 ): List<VisibleSession> {
-    val remote = results.associateBy { it.session.id }
+    val normalizedPinnedIds = pinnedIds.mapTo(linkedSetOf(), ::legacySessionKey)
+    val normalizedHiddenIds = hiddenIds.mapTo(linkedSetOf(), ::legacySessionKey)
+    // The protocol's transcript search remains Codex-only. Claude sessions still
+    // participate in local title/workspace/status/pin filtering.
+    val remote = results.associateBy { it.session.providerKey() }
     val source = linkedMapOf<String, SessionSummary>()
-    sessions.forEach { source[it.id] = it }
+    sessions.forEach { source[it.providerKey()] = it }
     results.forEach { result ->
-        source[result.session.id] = source[result.session.id]?.let { result.session.copy(
+        val key = result.session.providerKey()
+        source[key] = source[key]?.let { result.session.copy(
             status = it.status,
             attention = it.attention,
             lastActivity = it.lastActivity,
@@ -81,9 +86,10 @@ internal fun filterSessions(
     val query = filters.query.trim().lowercase()
     val bounds = sessionDateBounds(filters, nowMillis)
     return source.values.mapNotNull { session ->
-        val hidden = session.id in hiddenIds
+        val key = session.providerKey()
+        val hidden = key in normalizedHiddenIds
         if (filters.hiddenOnly != hidden) return@mapNotNull null
-        if (filters.pinnedOnly && session.id !in pinnedIds) return@mapNotNull null
+        if (filters.pinnedOnly && key !in normalizedPinnedIds) return@mapNotNull null
         val identity = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot)
         if (filters.repository.isNotBlank() && identity.id != filters.repository) return@mapNotNull null
         if (!sessionStatusMatches(session.status, filters.status)) return@mapNotNull null
@@ -92,8 +98,8 @@ internal fun filterSessions(
         if (bounds.second != null && (activity == null || activity > bounds.second!!)) return@mapNotNull null
         val localMatch = "${session.title}\n${identity.label}\n${identity.id}\n${session.repository}"
             .lowercase().contains(query)
-        if (query.isNotBlank() && !localMatch && session.id !in remote) return@mapNotNull null
-        VisibleSession(session, remote[session.id]?.matches.orEmpty(), session.id in pinnedIds, hidden)
+        if (query.isNotBlank() && !localMatch && key !in remote) return@mapNotNull null
+        VisibleSession(session, remote[key]?.matches.orEmpty(), key in normalizedPinnedIds, hidden)
     }.sortedWith(
         compareByDescending<VisibleSession> { it.pinned }
             .thenBy { if (it.session.status == "waiting" || it.session.attention) 0 else if (it.session.status == "working") 1 else 2 }
