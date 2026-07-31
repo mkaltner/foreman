@@ -25,6 +25,12 @@ text message per frame. The browser assets and `/health` share the WebSocket
 listener; there is no application REST API, browser backend, database, cookie,
 or server-side rendering layer.
 
+Release identity is separate from protocol compatibility. The candidate manifest
+in `release.properties` aligns the Linux status version, Android version
+name/code, web package version, and unchanged protocol version. A prerelease can
+advance without changing protocol v1; a protocol change requires an intentional
+coordinated client/service update and compatibility documentation.
+
 Linux files:
 
 - `foreman_service.py`: listener, request switch, repository discovery;
@@ -118,3 +124,15 @@ scheduled acknowledgement, and enqueues a user-systemd restart of only
 `foreman.service`. Client reconnect is the completion signal. Desktop Codex,
 raw journals, arbitrary shell, reboot, upgrades, configuration, files, roles,
 and persistent audit storage are outside this surface.
+
+Install replacement is transactional at the application-directory boundary.
+Configuration and pairing state live outside that boundary and are never part
+of the rollback move; obsolete application files disappear because the staged
+payload replaces the prior directory as a unit. Service activation is the
+commit point, and a failed activation restores the prior payload, launcher, and
+unit before restarting it.
+Listener/client closure and Codex detachment run concurrently under a bounded
+application shutdown deadline shorter than the systemd unit's stop timeout.
+Reaching that deadline records only a fixed sanitized diagnostic and lets
+systemd finish the process teardown; Foreman still never signals Desktop's
+runtime.

@@ -56,6 +56,7 @@ IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_SEARCH_RESULTS = 100
 MAX_SEARCH_QUERY_BYTES = 500
 MAX_TRANSCRIPT_SEARCH_CANDIDATES = 100
+SHUTDOWN_TIMEOUT_SECONDS = 10
 SEARCH_STATUSES = {
     "active",
     "working",
@@ -180,6 +181,7 @@ class Foreman:
         self.restart_task: asyncio.Task[None] | None = None
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
+        self.stopping = False
 
     async def start(self) -> None:
         await self.codex.start()
@@ -209,22 +211,27 @@ class Foreman:
 
     async def stop(self) -> None:
         self.diagnostics.record("service.stopping")
+        self.stopping = True
+        shutdown: list[Awaitable[Any]] = [self.codex.stop()]
         if self.server:
             self.server.close()
-            await self.server.wait_closed()
+            shutdown.append(self.server.wait_closed())
         if self.web_server:
-            self.web_server.close()
-            await self.web_server.wait_closed()
-        writers = []
+            self.web_server.close(close_connections=True)
+            shutdown.append(self.web_server.wait_closed())
         for client in list(self.clients):
             if client.writer is not None:
                 client.writer.close()
-                writers.append(client.writer.wait_closed())
+                shutdown.append(client.writer.wait_closed())
             elif client.websocket is not None:
-                writers.append(client.websocket.close())
-        if writers:
-            await asyncio.gather(*writers, return_exceptions=True)
-        await self.codex.stop()
+                shutdown.append(client.websocket.close())
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*shutdown, return_exceptions=True),
+                timeout=SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            self.diagnostics.record("service.shutdown_timed_out")
 
     async def codex_event(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -401,6 +408,8 @@ class Foreman:
         )
 
     async def broadcast_service_status(self) -> None:
+        if self.stopping:
+            return
         outgoing = {
             "version": VERSION,
             "type": "service.event",

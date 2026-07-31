@@ -11,6 +11,7 @@ from typing import Any
 DIAGNOSTIC_MESSAGES: dict[str, tuple[str, str]] = {
     "service.started": ("info", "Foreman service started"),
     "service.stopping": ("info", "Foreman service stopping"),
+    "service.shutdown_timed_out": ("warning", "Foreman shutdown deadline reached"),
     "runtime.shared_attached": ("info", "Shared Desktop runtime attached"),
     "runtime.fallback_started": ("warning", "Foreman fallback runtime started"),
     "runtime.disconnected": ("warning", "Codex runtime disconnected"),

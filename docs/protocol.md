@@ -1,5 +1,10 @@
 # Foreman protocol v1
 
+Protocol version 1 is independent of the `0.1.0-alpha.6` application version.
+The release verifier checks the Linux, web, and Android protocol constants
+against `release.properties`; this candidate does not introduce a protocol
+version bump.
+
 Foreman uses the same versioned messages over two transports:
 
 - UTF-8 newline-delimited JSON over raw TCP on port `8765`;

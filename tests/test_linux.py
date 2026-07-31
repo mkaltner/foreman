@@ -520,6 +520,25 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["response", "runner"])
         self.assertEqual(client.message["payload"], {"scheduled": True, "timeoutSeconds": 45})
 
+    async def test_shutdown_deadline_bounds_an_unresponsive_client(self) -> None:
+        class StalledWebsocket:
+            async def close(self, *args: Any) -> None:
+                await asyncio.Event().wait()
+
+        self.app.clients.add(
+            Client(None, "redacted", websocket=StalledWebsocket())  # type: ignore[arg-type]
+        )
+        with patch("foreman_service.SHUTDOWN_TIMEOUT_SECONDS", 0.01):
+            await asyncio.wait_for(self.app.stop(), 0.5)
+
+        self.assertTrue(self.app.stopping)
+        self.assertTrue(
+            any(
+                item["category"] == "service.shutdown_timed_out"
+                for item in self.app.diagnostics.entries()
+            )
+        )
+
     async def test_restart_disabled_and_unauthenticated_requests_are_rejected(self) -> None:
         self.app.remote_restart_enabled = False
         authenticated = Client(None, "redacted", authenticated=True)
@@ -1560,7 +1579,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(paired["deviceToken"], str(paired_clients))
         self.app.started_monotonic -= 12
         service_status = await self.request("service.status")
-        self.assertEqual(service_status["foremanVersion"], "0.1.0-alpha.3")
+        self.assertEqual(service_status["foremanVersion"], "0.1.0-alpha.6")
         self.assertGreaterEqual(service_status["uptimeSeconds"], 12)
         self.assertEqual(service_status["codex"]["mode"], "fallback")
         self.assertEqual(service_status["codex"]["version"], "0.145.0")
