@@ -29,9 +29,9 @@ before reinstalling. Do not run an unreviewed branch checkout on a host that
 controls sensitive Codex sessions:
 
 ```sh
-git fetch origin tag v1.0.0-rc.2
-git checkout --detach v1.0.0-rc.2
-python3 scripts/verify_release.py --tag v1.0.0-rc.2
+git fetch origin tag v1.0.0
+git checkout --detach v1.0.0
+python3 scripts/verify_release.py --tag v1.0.0
 ./install.sh
 ```
 
