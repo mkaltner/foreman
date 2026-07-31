@@ -1,4 +1,4 @@
-import type { RepositoryInfo, SessionSearchResult, SessionSummary } from "./protocol";
+import { providerSessionKey, sessionProvider, type RepositoryInfo, type SessionSearchResult, type SessionSummary } from "./protocol";
 
 export type SearchStatus = "active" | "waiting" | "completed" | "failed" | "interrupted";
 export type DateRange = "all" | "today" | "7d" | "30d" | "custom";
@@ -101,17 +101,19 @@ export function filterSessions(
   now = new Date(),
 ): VisibleSession[] {
   const query = filters.query.trim().toLowerCase();
-  const remote = new Map(searchResults.map((result) => [result.session.id, result]));
-  const source = new Map(sessions.map((session) => [session.id, session]));
+  const remote = new Map(searchResults.map((result) => [providerSessionKey(sessionProvider(result.session), result.session.id), result]));
+  const source = new Map(sessions.map((session) => [providerSessionKey(sessionProvider(session), session.id), session]));
   searchResults.forEach(({ session }) => {
-    const live = source.get(session.id);
-    source.set(session.id, live ? { ...session, ...live } : session);
+    const key = providerSessionKey(sessionProvider(session), session.id);
+    const live = source.get(key);
+    source.set(key, live ? { ...session, ...live } : session);
   });
   const bounds = dateBounds(filters, now);
   const visible = [...source.values()].filter((session) => {
-    const hidden = hiddenIds.has(session.id);
+    const key = providerSessionKey(sessionProvider(session), session.id);
+    const hidden = identitySetHas(hiddenIds, session);
     if ((filters.hidden === "hidden") !== hidden) return false;
-    if (filters.pinnedOnly && !pinnedIds.has(session.id)) return false;
+    if (filters.pinnedOnly && !identitySetHas(pinnedIds, session)) return false;
     const identity = repositoryIdentity(session.repository, repositories, repositoryRoot);
     if (filters.repository && filters.repository !== identity.id) return false;
     if (filters.statuses.length && !filters.statuses.some((status) => statusMatches(session.status, status))) {
@@ -123,12 +125,12 @@ export function filterSessions(
     if (!query) return true;
     const local = `${session.title}\n${identity.label}\n${identity.id}\n${session.repository}`
       .toLowerCase().includes(query);
-    return local || remote.has(session.id);
+    return local || remote.has(key);
   }).map((session) => ({
     session,
-    matches: remote.get(session.id)?.matches ?? [],
-    pinned: pinnedIds.has(session.id),
-    hidden: hiddenIds.has(session.id),
+    matches: remote.get(providerSessionKey(sessionProvider(session), session.id))?.matches ?? [],
+    pinned: identitySetHas(pinnedIds, session),
+    hidden: identitySetHas(hiddenIds, session),
   }));
   return visible.sort((left, right) => compareVisible(left, right, filters, query));
 }
@@ -202,6 +204,11 @@ function compareVisible(
   const attention = (item: VisibleSession) => item.session.status === "waiting" || item.session.attention
     ? 0 : item.session.status === "working" ? 1 : 2;
   return attention(left) - attention(right) || recent(left, right) || left.session.id.localeCompare(right.session.id);
+}
+
+function identitySetHas(values: ReadonlySet<string>, session: SessionSummary): boolean {
+  return values.has(providerSessionKey(sessionProvider(session), session.id))
+    || (sessionProvider(session) === "codex" && values.has(session.id));
 }
 
 function recent(left: VisibleSession, right: VisibleSession): number {

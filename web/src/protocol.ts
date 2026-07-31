@@ -1,5 +1,19 @@
 export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+export type ProviderId = "codex" | "claude-code";
+
+export interface ProviderInfo {
+  id: ProviderId;
+  displayName: string;
+  available: boolean;
+  version?: string | null;
+  cliVersion?: string | null;
+  sdkVersion?: string | null;
+  nodeVersion?: string | null;
+  capabilities: string[];
+  limitations: string[];
+  unavailableReason?: "cli-missing" | "node-missing" | "sdk-missing" | "authentication-unavailable" | "adapter-unavailable" | null;
+}
 
 export interface WireMessage<T = Record<string, unknown>> {
   version: number;
@@ -42,7 +56,11 @@ export interface ConversationItem {
 }
 
 export interface SessionSummary {
+  provider?: ProviderId;
   id: string;
+  sessionId?: string;
+  cwd?: string;
+  repositoryId?: string;
   repository: string;
   title: string;
   status: string;
@@ -55,6 +73,12 @@ export interface SessionSummary {
   model?: string | null;
   reasoningEffort?: string | null;
   accessLevel?: string | null;
+  permissionMode?: string | null;
+  source?: "managed" | "external";
+  state?: string;
+  capabilities?: string[];
+  liveAttached?: boolean;
+  externalLimitation?: string | null;
   activeTurnStartedAt?: number | null;
   terminalAt?: number | null;
   turnDurationMs?: number | null;
@@ -140,6 +164,13 @@ export interface AccessLevelInfo {
   id: string;
   displayName: string;
   description?: string;
+}
+
+export interface PermissionModeInfo {
+  id: string;
+  displayName: string;
+  description?: string;
+  highRisk?: boolean;
 }
 
 export interface ApprovalDecision {
@@ -266,8 +297,20 @@ export interface SessionEvent {
 }
 
 export interface SessionEventPayload {
+  provider?: ProviderId;
   sessionId: string;
   event: SessionEvent;
+}
+
+export function sessionProvider(session: Pick<SessionSummary, "provider">): ProviderId {
+  return session.provider ?? "codex";
+}
+
+export function providerSessionKey(
+  provider: ProviderId,
+  sessionId: string,
+): string {
+  return `${provider.length}:${provider}${sessionId}`;
 }
 
 export class ForemanError extends Error {
@@ -491,9 +534,9 @@ export function reconcileSessionSummaries(
   previous: SessionSummary[],
   incoming: SessionSummary[],
 ): SessionSummary[] {
-  const prior = new Map(previous.map((session) => [session.id, session]));
+  const prior = new Map(previous.map((session) => [providerSessionKey(sessionProvider(session), session.id), session]));
   return incoming.map((session) => {
-    const existing = prior.get(session.id);
+    const existing = prior.get(providerSessionKey(sessionProvider(session), session.id));
     if (
       session.status === "idle" &&
       existing &&
@@ -519,7 +562,8 @@ export function applySessionSummaryEventBatch(
   buffered: ReadonlyMap<string, SessionEvent[]>,
 ): SessionSummary[] {
   return sessions.map((session) => {
-    const events = buffered.get(session.id);
+    const events = buffered.get(providerSessionKey(sessionProvider(session), session.id))
+      ?? (sessionProvider(session) === "codex" ? buffered.get(session.id) : undefined);
     return events ? events.reduce(applySessionSummaryEvent, session) : session;
   });
 }

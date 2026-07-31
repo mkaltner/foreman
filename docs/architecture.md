@@ -6,16 +6,22 @@ Foreman has one Linux service and thin Android and browser clients:
 Android Foreman ── authenticated JSONL/TCP :8765 ── Linux Foreman
 Browser Foreman ── static HTTP + authenticated WS :8766 ─┘
                                                     │
-                                                    └─ WebSocket/Unix socket
+                                                    ├─ WebSocket/Unix socket
+                                                    │          │
+                                                    │  Desktop codex app-server
+                                                    │
+                                                    └─ bounded JSONL/stdio
                                                                │
-                                                    Desktop codex app-server
+                                                    Claude Agent SDK bridge
 ```
 
 The Linux service also owns one optional Node companion for the official Claude
-Agent SDK. That adapter is intentionally internal: it has lifecycle/status and a
-test harness, but protocol v1, Android, and web remain Codex-only. The companion
-uses bounded request-ID JSON over stdio, persists only Claude `{sessionId, cwd}`
-mappings, and never mirrors transcripts or attaches to external live processes.
+Agent SDK. Additive protocol-v1 provider operations expose that adapter to web;
+Android remains Codex-only and can ignore the new capabilities and provider
+events. The companion uses bounded request-ID JSON over stdio, persists only
+Claude `{sessionId, cwd}` mappings, and never mirrors transcripts or attaches to
+external live processes. If it fails, Codex stays available, active Claude work
+becomes resumable, and no query is replayed.
 
 The Linux process treats Codex's Desktop control socket as attach-only. It never
 unlinks, replaces, or launches a process on that path. When attachment is
@@ -51,10 +57,15 @@ Linux files:
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 
 The React/TypeScript SPA under `web/` uses native WebSocket and local component
-state. It reloads Codex-authoritative sessions and history after reconnect,
-resubscribes to the open session, and never replays prompt, steer, interrupt,
-archive, or delete requests. Its committed `web/dist` output is copied into the
-installed data directory so Node isn't part of the runtime.
+state. It reloads provider-authoritative sessions and history after reconnect,
+resubscribes to the open compound identity, and never replays prompt, steer,
+interrupt, archive, or delete requests. Claude deletion is provider-aware and
+uses the official SDK; Claude archive is absent because the SDK has no matching
+operation. Durable routes, selection, drafts, and
+scroll state use `hostId + provider + sessionId`; Claude and Codex IDs are never
+treated as the same namespace. Its committed `web/dist` output is copied into
+the installed data directory. Node is optional at runtime and required only for
+enabled Claude support.
 
 Android and web keep a client-local registry of independently paired hosts. A
 stable random local ID identifies each host in preferences, notification routes,
@@ -76,8 +87,8 @@ persisted by the service.
 ### Multi-host overview connections
 
 The unified overview is a client-side projection. No Foreman service knows
-about another host, and every projected session uses the compound
-`hostId + sessionId` identity. Small host snapshots (counts, health, versions,
+about another host, and every provider-aware projected session uses the compound
+`hostId + provider + sessionId` identity. Small host snapshots (counts, health, versions,
 runtime mode, timestamps, and attention metadata) are cached locally;
 transcripts and tokens are not copied into the overview cache. A disconnected
 snapshot is always labeled stale.

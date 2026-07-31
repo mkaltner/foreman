@@ -1,4 +1,5 @@
 let sequence = 0;
+export const deletedSessions = [];
 
 export async function listSessions({ dir }) {
   return [
@@ -11,6 +12,58 @@ export async function listSessions({ dir }) {
       firstPrompt: "not projected",
     },
   ];
+}
+
+export async function getSessionInfo(sessionId, { dir }) {
+  return {
+    sessionId,
+    cwd: dir,
+    summary: sessionId === "external-session" ? "External Claude work" : "Managed Claude work",
+    createdAt: 100,
+    lastModified: 200,
+  };
+}
+
+export async function getSessionMessages(sessionId) {
+  return [
+    {
+      type: "user",
+      uuid: `${sessionId}-user`,
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: { role: "user", content: "Inspect the repository" },
+    },
+    {
+      type: "assistant",
+      uuid: `${sessionId}-assistant`,
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "I will inspect it." },
+          { type: "tool_use", id: `${sessionId}-tool`, name: "Bash", input: { command: "echo SECRET" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: `${sessionId}-result`,
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `${sessionId}-tool`, content: "SECRET OUTPUT" }],
+      },
+    },
+  ];
+}
+
+export async function deleteSession(sessionId, { dir }) {
+  deletedSessions.push({ sessionId, dir });
 }
 
 export function query({ prompt, options }) {

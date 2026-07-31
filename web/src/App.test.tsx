@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SetupView } from "./App";
+import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
+import { DEFAULT_SESSION_FILTERS } from "./session-search";
 import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
 
 const clientMock = vi.hoisted(() => ({
@@ -158,6 +159,65 @@ describe("page scrolling", () => {
   });
 });
 
+describe("Claude session deletion", () => {
+  const session: SessionSummary = {
+    provider: "claude-code",
+    id: "claude-session",
+    sessionId: "claude-session",
+    repositoryId: "foreman",
+    repository: "/projects/foreman",
+    title: "Claude work",
+    status: "resumable",
+    source: "external",
+    capabilities: ["session.read", "session.resume", "session.delete"],
+  };
+
+  it("uses the provider-aware destructive request with exact workspace identity", () => {
+    expect(sessionActionRequest("delete", session)).toEqual({
+      type: "provider.session.delete",
+      payload: {
+        provider: "claude-code",
+        sessionId: "claude-session",
+        repositoryId: "foreman",
+        confirm: true,
+      },
+    });
+    expect(() => sessionActionRequest("archive", session)).toThrow(/does not support session archive/i);
+  });
+
+  it("shows Delete but does not invent a Claude archive action", () => {
+    const onAction = vi.fn();
+    const onPin = vi.fn();
+    const onHide = vi.fn();
+    render(<SessionList
+      results={[{ session, pinned: false, hidden: false, matches: [] }]}
+      filters={DEFAULT_SESSION_FILTERS}
+      repositoryOptions={[]}
+      searchLoading={false}
+      searchError=""
+      selectedId={null}
+      selectedProvider="codex"
+      disabled={false}
+      onOpen={vi.fn()}
+      onRefresh={vi.fn()}
+      onNew={vi.fn()}
+      onAction={onAction}
+      onFilters={vi.fn()}
+      onSearchNow={vi.fn()}
+      onPin={onPin}
+      onHide={onHide}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pin Claude work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(onPin).toHaveBeenCalledWith("claude-code", "claude-session");
+    expect(onHide).toHaveBeenCalledWith("claude-code", "claude-session");
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onAction).toHaveBeenCalledWith("delete", session);
+  });
+});
+
 describe("user message links", () => {
   it("opens safe bare links without interpreting other message text as markup", () => {
     render(<LinkedUserText text={'Review <b>literal</b> at https://example.com/pr/11.'} />);
@@ -279,6 +339,60 @@ describe("conversation drafts", () => {
     });
     expect(screen.getByRole("button", { name: "Access: Full access" })).toBeInTheDocument();
   });
+
+  it("resumes an external Claude session with exact model and permission values", async () => {
+    const onRequest = vi.fn().mockResolvedValue({ accepted: true });
+    const onDraftChange = vi.fn();
+    render(
+      <ConversationView
+        session={{
+          ...session("external"),
+          provider: "claude-code",
+          source: "external",
+          state: "resumable",
+          status: "resumable",
+          repositoryId: ".",
+          model: "sonnet",
+          permissionMode: "default",
+        }}
+        approvals={[]}
+        models={[
+          { id: "sonnet", displayName: "Sonnet", reasoningEfforts: [], visible: true, isDefault: true },
+          { id: "haiku", displayName: "Haiku", reasoningEfforts: [], visible: true, isDefault: false },
+        ]}
+        accessLevels={[
+          { id: "default", displayName: "Default", description: "Ask when required" },
+          { id: "dontAsk", displayName: "Don’t ask", description: "Deny unapproved actions" },
+        ]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft="Continue safely"
+        onDraftChange={onDraftChange}
+        onBack={vi.fn()}
+        onRequest={onRequest}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Not live-attached/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Model: Sonnet" }));
+    fireEvent.click(screen.getByRole("option", { name: /Haiku/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Permission: Default" }));
+    fireEvent.click(screen.getByRole("option", { name: /Don’t ask/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume in Foreman" }));
+
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("provider.session.resume", {
+      provider: "claude-code",
+      sessionId: "external",
+      repositoryId: ".",
+      text: "Continue safely",
+      model: "haiku",
+      permissionMode: "dontAsk",
+    }));
+    expect(onDraftChange).toHaveBeenCalledWith("");
+    expect(screen.queryByTitle("Attach images")).not.toBeInTheDocument();
+  });
 });
 
 describe("conversation activity detail", () => {
@@ -337,6 +451,7 @@ describe("NewSessionDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start in workspace" }));
 
     expect(create).toHaveBeenCalledWith({
+      provider: "codex",
       repositoryId: ".",
       model: "model-test",
       reasoningEffort: "high",
@@ -362,6 +477,7 @@ describe("NewSessionDialog", () => {
     fireEvent.click(button);
 
     expect(create).toHaveBeenLastCalledWith({
+      provider: "codex",
       repositoryId: "foreman",
       model: "model-test",
       reasoningEffort: "low",
@@ -379,5 +495,62 @@ describe("NewSessionDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start in workspace" }));
 
     expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repositoryId: "." }));
+  });
+
+  it("starts Claude with the adapter model and exact permission mode", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    render(<NewSessionDialog
+      repositories={[]}
+      repositoryRoot="/projects"
+      {...routeProps}
+      providers={[
+        { id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", available: true, capabilities: [], limitations: [] },
+      ]}
+      claudeModels={[
+        { id: "sonnet", displayName: "Sonnet", reasoningEfforts: [], visible: true, isDefault: true },
+        { id: "haiku", displayName: "Haiku", reasoningEfforts: [], visible: true, isDefault: false },
+      ]}
+      claudePermissionModes={[
+        { id: "default", displayName: "Default", description: "Ask when required" },
+        { id: "bypassPermissions", displayName: "Bypass permissions", description: "Unrestricted/high risk", highRisk: true },
+      ]}
+      onClose={vi.fn()}
+      onCreate={create}
+    />);
+
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "claude-code" } });
+    expect(screen.queryByLabelText("Reasoning")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Initial prompt"), { target: { value: "Read the project" } });
+    fireEvent.change(screen.getByLabelText("Claude model"), { target: { value: "haiku" } });
+    fireEvent.change(screen.getByLabelText("Permission mode"), { target: { value: "bypassPermissions" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start Claude session" }));
+
+    expect(create).toHaveBeenCalledWith({
+      provider: "claude-code",
+      repositoryId: ".",
+      text: "Read the project",
+      model: "haiku",
+      permissionMode: "bypassPermissions",
+    });
+    expect(screen.getAllByText(/high risk/i).length).toBeGreaterThan(0);
+  });
+
+  it("explains an unavailable Claude provider without exposing internals", () => {
+    render(<NewSessionDialog
+      repositories={[]}
+      repositoryRoot="/projects"
+      {...routeProps}
+      providers={[
+        { id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", available: false, capabilities: [], limitations: [], unavailableReason: "node-missing" },
+      ]}
+      onClose={vi.fn()}
+      onCreate={vi.fn()}
+    />);
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "claude-code" } });
+    expect(screen.getByText("Claude Code is unavailable on this host.")).toBeInTheDocument();
+    expect(screen.getByText("Node.js 20 or newer is missing.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Claude session" })).toBeDisabled();
   });
 });

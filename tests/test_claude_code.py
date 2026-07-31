@@ -69,6 +69,7 @@ class ClaudeCodeTests(unittest.IsolatedAsyncioTestCase):
                     ["default", "dontAsk", "acceptEdits", "plan", "auto", "bypassPermissions"],
                 )
                 self.assertFalse(status["capabilities"]["liveAttachExternal"])
+                self.assertTrue(status["capabilities"]["delete"])
 
                 started = await adapter.start_session(
                     root,
@@ -244,6 +245,32 @@ class ClaudeCodeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(managed[0]["classification"], "managed")
             finally:
                 await restarted.stop()
+
+    async def test_official_session_delete_rejects_active_and_removes_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events: list[dict] = []
+            adapter = self.adapter(root, events)
+            try:
+                await adapter.start()
+                started = await adapter.start_session(root, "sleep")
+                await self.wait_for(
+                    lambda: next((event for event in events if event["kind"] == "tool"), None)
+                )
+                with self.assertRaisesRegex(ClaudeCodeError, "active; interrupt"):
+                    await adapter.delete_session(started["sessionId"], root)
+                await adapter.interrupt(started["sessionId"])
+                await self.wait_for(
+                    lambda: next((event for event in events if event["kind"] == "query.interrupted"), None)
+                )
+                deleted = await adapter.delete_session(started["sessionId"], root)
+                self.assertTrue(deleted["deleted"])
+                state = json.loads(adapter.state_path.read_text(encoding="utf-8"))
+                self.assertFalse(
+                    any(item["sessionId"] == started["sessionId"] for item in state["sessions"])
+                )
+            finally:
+                await adapter.stop()
 
     async def test_process_crash_restarts_without_replaying_query(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

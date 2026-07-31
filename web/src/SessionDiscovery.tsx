@@ -1,5 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 import { activeFilterCount, type RepositoryFilterOption, type SessionFilters, type VisibleSession } from "./session-search";
+import { sessionProvider, type ProviderId } from "./protocol";
 
 export function SessionSearchControls({
   filters,
@@ -108,28 +109,32 @@ export function SessionSearchResults({
   query: string;
   loading: boolean;
   error: string;
-  onOpen: (id: string, itemId?: string | null) => void;
-  onPin: (id: string) => void;
-  onHide: (id: string) => void;
+  onOpen: (provider: ProviderId, id: string, itemId?: string | null) => void;
+  onPin: (provider: ProviderId, id: string) => void;
+  onHide: (provider: ProviderId, id: string) => void;
 }) {
   if (error) return <div className="search-state error" role="alert"><strong>Search failed</strong><span>{error}</span></div>;
   if (loading && results.length === 0) return <div className="search-state" role="status">Searching sessions…</div>;
   if (results.length === 0) return <div className="search-state"><strong>No matching sessions</strong><span>Try clearing a filter or using a shorter substring.</span></div>;
   return <div className="search-results" aria-live="polite">
-    {results.map(({ session, matches, pinned, hidden }, index) => <article className="search-result" key={session.id}>
-      <button data-search-result={index === 0 ? "first" : ""} className="search-result-main" onClick={() => onOpen(session.id, matches.find((match) => match.itemId)?.itemId)}>
-        <span className="search-result-title"><strong>{session.title}</strong><StatusLabel status={session.status} /></span>
+    {results.map(({ session, matches, pinned, hidden }, index) => <article className="search-result" key={`${sessionProvider(session)}:${session.id}`}>
+      <button data-search-result={index === 0 ? "first" : ""} className="search-result-main" onClick={() => onOpen(sessionProvider(session), session.id, matches.find((match) => match.itemId)?.itemId)}>
+        <span className="search-result-title"><strong>{session.title}</strong><ProviderBadge provider={sessionProvider(session)} /><StatusLabel status={session.status} /></span>
         <small title={session.repository}>{session.repository || "Unknown workspace"}</small>
         {matches.slice(0, 3).map((match, matchIndex) => <p key={`${match.itemId ?? match.kind}-${matchIndex}`}><span>{match.kind}</span>{match.snippet}</p>)}
         {!matches.length && query && <p><span>title</span>{session.title}</p>}
         <time>{formatActivity(session.lastActivity)}</time>
       </button>
       <div className="search-result-actions">
-        <button className={pinned ? "selected" : ""} onClick={() => onPin(session.id)} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`} title={pinned ? "Unpin session" : "Pin session"}>{pinned ? "★" : "☆"}</button>
-        <button onClick={() => onHide(session.id)} aria-label={`${hidden ? "Restore" : "Hide"} ${session.title}`}>{hidden ? "Restore" : "Hide"}</button>
+        <button className={pinned ? "selected" : ""} onClick={() => onPin(sessionProvider(session), session.id)} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`} title={pinned ? "Unpin session" : "Pin session"}>{pinned ? "★" : "☆"}</button>
+        <button onClick={() => onHide(sessionProvider(session), session.id)} aria-label={`${hidden ? "Restore" : "Hide"} ${session.title}`}>{hidden ? "Restore" : "Hide"}</button>
       </div>
     </article>)}
   </div>;
+}
+
+function ProviderBadge({ provider }: { provider: ProviderId }) {
+  return <span className={`provider-badge ${provider}`}>{provider === "claude-code" ? "Claude Code" : "Codex"}</span>;
 }
 
 function StatusLabel({ status }: { status: string }) {

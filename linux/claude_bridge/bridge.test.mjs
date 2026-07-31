@@ -10,8 +10,10 @@ import {
   ClaudeBridge,
   detectClaudeCode,
   MAX_EVENT_TEXT_BYTES,
+  MAX_HISTORY_BYTES,
   MAX_MESSAGE_BYTES,
   normalizedEvents,
+  normalizedHistory,
   parseClaudeVersion,
 } from "./bridge.mjs";
 import * as fakeSdk from "./test_fake_sdk.mjs";
@@ -93,7 +95,40 @@ test("normalization bounds visible text and discards raw tool output", () => {
   assert.equal(JSON.stringify(tool).includes("SECRET"), false);
 });
 
+test("history projection keeps visible messages and safe tool cards only", async () => {
+  const history = normalizedHistory(await fakeSdk.getSessionMessages("session-1"));
+  assert.deepEqual(history.map((item) => item.kind), ["user", "assistant", "tool"]);
+  assert.equal(history[2].status, "completed");
+  assert.match(history[2].description, /output hidden/);
+  assert.equal(JSON.stringify(history).includes("SECRET"), false);
+});
+
+test("history projection stays below the bridge response limit and keeps recent items", () => {
+  const messages = Array.from({ length: 500 }, (_, index) => ({
+    uuid: `history-${index}`,
+    type: "assistant",
+    message: {
+      content: [{
+        type: "text",
+        text: `${index === 499 ? "RECENT_HISTORY_MARKER " : ""}${"x".repeat(MAX_EVENT_TEXT_BYTES)}`,
+      }],
+    },
+  }));
+  const history = normalizedHistory(messages);
+  const historyBytes = Buffer.byteLength(JSON.stringify(history));
+  const responseBytes = Buffer.byteLength(`${JSON.stringify({
+    type: "response",
+    id: "history",
+    result: { sessionId: "session", cwd: "/workspace", messages: history },
+  })}\n`);
+  assert.ok(history.length < messages.length);
+  assert.ok(historyBytes <= MAX_HISTORY_BYTES);
+  assert.ok(responseBytes <= MAX_MESSAGE_BYTES);
+  assert.match(history.at(-1).text, /RECENT_HISTORY_MARKER/);
+});
+
 test("start, model, permission callback, discovery, interrupt, and minimal mapping", async () => {
+  fakeSdk.deletedSessions.length = 0;
   const directory = await mkdtemp(join(tmpdir(), "foreman-claude-unit-"));
   const statePath = join(directory, "state.json");
   const events = [];
@@ -122,12 +157,25 @@ test("start, model, permission callback, discovery, interrupt, and minimal mappi
   assert.equal(discovered[0].classification, "resumable");
   assert.equal(discovered[0].liveAttachSupported, false);
   assert.equal("summary" in discovered[0], false);
+  const read = await bridge.read({ cwd: directory, sessionId: "external-session" });
+  assert.equal(read.title, "External Claude work");
+  assert.deepEqual(read.messages.map((item) => item.kind), ["user", "assistant", "tool"]);
+  assert.equal(JSON.stringify(read).includes("SECRET"), false);
   assert.throws(() => bridge.attachExternal(), /not supported/);
 
   const sleeping = await bridge.start({ cwd: directory, prompt: "sleep", permissionMode: "dontAsk" });
   await waitFor(() => messages.find((message) => message.event?.sessionId === sleeping.sessionId && message.event?.kind === "tool"));
+  await assert.rejects(
+    bridge.delete({ cwd: directory, sessionId: sleeping.sessionId }),
+    /active; interrupt it before deletion/i,
+  );
   await bridge.interrupt({ sessionId: sleeping.sessionId });
   await waitFor(() => messages.find((message) => message.event?.sessionId === sleeping.sessionId && message.event?.kind === "query.interrupted"));
+  const deleted = await bridge.delete({ cwd: directory, sessionId: sleeping.sessionId });
+  assert.deepEqual(deleted, { sessionId: sleeping.sessionId, deleted: true });
+  assert.deepEqual(fakeSdk.deletedSessions, [{ sessionId: sleeping.sessionId, dir: directory }]);
+  const stateAfterDelete = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(stateAfterDelete.sessions.some((item) => item.sessionId === sleeping.sessionId), false);
   await bridge.shutdown();
 });
 

@@ -38,12 +38,24 @@ python3 scripts/verify_release.py --tag v1.0.0
 The tagged Linux archive from a GitHub release contains the same install
 payload and is an alternative to cloning the repository.
 
-Optional Claude Code adapter development requires native Claude Code, Node.js
-20 or newer, and the exact SDK lock under `linux/claude_bridge`. Tagged Linux
-archives include that SDK dependency. A source install attempts the reproducible
-install only when Claude, Node, and npm are present; failure does not affect the
-Codex service. Check the local-only adapter state with `foreman claude-status`.
-Claude sessions are not exposed to Android, web, or protocol v1.
+Optional Claude Code web support requires an authenticated native Claude Code
+CLI, Node.js 20 or newer, and the exact SDK lock under `linux/claude_bridge`.
+Tagged Linux archives include the production SDK dependency and notices, so
+installation remains offline and never runs npm. When installing from a source
+checkout, prepare that optional payload first:
+
+```sh
+cd linux/claude_bridge
+npm ci --omit=dev --ignore-scripts
+cd ../..
+./install.sh
+```
+
+Without that prepared payload Claude is reported unavailable and Codex continues
+normally. Node is therefore an optional host dependency required only when
+Claude support is enabled. Authenticate Claude locally with its native CLI;
+Foreman pairing does not authenticate either provider. Check adapter detection
+with `foreman claude-status`.
 
 The rootless installer copies Foreman to `~/.local/share/foreman`, installs the
 CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
@@ -105,6 +117,10 @@ browser `localStorage`. The one-time code isn't retained. Browser storage is
 less protected than Android Keystore, so use the **Disconnect and forget host**
 action on shared browsers.
 
+One paired host token authorizes every provider that host reports available.
+There are no provider-specific pairing commands or tokens. Claude authentication
+and Codex authentication remain local to the host.
+
 Android and web clients may save multiple independent Foreman installations.
 Each saved host keeps its own token and client-local preferences. Select one
 active host at a time; switching closes the old connection before authenticating
@@ -132,6 +148,14 @@ one host's page to another host, add the page's exact origin to the target's
 After authentication it opens on the live dashboard. **Sessions** retains the
 conversation list and full interaction view; **Settings** contains appearance,
 notification, and connection preferences.
+
+The web new-session dialog includes a provider selector. Claude selection shows
+workspace, adapter-supported Sonnet/Haiku, and the six exact Claude permission
+modes; bypass permissions is explicitly high risk. External Claude sessions are
+listed as resumable and not live-attached, with live controls disabled until a
+new Foreman-managed query resumes the exact session. Claude has no web approval
+responses, transcript search, images, or background notifications in this
+version. Android remains Codex-only.
 
 The dashboard shows current session summaries, repository and non-Git workspace
 groups, attention states, oldest active work, event freshness, connected-client
@@ -179,6 +203,26 @@ git status --short dist
 ```
 
 CI rebuilds the SPA and fails if the committed assets are stale.
+
+## Test the optional Claude bridge
+
+Maintainers use Node 20 or newer and the committed lockfile:
+
+```sh
+cd linux/claude_bridge
+npm ci --ignore-scripts
+npm run build
+npm test
+```
+
+Release and CI packaging repeat a production-only install and exclude bridge
+test fixtures from the archive. The production entry point remains
+`bridge.mjs`; the installer never downloads dependencies at runtime.
+
+After ordinary automated tests, maintainers with authenticated Claude access can
+run the explicit disposable adapter and WebSocket proofs documented in
+[`claude-code-integration.md`](claude-code-integration.md). These are opt-in
+because they invoke live models and may incur usage.
 
 ## Refresh the vendored Python dependency
 

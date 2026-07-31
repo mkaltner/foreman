@@ -51,6 +51,63 @@ Implemented types:
 - `approval.list`, `approval.respond`;
 - `input.list`, `input.respond`.
 
+The following authenticated, additive provider operations also use protocol
+version 1:
+
+- `provider.list`;
+- `provider.session.list`, `provider.session.read`, `provider.session.start`,
+  `provider.session.resume`, `provider.session.subscribe`,
+  `provider.session.unsubscribe`, `provider.session.delete`;
+- `provider.turn.prompt`, `provider.turn.interrupt`;
+- `provider.model.list`, `provider.permission.list`.
+
+Existing unprefixed operations retain their Codex request and response shapes.
+Provider-aware requests always include `provider`; the service never infers a
+provider from a session ID. Unsupported provider operations return the normal
+error envelope with code `capabilityUnavailable`. Older protocol-v1 clients can
+ignore the new catalog, operations, provider fields, and events.
+
+`provider.list` reports the adapters actually available on the authenticated
+host. Each bounded entry contains an ID, display name, availability, safe
+version fields, supported capabilities, and explicit limitations. Claude Code
+unavailability is non-fatal and is reduced to one safe reason such as
+`cli-missing`, `node-missing`, `sdk-missing`,
+`authentication-unavailable`, or `adapter-unavailable`; no paths, environment,
+logs, or traces are returned. Pairing is unchanged: one host device token grants
+access to every provider available on that host.
+
+Every provider-aware session projection and event contains `provider` and
+`sessionId`. Client identity is `hostId + provider + sessionId`; durable web
+routes therefore use `/sessions/<provider>/<sessionId>?host=<hostId>`. Tokens
+never enter routes. Provider-aware events retain the existing event envelope:
+
+```json
+{"version":1,"type":"session.event","payload":{"provider":"claude-code","sessionId":"…","event":{"kind":"assistant.delta","text":"Hello"}}}
+```
+
+`provider.event` publishes a refreshed bounded provider catalog when Claude's
+bridge availability changes. Claude session events cover status, assistant
+deltas, conservative tool cards, permission-required/denied state, completion,
+failure, and interruption. Reconnect performs list/read/subscribe
+reconciliation and never replays a prompt.
+
+Claude `provider.session.list` discovers official SDK session metadata without
+loading every transcript. `provider.session.read` uses official bounded history
+access and projects only visible user and assistant messages, safe tool cards,
+permission markers, and terminal query state. Hidden reasoning, unrestricted SDK
+objects, raw tool input/output, and credentials are excluded. Claude
+`provider.session.delete` requires `confirm:true` plus the exact repository ID,
+rejects an active Foreman-owned query, and uses the official SDK deletion API.
+It permanently removes managed or external resumable history and its
+subagent-transcript directory. The SDK has no archive/unarchive operation, so
+Foreman does not present a Claude archive action. Claude session search, images,
+notification events, and approval responses are not supported by this surface.
+
+Claude model listing is an adapter-supported, non-dynamic list containing
+`sonnet` and `haiku`. Permission listing returns the exact SDK values `default`,
+`dontAsk`, `acceptEdits`, `plan`, `auto`, and `bypassPermissions`; the final mode
+is marked high risk and is never selected automatically.
+
 `session.start` accepts a discovered Git repository ID. The special ID `.` starts
 the session in the configured repository root, allowing a session before any Git
 repositories exist while keeping the workspace inside that configured boundary.

@@ -20,7 +20,7 @@ import {
   type RecentActivityEntry,
   type RepositoryGroup,
 } from "./dashboard";
-import type { ApprovalRequest, InputRequest, PairedClient, RepositoryInfo, ServiceStatus, SessionSummary } from "./protocol";
+import { sessionProvider, type ApprovalRequest, type InputRequest, type PairedClient, type RepositoryInfo, type ServiceStatus, type SessionSummary } from "./protocol";
 import {
   loadDashboardPreferences,
   saveDashboardPreferences,
@@ -41,7 +41,7 @@ interface DashboardProps {
   pairedClients?: PairedClient[];
   connection: ConnectionState;
   disabled: boolean;
-  onOpen: (id: string) => void;
+  onOpen: (session: SessionSummary) => void;
   onOpenApproval?: (approval: ApprovalRequest) => void;
   onOpenInput?: (input: InputRequest) => void;
   onInterrupt: (session: SessionSummary) => void;
@@ -142,7 +142,7 @@ export function Dashboard({
   return (
     <main className="dashboard-page">
       <header className="dashboard-heading">
-        <div><span className="eyebrow">Live operations</span><h1>Dashboard</h1><p>Supervise every Codex session from one calm control surface.</p></div>
+        <div><span className="eyebrow">Live operations</span><h1>Dashboard</h1><p>Supervise current Foreman sessions from one calm control surface.</p></div>
         <button className="icon-button" onClick={onRefresh} disabled={disabled} aria-label="Refresh dashboard">↻</button>
       </header>
 
@@ -171,19 +171,19 @@ export function Dashboard({
           <div><span className="eyebrow">Oldest active turn</span><strong>{oldest.title}</strong><small>{shortRepository(oldest.repository)}</small></div>
           <div className="oldest-activity"><strong>{oldest.activityLabel || "Thinking"}</strong><small>{oldest.activityText || routeDetails(oldest)}</small></div>
           <time>{formatElapsed(oldest.activeTurnStartedAt, now)}</time>
-          <button onClick={() => onOpen(oldest.id)} aria-label={`Open oldest active turn ${oldest.title}`}>Open</button>
+          <button onClick={() => onOpen(oldest)} aria-label={`Open oldest active turn ${oldest.title}`}>Open</button>
         </section>
       )}
 
       {(pendingApprovals.length > 0 || pendingInputs.length > 0 || attentionPairs.length > 0) && (
         <DashboardSection title="Needs attention" count={pendingApprovals.length + pendingInputs.length + attentionPairs.length} className="attention-section">
-          <div className="monitor-grid">{pendingInputs.map((input) => <InputAttentionCard key={input.id} input={input} session={sessions.find((session) => session.id === input.sessionId)} now={now} onOpen={() => onOpenInput?.(input)} />)}{pendingApprovals.map((approval) => <ApprovalAttentionCard key={approval.id} approval={approval} session={sessions.find((session) => session.id === approval.sessionId)} now={now} onOpen={() => onOpenApproval?.(approval)} />)}{attentionPairs.map(({ session, attention }) => <MonitoringCard key={session.id} session={session} attention={attention} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} onDismiss={() => dismissAttention(session, attention)} />)}</div>
+          <div className="monitor-grid">{pendingInputs.map((input) => <InputAttentionCard key={input.id} input={input} session={sessions.find((session) => session.id === input.sessionId && sessionProvider(session) === "codex")} now={now} onOpen={() => onOpenInput?.(input)} />)}{pendingApprovals.map((approval) => <ApprovalAttentionCard key={approval.id} approval={approval} session={sessions.find((session) => session.id === approval.sessionId && sessionProvider(session) === "codex")} now={now} onOpen={() => onOpenApproval?.(approval)} />)}{attentionPairs.map(({ session, attention }) => <MonitoringCard key={`${sessionProvider(session)}:${session.id}`} session={session} attention={attention} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} onDismiss={() => dismissAttention(session, attention)} />)}</div>
         </DashboardSection>
       )}
 
       {(active.length > 0 || preferences.filter === "active") && (
         <DashboardSection title="Active work" count={active.length}>
-          {active.length ? <div className="monitor-grid">{active.map((session) => <MonitoringCard key={session.id} session={session} attention={null} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} />)}</div> : <EmptySection text="No active sessions match this filter." />}
+          {active.length ? <div className="monitor-grid">{active.map((session) => <MonitoringCard key={`${sessionProvider(session)}:${session.id}`} session={session} attention={null} now={now} disabled={disabled} onOpen={onOpen} onInterrupt={onInterrupt} />)}</div> : <EmptySection text="No active sessions match this filter." />}
         </DashboardSection>
       )}
 
@@ -192,13 +192,13 @@ export function Dashboard({
 
       {(recent.length > 0 || preferences.filter === "recent") && (
         <DashboardSection title="Recently completed" count={recent.length}>
-          {recent.length ? <div className="recent-list">{recent.map((session) => <button className="recent-row" key={session.id} onClick={() => onOpen(session.id)}><StatusIcon status={session.status} /><span className="recent-main"><strong>{session.title}</strong><small>{shortRepository(session.repository)} · {session.activityText || session.activityLabel || "Turn finished"}</small></span><StatusLabel status={session.status} /><span className="recent-duration">{formatDuration(session.turnDurationMs)}</span><time>{formatAge(session.terminalAt, now)}</time></button>)}</div> : <EmptySection text="No terminal turns were observed in the last hour." />}
+          {recent.length ? <div className="recent-list">{recent.map((session) => <button className="recent-row" key={`${sessionProvider(session)}:${session.id}`} onClick={() => onOpen(session)}><StatusIcon status={session.status} /><span className="recent-main"><strong>{session.title} <ProviderBadge session={session} /></strong><small>{shortRepository(session.repository)} · {session.activityText || session.activityLabel || "Turn finished"}</small></span><StatusLabel status={session.status} /><span className="recent-duration">{formatDuration(session.turnDurationMs)}</span><time>{formatAge(session.terminalAt, now)}</time></button>)}</div> : <EmptySection text="No terminal turns were observed in the last hour." />}
         </DashboardSection>
       )}
 
       {recentActivity.length > 0 && (
         <DashboardSection title="Recent activity" count={recentActivity.length}>
-          <div className="activity-feed">{recentActivity.map((entry) => <button key={entry.id} onClick={() => onOpen(entry.sessionId)} aria-label={`Open ${entry.title}`}><time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span><strong>{entry.title}</strong><small>{shortRepository(entry.repository)}</small></span><p>{entry.description}</p><i aria-hidden="true">›</i></button>)}</div>
+          <div className="activity-feed">{recentActivity.map((entry) => { const session = sessions.find((candidate) => candidate.id === entry.sessionId && sessionProvider(candidate) === "codex"); return session ? <button key={entry.id} onClick={() => onOpen(session)} aria-label={`Open ${entry.title}`}><time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span><strong>{entry.title}</strong><small>{shortRepository(entry.repository)}</small></span><p>{entry.description}</p><i aria-hidden="true">›</i></button> : null; })}</div>
         </DashboardSection>
       )}
 
@@ -229,13 +229,13 @@ function InputAttentionCard({ input, session, now, onOpen }: { input: InputReque
   </article>;
 }
 
-const MonitoringCard = memo(function MonitoringCard({ session, attention, now, disabled, onOpen, onInterrupt, onDismiss }: { session: SessionSummary; attention: AttentionState | null; now: number; disabled: boolean; onOpen: (id: string) => void; onInterrupt: (session: SessionSummary) => void; onDismiss?: () => void }) {
+const MonitoringCard = memo(function MonitoringCard({ session, attention, now, disabled, onOpen, onInterrupt, onDismiss }: { session: SessionSummary; attention: AttentionState | null; now: number; disabled: boolean; onOpen: (session: SessionSummary) => void; onInterrupt: (session: SessionSummary) => void; onDismiss?: () => void }) {
   const status = attention?.type === "disconnected" ? "disconnected" : attention?.type === "stale" ? "stale" : session.status;
   const activity = attention?.label || session.activityLabel || (session.status === "working" ? "Thinking" : "Turn failed");
   const stateSince = attention?.since;
   return <article className={`monitor-card ${attention ? "needs-attention" : ""}`}>
-    <button className="monitor-card-main" onClick={() => onOpen(session.id)} aria-label={`Open ${session.title}`}>
-      <div className="monitor-title-row"><StatusIcon status={status} /><span><strong>{session.title}</strong><small title={session.repository}>{shortRepository(session.repository)}</small></span><StatusLabel status={status} /></div>
+    <button className="monitor-card-main" onClick={() => onOpen(session)} aria-label={`Open ${session.title}`}>
+      <div className="monitor-title-row"><StatusIcon status={status} /><span><strong>{session.title} <ProviderBadge session={session} /></strong><small title={session.repository}>{shortRepository(session.repository)}</small></span><StatusLabel status={status} /></div>
       {attention
         ? <><div className="monitor-activity"><strong>{activity}</strong><p>{session.failureSummary || session.waitDescription || session.activityText || "Monitoring live Codex activity"}</p></div><div className="route-details">{routeDetails(session)}</div></>
         : <div className="monitor-compact-line"><strong>{activity}</strong><span>{routeDetails(session)}</span></div>}
@@ -245,7 +245,7 @@ const MonitoringCard = memo(function MonitoringCard({ session, attention, now, d
       </dl>
     </button>
     {attention?.type === "input" && <p className="unsupported-wait">Codex requested input. Open the session to answer or review its supported actions.</p>}
-    <div className="monitor-actions"><button onClick={() => onOpen(session.id)} aria-label={`Open session ${session.title}`}>Open</button>{session.status === "working" && session.activeTurnId && !attention && <button className="interrupt" disabled={disabled} onClick={() => onInterrupt(session)} aria-label={`Interrupt ${session.title}`}>Interrupt</button>}{onDismiss && <button className="dismiss-action" onClick={onDismiss} aria-label="Dismiss">Dismiss</button>}</div>
+    <div className="monitor-actions"><button onClick={() => onOpen(session)} aria-label={`Open session ${session.title}`}>Open</button>{session.status === "working" && session.activeTurnId && !attention && <button className="interrupt" disabled={disabled} onClick={() => onInterrupt(session)} aria-label={`Interrupt ${session.title}`}>Interrupt</button>}{onDismiss && <button className="dismiss-action" onClick={onDismiss} aria-label="Dismiss">Dismiss</button>}</div>
   </article>;
 });
 
@@ -288,9 +288,14 @@ function clientTypeLabel(type: PairedClient["type"]): string {
   return type === "browser" ? "Browser" : type === "android" ? "Android" : type === "mixed" ? "Browser and Android" : "Client";
 }
 
-function RepositorySection({ title, groups, now, onOpen }: { title: string; groups: RepositoryGroup[]; now: number; onOpen: (id: string) => void }) {
+function RepositorySection({ title, groups, now, onOpen }: { title: string; groups: RepositoryGroup[]; now: number; onOpen: (session: SessionSummary) => void }) {
   if (!groups.length) return null;
-  return <DashboardSection title={title} count={groups.length}><div className="repository-grid">{groups.map((repository) => <details className="repository-card" key={repository.id}><summary><span className="repository-identity"><strong>{repository.name}</strong><small title={repository.id}>{repository.id}</small></span><span className="repository-counts">{!!repository.active && <span>▶ {repository.active} active</span>}{!!repository.waiting && <span>◷ {repository.waiting} waiting</span>}{!!repository.failed && <span>! {repository.failed} failed</span>}{!!repository.recent && <span>✓ {repository.recent} completed recently</span>}</span><RepositoryActivity repository={repository} now={now} /></summary><div className="repository-sessions">{repository.sessions.map((session) => <button key={session.id} onClick={() => onOpen(session.id)}><span>{session.title}</span><StatusLabel status={session.status} /></button>)}</div></details>)}</div></DashboardSection>;
+  return <DashboardSection title={title} count={groups.length}><div className="repository-grid">{groups.map((repository) => <details className="repository-card" key={repository.id}><summary><span className="repository-identity"><strong>{repository.name}</strong><small title={repository.id}>{repository.id}</small></span><span className="repository-counts">{!!repository.active && <span>▶ {repository.active} active</span>}{!!repository.waiting && <span>◷ {repository.waiting} waiting</span>}{!!repository.failed && <span>! {repository.failed} failed</span>}{!!repository.recent && <span>✓ {repository.recent} completed recently</span>}</span><RepositoryActivity repository={repository} now={now} /></summary><div className="repository-sessions">{repository.sessions.map((session) => <button key={`${sessionProvider(session)}:${session.id}`} onClick={() => onOpen(session)}><span>{session.title} <ProviderBadge session={session} /></span><StatusLabel status={session.status} /></button>)}</div></details>)}</div></DashboardSection>;
+}
+
+function ProviderBadge({ session }: { session: SessionSummary }) {
+  const provider = sessionProvider(session);
+  return <span className={`provider-badge ${provider}`}>{provider === "claude-code" ? "Claude Code" : "Codex"}</span>;
 }
 
 function RepositoryActivity({ repository, now }: { repository: RepositoryGroup; now: number }) {
