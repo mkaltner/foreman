@@ -1,13 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val releaseProperties =
+    Properties().apply {
+        rootProject.file("../release.properties").inputStream().use(::load)
+    }
 val foremanVersionCode =
-    providers.gradleProperty("foremanVersionCode").orNull?.toIntOrNull() ?: 1
+    providers.gradleProperty("foremanVersionCode").orNull?.toIntOrNull()
+        ?: releaseProperties.getProperty("androidVersionCode").toInt()
 val foremanVersionName =
-    providers.gradleProperty("foremanVersionName").orNull ?: "0.1.0-alpha.2"
+    providers.gradleProperty("foremanVersionName").orNull
+        ?: releaseProperties.getProperty("foremanVersion")
+val foremanProtocolVersion = releaseProperties.getProperty("protocolVersion").toInt()
 val releaseKeystorePath = System.getenv("FOREMAN_ANDROID_KEYSTORE")
 
 android {
@@ -20,13 +29,14 @@ android {
         targetSdk = 37
         versionCode = foremanVersionCode
         versionName = foremanVersionName
+        buildConfigField("int", "FOREMAN_PROTOCOL_VERSION", foremanProtocolVersion.toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
-
     signingConfigs {
         if (!releaseKeystorePath.isNullOrBlank()) {
             create("release") {

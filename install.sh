@@ -90,6 +90,7 @@ install -m 644 "$project_dir/linux/inputs.py" "$staging_dir/inputs.py"
 install -m 644 "$project_dir/linux/protocol.py" "$staging_dir/protocol.py"
 install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
 install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
+install -m 644 "$project_dir/release.properties" "$staging_dir/release.properties"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
 cp -a "$project_dir/web/dist" "$staging_dir/web"
 if [[ -d "$install_dir/venv" ]]; then

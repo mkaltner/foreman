@@ -66,6 +66,12 @@ git pull
 ./install.sh
 ```
 
+The installer stages and validates a complete replacement, preserves the
+existing configuration and paired-client state, removes obsolete installed
+files, and restores the prior payload if service activation fails. For tagged
+upgrade and Linux rollback commands—and Android's no-in-place-downgrade
+constraint—see the [installation guide](docs/install.md).
+
 Foreman requires Linux with user systemd, Python 3.10+, Git, and an authenticated
 `codex` CLI. Its pinned Python dependency and prebuilt web assets are included,
 so installation does not require pip, a Python virtual environment, Node, Java,
@@ -250,9 +256,9 @@ rebuild the committed assets with the pinned Node version as documented in the
 ### Web
 
 <p align="center">
-  <img src="docs/screenshots/web-dashboard.png" alt="Foreman web monitoring dashboard with host health and active work" width="860">
+  <img src="docs/screenshots/web-dashboard.png" alt="Foreman web unified host overview with session search results" width="860">
   <br>
-  <em>Live multi-session supervision and host health</em>
+  <em>Bounded multi-host health and host-scoped session discovery</em>
 </p>
 
 ## Architecture
@@ -313,7 +319,8 @@ does not stop Desktop's Codex runtime.
 - Direct TCP and HTTP transport is not encrypted.
 - Desktop live co-presence requires successful shared-socket attachment.
 - Android distribution is currently sideloaded.
-- Saved-host switching is supported; unified multi-host aggregation is not.
+- The multi-host overview is bounded, client-local, and can be stale; search,
+  transcripts, active monitoring, and notifications remain scoped to one host.
 - Recent dashboard activity is not a persistent audit history.
 - Dashboard stale activity is an observation, not a failure or automatic action.
 - Web support remains experimental during the alpha.
@@ -331,3 +338,5 @@ feedback are welcome in the [GitHub issue tracker](https://github.com/mkaltner/f
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
 - [Release guide](docs/releasing.md)
+- [v0.1.0-alpha.6 candidate acceptance record](docs/acceptance-v0.1.0-alpha.6.md)
+- [Third-party notice inventory](THIRD_PARTY_NOTICES.md)

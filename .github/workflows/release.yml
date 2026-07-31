@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -49,6 +50,9 @@ jobs:
             echo "Release tags must look like v0.0.1" >&2
             exit 1
           fi
+          test "$(git cat-file -t "$RELEASE_TAG")" = tag
+          test "$(git rev-parse "$RELEASE_TAG^{}")" = "$(git rev-parse HEAD)"
+          python scripts/verify_release.py --tag "$RELEASE_TAG"
       - name: Configure Android signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
@@ -75,13 +79,15 @@ jobs:
           python -m unittest discover -s tests -v
       - name: Test and build web client
         working-directory: web
-        run: npm ci && npm test && npm run typecheck && npm run build
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+          git diff --exit-code -- dist
       - name: Test and build signed Android APK
         working-directory: android
-        run: >-
-          ./gradlew --no-daemon test lint assembleRelease
-          -PforemanVersionName="${RELEASE_TAG#v}"
-          -PforemanVersionCode="$GITHUB_RUN_NUMBER"
+        run: ./gradlew --no-daemon test lint assembleRelease
       - name: Verify and package release files
         run: |
           mkdir -p dist
@@ -89,11 +95,35 @@ jobs:
           test -f "$apk"
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           apksigner_path="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          aapt2_path="$(find "$sdk_root/build-tools" -type f -name aapt2 | sort -V | tail -1)"
           test -x "$apksigner_path"
-          "$apksigner_path" verify --verbose "$apk"
+          test -x "$aapt2_path"
+          expected_version="$(sed -n 's/^foremanVersion=//p' release.properties)"
+          expected_code="$(sed -n 's/^androidVersionCode=//p' release.properties)"
+          expected_cert="$(sed -n 's/^androidSigningCertificateSha256=//p' release.properties)"
+          badging="$("$aapt2_path" dump badging "$apk" | sed -n '1p')"
+          grep -Fq "versionName='$expected_version'" <<<"$badging"
+          grep -Fq "versionCode='$expected_code'" <<<"$badging"
+          signing="$("$apksigner_path" verify --verbose --print-certs "$apk")"
+          grep -Fq 'Verifies' <<<"$signing"
+          grep -Fq "Signer #1 certificate SHA-256 digest: $expected_cert" <<<"$signing"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
-          tar -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" install.sh requirements.txt linux web/dist scripts/vendor_python_dependencies.sh docs README.md
+          tar --exclude='__pycache__' --exclude='*.py[co]' \
+            -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" \
+            install.sh release.properties requirements.txt linux web/dist \
+            scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
+          archive="dist/foreman-linux-${RELEASE_TAG}.tar.gz"
+          archive_listing="$(tar -tzf "$archive")"
+          grep -Fxq 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE' <<<"$archive_listing"
+          grep -Fxq 'web/dist/index.html' <<<"$archive_listing"
+          grep -Fxq 'release.properties' <<<"$archive_listing"
+          grep -Fxq 'THIRD_PARTY_NOTICES.md' <<<"$archive_listing"
+          if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
+            echo "Linux archive contains Python cache files" >&2
+            exit 1
+          fi
           (cd dist && sha256sum foreman-* > SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS)
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

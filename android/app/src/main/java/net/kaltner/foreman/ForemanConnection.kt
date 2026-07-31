@@ -261,7 +261,13 @@ class ForemanClient(
         val id = "android-${sequence.incrementAndGet()}"
         val deferred = CompletableDeferred<WireMessage>()
         pending[id] = deferred
-        val message = WireMessage(version = 1, id = id, type = type, payload = payload)
+        val message =
+            WireMessage(
+                version = BuildConfig.FOREMAN_PROTOCOL_VERSION,
+                id = id,
+                type = type,
+                payload = payload,
+            )
         try {
             val output = socket?.getOutputStream() ?: error("Not connected")
             writeMutex.withLock {

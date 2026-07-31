@@ -72,6 +72,7 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
         fake_bin.mkdir()
         python_log = home / "python.log"
         systemctl_log = home / "systemctl.log"
+        forbidden_tool_log = home / "forbidden-tool.log"
         base_python = Path(sys._base_executable)
         python = fake_bin / "python3"
         python.write_text(
@@ -87,6 +88,15 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
         for name in ("pip", "pip3"):
             unavailable = fake_bin / name
             unavailable.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+            unavailable.chmod(0o755)
+        for name in ("sudo", "node", "npm", "java", "javac", "gradle"):
+            unavailable = fake_bin / name
+            unavailable.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$0 $*\" >> \"$FOREMAN_FORBIDDEN_TOOL_LOG\"\n"
+                "exit 97\n",
+                encoding="utf-8",
+            )
             unavailable.chmod(0o755)
         systemctl = fake_bin / "systemctl"
         systemctl.write_text(
@@ -122,6 +132,7 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             "FOREMAN_PYTHON_LOG": str(python_log),
             "FOREMAN_SYSTEMCTL_LOG": str(systemctl_log),
             "FOREMAN_SYSTEMCTL_ACTIVE": "1" if active else "0",
+            "FOREMAN_FORBIDDEN_TOOL_LOG": str(forbidden_tool_log),
             "CODEX_HOME": str(home / ".codex"),
         }
         config = home / ".config" / "foreman" / "foreman.env"
@@ -190,6 +201,10 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("<div id=\"root\"></div>", (install_dir / "web/index.html").read_text())
             self.assertTrue(any((install_dir / "web/assets").iterdir()))
             self.assertTrue((install_dir / "diagnostics.py").is_file())
+            self.assertIn(
+                "foremanVersion=0.1.0-alpha.6",
+                (install_dir / "release.properties").read_text(encoding="utf-8"),
+            )
 
             paired = await self.run_command(
                 [str(launcher), "pair"],
@@ -249,6 +264,51 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"{install_dir}/foreman_service.py", invocations)
             service_calls = systemctl_log.read_text(encoding="utf-8")
             self.assertIn("--user restart foreman.service", service_calls)
+            self.assertFalse((home / "forbidden-tool.log").exists())
+
+            web_url = await self.run_command([str(launcher), "web"], environment)
+            self.assertEqual(web_url.returncode, 0, web_url.stderr)
+            self.assertEqual(web_url.stdout.strip(), "http://127.0.0.1:0")
+
+    async def test_reinstall_preserves_config_and_clients_and_removes_old_payload(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home, environment, _, _ = self.prepare_home(directory)
+            config = home / ".config" / "foreman" / "foreman.env"
+            config.write_text(
+                config.read_text(encoding="utf-8") + "FOREMAN_REMOTE_RESTART=1\n",
+                encoding="utf-8",
+            )
+            state_dir = home / ".local" / "state" / "foreman"
+            state_dir.mkdir(parents=True)
+            state = state_dir / "state.json"
+            state.write_text(
+                '{"pairings":[],"devices":[{"id":"fmc_old","digest":"abc",'
+                '"name":"Prior phone","type":"android","createdAt":1}]}\n',
+                encoding="utf-8",
+            )
+            expected_config = config.read_bytes()
+            expected_state = state.read_bytes()
+
+            first = await self.run_command([str(ROOT / "install.sh")], environment)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            install_dir = home / ".local" / "share" / "foreman"
+            obsolete = install_dir / "removed-after-prior-alpha.txt"
+            obsolete.write_text("old payload\n", encoding="utf-8")
+            (install_dir / "foreman_service.py").write_text(
+                "prior alpha payload\n", encoding="utf-8"
+            )
+
+            upgraded = await self.run_command([str(ROOT / "install.sh")], environment)
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            self.assertEqual(config.read_bytes(), expected_config)
+            self.assertEqual(state.read_bytes(), expected_state)
+            self.assertFalse(obsolete.exists())
+            self.assertIn(
+                "small authenticated TCP bridge",
+                (install_dir / "foreman_service.py").read_text(encoding="utf-8"),
+            )
 
     async def test_failed_activation_rolls_back_the_existing_install(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -264,6 +324,12 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             unit = home / ".config" / "systemd" / "user" / "foreman.service"
             unit.parent.mkdir(parents=True)
             unit.write_text("old unit\n", encoding="utf-8")
+            state = home / ".local" / "state" / "foreman" / "state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text('{"devices":[{"id":"fmc_old"}]}\n', encoding="utf-8")
+            config = home / ".config" / "foreman" / "foreman.env"
+            expected_config = config.read_bytes()
+            expected_state = state.read_bytes()
 
             installed = await self.run_command(
                 [str(ROOT / "install.sh")],
@@ -275,3 +341,5 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(obsolete_venv.is_dir())
             self.assertEqual(launcher.read_text(encoding="utf-8"), "old launcher\n")
             self.assertEqual(unit.read_text(encoding="utf-8"), "old unit\n")
+            self.assertEqual(config.read_bytes(), expected_config)
+            self.assertEqual(state.read_bytes(), expected_state)

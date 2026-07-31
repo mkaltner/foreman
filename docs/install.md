@@ -24,6 +24,17 @@ git pull
 ./install.sh
 ```
 
+For a reproducible release upgrade, verify the tag and check it out explicitly
+before reinstalling. Do not run an unreviewed branch checkout on a host that
+controls sensitive Codex sessions:
+
+```sh
+git fetch origin tag v0.1.0-alpha.6
+git checkout --detach v0.1.0-alpha.6
+python3 scripts/verify_release.py --tag v0.1.0-alpha.6
+./install.sh
+```
+
 The tagged Linux archive from a GitHub release contains the same install
 payload and is an alternative to cloning the repository.
 
@@ -38,6 +49,18 @@ CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
 Reinstalling validates a staged copy before replacing the running installation.
 An older `~/.local/share/foreman/venv` is retained through service activation
 and removed only after the system-Python service starts successfully.
+The installer never replaces `~/.config/foreman/foreman.env` or
+`~/.local/state/foreman`, so configuration and paired-client tokens survive a
+successful reinstall and an activation rollback. The installed application
+directory is replaced as a unit, so files left by an older alpha are removed.
+If activation fails, the previous application directory, launcher, and systemd
+unit are restored before the previous service is restarted.
+
+To roll Linux back, verify and check out (or unpack) the last known-good release
+and rerun that release's `install.sh`. Confirm `foreman status`, `foreman web`,
+and existing client authentication afterward. Android cannot be downgraded in
+place to an APK with a lower version code; uninstalling it removes app-local
+encrypted host tokens unless they are restored from a device backup.
 
 Configuration defaults:
 

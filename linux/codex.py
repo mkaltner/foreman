@@ -42,7 +42,7 @@ DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
 DESKTOP_REQUEST_MARKER = "\n## My request for Codex:\n"
 SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
 SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
-FOREMAN_VERSION = "0.1.0-alpha.3"
+FOREMAN_VERSION = "0.1.0-alpha.6"
 
 ACCESS_LEVELS = (
     {
@@ -387,7 +387,7 @@ class Codex:
         if process and process.returncode is None:
             process.terminate()
             try:
-                await asyncio.wait_for(process.wait(), timeout=10)
+                await asyncio.wait_for(process.wait(), timeout=5)
             except TimeoutError:
                 process.kill()
                 await process.wait()

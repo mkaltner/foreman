@@ -53,19 +53,29 @@ jobs:
           "import pathlib, websockets;
           assert websockets.__version__ == '16.1.1';
           assert 'linux/vendor' in pathlib.Path(websockets.__file__).as_posix()"
+      - name: Verify release metadata
+        run: python scripts/verify_release.py
       - name: Compile Python sources
         run: python -m compileall -q linux scripts tests
       - name: Run Linux service tests
         run: python -m unittest discover -s tests -v
       - name: Package Linux service
-        run: >-
-          tar -czf foreman-linux.tar.gz install.sh requirements.txt linux web/dist
-          scripts/vendor_python_dependencies.sh docs README.md
+        run: |
+          tar --exclude='__pycache__' --exclude='*.py[co]' -czf foreman-linux.tar.gz \
+            install.sh release.properties requirements.txt linux web/dist \
+            scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
       - name: Verify Linux archive
         run: |
-          tar -tzf foreman-linux.tar.gz
-          tar -tzf foreman-linux.tar.gz | grep -qx 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE'
-          tar -tzf foreman-linux.tar.gz | grep -qx 'web/dist/index.html'
+          archive_listing="$(tar -tzf foreman-linux.tar.gz)"
+          printf '%s\n' "$archive_listing"
+          grep -Fxq 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE' <<<"$archive_listing"
+          grep -Fxq 'web/dist/index.html' <<<"$archive_listing"
+          grep -Fxq 'release.properties' <<<"$archive_listing"
+          grep -Fxq 'THIRD_PARTY_NOTICES.md' <<<"$archive_listing"
+          if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
+            echo "Linux archive contains Python cache files" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: foreman-linux
