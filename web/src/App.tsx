@@ -976,7 +976,7 @@ function App() {
       }
     }
     setError("");
-    restoreView({ view: "dashboard" }, false);
+    restoreView({ view: "sessions" }, false);
     const search = next.activeHostId ? withHostInSearch("", next.activeHostId) : "";
     window.history.replaceState(null, "", `/${search}`);
   };
@@ -1009,7 +1009,7 @@ function App() {
       searchFiltersRef.current = filters;
       setSearchFilters(filters);
       setHostSetupOpen(false);
-      restoreView({ view: "dashboard" }, false);
+      restoreView({ view: "sessions" }, false);
       window.history.pushState(null, "", `/${withHostInSearch("", saved.id)}`);
     } catch (caught) {
       setError(setupError(caught));
