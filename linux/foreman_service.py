@@ -203,6 +203,7 @@ class Foreman:
         self.session_overlays: dict[str, dict[str, Any]] = {}
         self.claude_session_overlays: dict[str, dict[str, Any]] = {}
         self.claude_session_cwds: dict[str, str] = {}
+        self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
         self.remote_restart_enabled = remote_restart_enabled
         self.restart_runner = restart_runner or self.systemd_restart
         self.restart_scheduled = False
@@ -285,6 +286,44 @@ class Foreman:
     async def claude_event(self, message: dict[str, Any]) -> None:
         kind = message.get("kind")
         if kind == "provider.status":
+            if message.get("available") is not True:
+                observed_at = int(time.time())
+                for session_id, overlay in self.claude_session_overlays.items():
+                    if overlay.get("state") != "working":
+                        continue
+                    overlay.update(
+                        {
+                            "state": "resumable",
+                            "status": "resumable",
+                            "activeTurnId": None,
+                            "activeTurnStartedAt": None,
+                            "attention": False,
+                            "waitType": None,
+                            "waitDescription": None,
+                            "lastActivity": observed_at,
+                        }
+                    )
+                    outgoing = {
+                        "version": VERSION,
+                        "type": "session.event",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": session_id,
+                            "event": {
+                                "kind": "status",
+                                "status": "resumable",
+                                "observedAt": observed_at,
+                            },
+                        },
+                    }
+                    await asyncio.gather(
+                        *(
+                            client.send(outgoing)
+                            for client in self.clients
+                            if client.authenticated
+                        ),
+                        return_exceptions=True,
+                    )
             await self.broadcast_provider_status()
             return
         if kind in {
@@ -338,6 +377,20 @@ class Foreman:
                 "text": text,
                 "observedAt": observed_at,
             }
+            messages = self.claude_session_messages.setdefault(session_id, [])
+            item_id = outgoing_event["itemId"]
+            assistant = next((item for item in messages if item.get("id") == item_id), None)
+            if assistant is None:
+                messages.append(
+                    {
+                        "id": item_id,
+                        "kind": "assistant",
+                        "text": text,
+                        "turnId": run_id,
+                    }
+                )
+            else:
+                assistant["text"] = f"{assistant.get('text', '')}{text}"[-16_384:]
         elif kind == "tool":
             name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
             raw_status = message.get("status")
@@ -369,6 +422,13 @@ class Foreman:
                 },
                 "observedAt": observed_at,
             }
+            messages = self.claude_session_messages.setdefault(session_id, [])
+            existing = next((item for item in messages if item.get("id") == item_id), None)
+            safe_item = dict(outgoing_event["item"])
+            if existing is None:
+                messages.append(safe_item)
+            else:
+                existing.update(safe_item)
         elif kind == "permission.requested":
             overlay.update(
                 {
@@ -389,6 +449,9 @@ class Foreman:
                 "waitDescription": overlay["waitDescription"],
                 "observedAt": observed_at,
             }
+            self.claude_session_messages.setdefault(session_id, []).append(
+                dict(outgoing_event["item"])
+            )
         elif kind == "permission.denied":
             name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
             overlay.update(
@@ -620,7 +683,22 @@ class Foreman:
                 if previous is None or (item.get("lastSeenAt") or 0) > (previous.get("lastSeenAt") or 0):
                     discovered[key] = item
                 self.claude_session_cwds[session_id] = item_cwd
-        return [self.project_claude_session(item) for item in discovered.values()]
+        projected = [self.project_claude_session(item) for item in discovered.values()]
+        rank = {
+            ("managed", "working"): 0,
+            ("managed", "completed"): 1,
+            ("managed", "failed"): 1,
+            ("managed", "interrupted"): 1,
+            ("managed", "resumable"): 1,
+            ("external", "resumable"): 2,
+        }
+        return sorted(
+            projected,
+            key=lambda item: (
+                rank.get((item.get("source"), item.get("state")), 3),
+                -(item.get("lastActivity") or 0),
+            ),
+        )
 
     def project_claude_session(
         self, item: dict[str, Any], include_messages: bool = False
@@ -666,7 +744,14 @@ class Foreman:
             **overlay,
         }
         if include_messages:
-            projected["messages"] = item.get("messages", [])
+            messages = list(item.get("messages", []))
+            existing_ids = {message.get("id") for message in messages}
+            messages.extend(
+                message
+                for message in self.claude_session_messages.get(session_id, [])
+                if message.get("id") not in existing_ids
+            )
+            projected["messages"] = messages[-500:]
         return projected
 
     async def read_claude_session(
@@ -677,6 +762,12 @@ class Foreman:
         cwd = self.resolve_repository(repository_id)
         item = await self.claude.read_session(session_id, cwd)
         self.claude_session_cwds[session_id] = str(cwd)
+        if self.claude_session_overlays.get(session_id, {}).get("state") in {
+            "completed",
+            "failed",
+            "interrupted",
+        }:
+            self.claude_session_messages.pop(session_id, None)
         classification = (
             "managed"
             if self.claude_session_overlays.get(session_id, {}).get("source") == "managed"
@@ -1613,6 +1704,14 @@ class Foreman:
             client.subscriptions.add(
                 self.provider_subscription("claude-code", session_id)
             )
+            self.claude_session_messages.setdefault(session_id, []).append(
+                {
+                    "id": f"user-{run_id or int(time.time() * 1000)}",
+                    "kind": "user",
+                    "text": text,
+                    "turnId": run_id,
+                }
+            )
             projected = self.project_claude_session(
                 {
                     "sessionId": session_id,
@@ -1622,14 +1721,7 @@ class Foreman:
                     "title": overlay["title"],
                     "model": model,
                     "permissionMode": permission_mode,
-                    "messages": [
-                        {
-                            "id": f"user-{run_id or int(time.time() * 1000)}",
-                            "kind": "user",
-                            "text": text,
-                            "turnId": run_id,
-                        }
-                    ],
+                    "messages": [],
                 },
                 True,
             )

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applySessionEvent,
+  applySessionSummaryEventBatch,
   groupSessions,
   liveActivityLabel,
   liveActivityMessage,
@@ -125,5 +126,17 @@ describe("session mapping and live events", () => {
       reasoningEffort: "medium",
       accessLevel: "workspace",
     });
+  });
+
+  it("isolates colliding event streams by provider", () => {
+    const sessions: SessionSummary[] = [
+      { ...session, provider: "codex", id: "same" },
+      { ...session, provider: "claude-code", id: "same" },
+    ];
+    const updated = applySessionSummaryEventBatch(sessions, new Map([
+      ["11:claude-codesame", [{ kind: "status", status: "working" }]],
+    ]));
+    expect(updated[0].status).toBe("idle");
+    expect(updated[1].status).toBe("working");
   });
 });

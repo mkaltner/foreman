@@ -19,7 +19,7 @@ import { messageDraft, updateMessageDraft } from "./drafts";
 import { UnifiedDashboard } from "./UnifiedDashboard";
 import { UnifiedHostConnections } from "./unified-client";
 import { forgetHostSnapshot, loadHostSnapshots, saveHostSnapshots } from "./unified-storage";
-import { mergeHostSnapshot, projectHostSnapshot, type HostOverviewSnapshot, type UnifiedAttentionItem } from "./unified";
+import { mergeHostSnapshot, projectHostSnapshot, sessionIdentityKey, type HostOverviewSnapshot, type UnifiedAttentionItem } from "./unified";
 import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery";
 import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
@@ -50,7 +50,9 @@ import {
   liveActivityLabel,
   liveActivityMessage,
   routeForSession,
+  providerSessionKey,
   reconcileSessionSummaries,
+  sessionProvider,
   type AccessLevelInfo,
   type ApprovalEventPayload,
   type ApprovalRequest,
@@ -58,6 +60,9 @@ import {
   type InputEventPayload,
   type InputRequest,
   type ModelInfo,
+  type PermissionModeInfo,
+  type ProviderId,
+  type ProviderInfo,
   type PairedClient,
   type RepositoryInfo,
   type ServiceStatus,
@@ -156,6 +161,9 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
   );
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>(
+    initialRoute.view === "detail" ? initialRoute.provider : "codex",
+  );
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const [focusedApprovalId, setFocusedApprovalId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -163,8 +171,14 @@ function App() {
   const selectedIdRef = useRef<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
   );
+  const selectedProviderRef = useRef<ProviderId>(
+    initialRoute.view === "detail" ? initialRoute.provider : "codex",
+  );
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [accessLevels, setAccessLevels] = useState<AccessLevelInfo[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [claudeModels, setClaudeModels] = useState<ModelInfo[]>([]);
+  const [claudePermissionModes, setClaudePermissionModes] = useState<PermissionModeInfo[]>([]);
   const [repositories, setRepositories] = useState<RepositoryInfo[]>([]);
   const [recentActivity, setRecentActivity] = useState<RecentActivityEntry[]>([]);
   const [view, setView] = useState<View>(initialRoute.view);
@@ -189,6 +203,7 @@ function App() {
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
   const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
   const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const scrollPositions = useRef(new Map<string, number>());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
   const lastImmediateSearch = useRef(0);
@@ -206,7 +221,7 @@ function App() {
   const pendingDashboardEvents = useRef(new Map<string, SessionEvent[]>());
   const dashboardFrame = useRef<number | null>(null);
   const notificationMonitor = useRef(new TurnNotificationMonitor());
-  const openSessionRef = useRef<(id: string, updateHistory?: boolean) => void>(() => undefined);
+  const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
   const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
 
@@ -391,10 +406,11 @@ function App() {
     };
   }, []);
 
-  const queueDashboardEvent = useCallback((sessionId: string, event: SessionEvent) => {
+  const queueDashboardEvent = useCallback((provider: ProviderId, sessionId: string, event: SessionEvent) => {
     const pending = pendingDashboardEvents.current;
-    const events = pending.get(sessionId) ?? [];
-    pending.set(sessionId, [...events.slice(-49), event]);
+    const key = providerSessionKey(provider, sessionId);
+    const events = pending.get(key) ?? [];
+    pending.set(key, [...events.slice(-49), event]);
     if (dashboardFrame.current !== null) return;
     dashboardFrame.current = requestAnimationFrame(() => {
       dashboardFrame.current = null;
@@ -518,14 +534,23 @@ function App() {
       if (resolved) window.setTimeout(() => setInputs((previous) => previous.filter(({ id }) => id !== pending.id)), 5_000);
       return;
     }
+    if (message.type === "provider.event") {
+      const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
+      if (Array.isArray(nextProviders)) setProviders(nextProviders);
+      return;
+    }
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
+    const provider = payload.provider ?? "codex";
+    const identityKey = providerSessionKey(provider, payload.sessionId);
     const feedSession = payload.event.session ?? sessionsRef.current.find(
-      (session) => session.id === payload.sessionId,
+      (session) => session.id === payload.sessionId && sessionProvider(session) === provider,
     );
-    setRecentActivity((previous) => recordRecentActivity(previous, feedSession, payload.event));
-    if (payload.event.kind !== "lifecycle" && payload.event.observedAt) {
+    if (provider === "codex") {
+      setRecentActivity((previous) => recordRecentActivity(previous, feedSession, payload.event));
+    }
+    if (provider === "codex" && payload.event.kind !== "lifecycle" && payload.event.observedAt) {
       const lastEvent = new Date(
         payload.event.observedAt < 10_000_000_000
           ? payload.event.observedAt * 1000
@@ -538,24 +563,25 @@ function App() {
     if (payload.event.kind === "lifecycle") {
       if (payload.event.action === "removed") {
         setSessions((previous) => {
-          const next = previous.filter((session) => session.id !== payload.sessionId);
+          const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
           sessionsRef.current = next;
           return next;
         });
-        setSearchResults((previous) => previous.filter(({ session }) => session.id !== payload.sessionId));
+        setSearchResults((previous) => previous.filter(({ session }) => providerSessionKey(sessionProvider(session), session.id) !== identityKey));
         setOrganization((previous) => {
           const next = {
-            pinnedIds: previous.pinnedIds.filter((id) => id !== payload.sessionId),
-            hiddenIds: previous.hiddenIds.filter((id) => id !== payload.sessionId),
+            pinnedIds: previous.pinnedIds.filter((id) => id !== identityKey),
+            hiddenIds: previous.hiddenIds.filter((id) => id !== identityKey),
           };
           if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
           return next;
         });
       } else if (payload.event.session) {
         setSessions((previous) => {
-          const next = previous.some((session) => session.id === payload.sessionId)
-            ? previous.map((session) => session.id === payload.sessionId ? payload.event.session! : session)
-            : [payload.event.session!, ...previous];
+          const projected = { ...payload.event.session!, provider };
+          const next = previous.some((session) => providerSessionKey(sessionProvider(session), session.id) === identityKey)
+            ? previous.map((session) => providerSessionKey(sessionProvider(session), session.id) === identityKey ? projected : session)
+            : [projected, ...previous];
           sessionsRef.current = next;
           return next;
         });
@@ -568,14 +594,14 @@ function App() {
         setSearchRevision((value) => value + 1);
       }
       const observedSession = payload.event.session ?? sessionsRef.current.find(
-        ({ id }) => id === payload.sessionId,
+        (session) => session.id === payload.sessionId && sessionProvider(session) === provider,
       );
       const repositoryId = repositoryIdentity(
         observedSession?.repository ?? "",
         repositoriesRef.current,
         repositoryRootRef.current,
       ).id;
-      const notification = notificationMonitor.current.observe(
+      const notification = provider === "codex" ? notificationMonitor.current.observe(
         {
           hostId: activeHostIdRef.current ?? "",
           sessionId: payload.sessionId,
@@ -585,7 +611,7 @@ function App() {
           activeTurnStartedAt: payload.event.startedAt ?? observedSession?.activeTurnStartedAt,
           waitType: payload.event.waitType ?? observedSession?.waitType,
         },
-      );
+      ) : null;
       if (
         notification &&
         (document.visibilityState !== "visible" || !document.hasFocus())
@@ -593,21 +619,23 @@ function App() {
         void showTurnNotification(notification).catch(() => undefined);
       }
       const active = ["working", "waiting"].includes(payload.event.status);
-      if (active && !dashboardSubscriptions.current.has(payload.sessionId)) {
-        dashboardSubscriptions.current.add(payload.sessionId);
-        void clientRef.current?.request("session.subscribe", { sessionId: payload.sessionId })
-          .catch(() => dashboardSubscriptions.current.delete(payload.sessionId));
-      } else if (!active && selectedIdRef.current !== payload.sessionId) {
-        dashboardSubscriptions.current.delete(payload.sessionId);
-        void clientRef.current?.request("session.unsubscribe", { sessionId: payload.sessionId })
+      if (active && !dashboardSubscriptions.current.has(identityKey)) {
+        dashboardSubscriptions.current.add(identityKey);
+        void clientRef.current?.request("provider.session.subscribe", { provider, sessionId: payload.sessionId })
+          .catch(() => dashboardSubscriptions.current.delete(identityKey));
+      } else if (!active && (selectedIdRef.current !== payload.sessionId || selectedProviderRef.current !== provider)) {
+        dashboardSubscriptions.current.delete(identityKey);
+        void clientRef.current?.request("provider.session.unsubscribe", { provider, sessionId: payload.sessionId })
           .catch(() => undefined);
       }
-      if (!sessionsRef.current.some((session) => session.id === payload.sessionId)) {
+      if (!sessionsRef.current.some((session) => providerSessionKey(sessionProvider(session), session.id) === identityKey)) {
         void clientRef.current?.request<{ sessions: SessionSummary[] } & Record<string, unknown>>(
-          "session.list",
+          "provider.session.list", { provider },
         ).then((result) => {
+          const incoming = result.sessions.map((session) => ({ ...session, provider }));
           setSessions((previous) => {
-            const next = reconcileSessionSummaries(previous, result.sessions);
+            const retained = previous.filter((session) => sessionProvider(session) !== provider);
+            const next = reconcileSessionSummaries(previous, [...retained, ...incoming]);
             sessionsRef.current = next;
             return next;
           });
@@ -615,11 +643,11 @@ function App() {
       }
     }
     if (["activity", "assistant.delta"].includes(payload.event.kind)) {
-      queueDashboardEvent(payload.sessionId, payload.event);
+      queueDashboardEvent(provider, payload.sessionId, payload.event);
     } else {
       setSessions((previous) => {
         const next = previous.map((session) =>
-          session.id === payload.sessionId
+          session.id === payload.sessionId && sessionProvider(session) === provider
             ? applySessionSummaryEvent(session, payload.event)
             : session,
         );
@@ -629,7 +657,7 @@ function App() {
     }
     if (viewRef.current === "detail") {
       setCurrent((session) =>
-        session?.id === payload.sessionId ? applySessionEvent(session, payload.event) : session,
+        session?.id === payload.sessionId && sessionProvider(session) === provider ? applySessionEvent(session, payload.event) : session,
       );
     }
   }, [queueDashboardEvent]);
@@ -650,15 +678,20 @@ function App() {
     sessionsRef.current = [];
     currentRef.current = null;
     selectedIdRef.current = null;
+    selectedProviderRef.current = "codex";
     setSessions([]);
     setCurrent(null);
     setSelectedId(null);
+    setSelectedProvider("codex");
     setHighlightItemId(null);
     setFocusedApprovalId(null);
     setApprovals([]);
     setInputs([]);
     setModels([]);
     setAccessLevels([]);
+    setProviders([]);
+    setClaudeModels([]);
+    setClaudePermissionModes([]);
     setRepositories([]);
     setServiceStatus(null);
     setPairedClients([]);
@@ -701,23 +734,39 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
-      const [approvalResult, inputResult, sessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
+      const [approvalResult, inputResult, providerResult, codexSessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
         client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
         client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
           .catch(() => ({ inputs: [] })),
-        client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
+        client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list"),
+        client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" }),
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
+      const claudeAvailable = providerResult.providers.some(
+        (provider) => provider.id === "claude-code" && provider.available,
+      );
+      const [claudeSessionResult, claudeModelResult, claudePermissionResult] = claudeAvailable
+        ? await Promise.all([
+          client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" }),
+          client.request<{ models: Array<{ id: string; displayName: string; description?: string }> } & Record<string, unknown>>("provider.model.list", { provider: "claude-code" }),
+          client.request<{ modes: PermissionModeInfo[] } & Record<string, unknown>>("provider.permission.list", { provider: "claude-code" }),
+        ])
+        : [{ sessions: [] as SessionSummary[] }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
       if (activeHostIdRef.current !== hostId) return;
       setApprovals(approvalResult.approvals);
       setInputs(inputResult.inputs);
-      const reconciled = reconcileSessionSummaries(sessionsRef.current, sessionResult.sessions);
+      setProviders(providerResult.providers);
+      const incoming = [
+        ...codexSessionResult.sessions.map((session) => ({ ...session, provider: "codex" as const })),
+        ...claudeSessionResult.sessions.map((session) => ({ ...session, provider: "claude-code" as const })),
+      ];
+      const reconciled = reconcileSessionSummaries(sessionsRef.current, incoming);
       sessionsRef.current = reconciled;
-      notificationMonitor.current.seed(reconciled.map((session) => ({
+      notificationMonitor.current.seed(reconciled.filter((session) => sessionProvider(session) === "codex").map((session) => ({
         hostId,
         sessionId: session.id,
         repositoryId: repositoryIdentity(
@@ -731,7 +780,7 @@ function App() {
         waitType: session.waitType,
       })));
       setSessions(reconciled);
-      const validIds = new Set(reconciled.map(({ id }) => id));
+      const validIds = new Set(reconciled.map((session) => providerSessionKey(sessionProvider(session), session.id)));
       setOrganization((previous) => {
         const next = {
           pinnedIds: previous.pinnedIds.filter((id) => validIds.has(id)),
@@ -745,6 +794,13 @@ function App() {
       });
       setModels(modelResult.models.filter((model) => model.visible));
       setAccessLevels(accessResult.levels);
+      setClaudeModels(claudeModelResult.models.map((model, index) => ({
+        ...model,
+        reasoningEfforts: [],
+        visible: true,
+        isDefault: index === 0,
+      })));
+      setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
       setRepositories(repositoryResult.repositories);
       setPairedClients(clientResult.clients);
@@ -752,32 +808,43 @@ function App() {
       const wanted = new Set(
         reconciled
           .filter((session) => ["working", "waiting"].includes(session.status))
-          .map((session) => session.id),
+          .map((session) => providerSessionKey(sessionProvider(session), session.id)),
       );
-      const stale = [...dashboardSubscriptions.current].filter((id) => !wanted.has(id));
+      const stale = [...dashboardSubscriptions.current].filter((key) => !wanted.has(key));
       await Promise.all([
-        ...[...wanted].map((sessionId) =>
-          client.request("session.subscribe", { sessionId }).then(() => {
-            dashboardSubscriptions.current.add(sessionId);
+        ...reconciled.filter((session) => wanted.has(providerSessionKey(sessionProvider(session), session.id))).map((session) =>
+          client.request("provider.session.subscribe", { provider: sessionProvider(session), sessionId: session.id }).then(() => {
+            dashboardSubscriptions.current.add(providerSessionKey(sessionProvider(session), session.id));
           }).catch(() => undefined),
         ),
-        ...stale.map((sessionId) =>
-          client.request("session.unsubscribe", { sessionId }).then(() => {
-            dashboardSubscriptions.current.delete(sessionId);
-          }).catch(() => undefined),
-        ),
+        ...stale.map((key) => {
+          const session = sessionsRef.current.find((candidate) => providerSessionKey(sessionProvider(candidate), candidate.id) === key);
+          return session ? client.request("provider.session.unsubscribe", { provider: sessionProvider(session), sessionId: session.id }).then(() => {
+            dashboardSubscriptions.current.delete(key);
+          }).catch(() => undefined)
+            : Promise.resolve();
+        }),
       ]);
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
         try {
+          const provider = selectedProviderRef.current;
+          const summary = reconciled.find((session) => session.id === reopenId && sessionProvider(session) === provider);
+          if (!summary) throw new Error("Session is no longer available");
           const result = await client.request<
             { session: SessionSummary } & Record<string, unknown>
-          >("session.read", { sessionId: reopenId });
-          setCurrent(result.session);
-          await client.request("session.subscribe", { sessionId: reopenId });
+          >("provider.session.read", {
+            provider,
+            sessionId: reopenId,
+            ...(provider === "claude-code" ? { repositoryId: summary.repositoryId ?? "." } : {}),
+          });
+          setCurrent({ ...result.session, provider });
+          await client.request("provider.session.subscribe", { provider, sessionId: reopenId });
         } catch {
           selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
           setSelectedId(null);
+          setSelectedProvider("codex");
           setCurrent(null);
           setView("dashboard");
           updateRoute({ view: "dashboard" }, true);
@@ -808,22 +875,29 @@ function App() {
   }, [client, connectHost, activeHost?.id, activeHost?.host, activeHost?.webPort, activeHost?.deviceToken]);
 
   const openSession = useCallback(
-    async (id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
+    async (provider: ProviderId, id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
+      selectedProviderRef.current = provider;
       setSelectedId(id);
+      setSelectedProvider(provider);
       setHighlightItemId(matchedItemId);
       setFocusedApprovalId(approvalId);
       viewRef.current = "detail";
       setView("detail");
-      if (updateHistory) updateRoute({ view: "detail", sessionId: id });
+      if (updateHistory) updateRoute({ view: "detail", provider, sessionId: id });
       try {
+        const summary = sessionsRef.current.find((session) => session.id === id && sessionProvider(session) === provider);
         const result = await client.request<
           { session: SessionSummary } & Record<string, unknown>
-        >("session.read", { sessionId: id });
-        setCurrent(result.session);
-        await client.request("session.subscribe", { sessionId: id });
+        >("provider.session.read", {
+          provider,
+          sessionId: id,
+          ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
+        });
+        setCurrent({ ...result.session, provider });
+        await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Session could not be loaded");
       } finally {
@@ -832,15 +906,19 @@ function App() {
     },
     [client, updateRoute],
   );
-  openSessionRef.current = (id, updateHistory = true) => { void openSession(id, updateHistory); };
+  openSessionRef.current = (provider, id, updateHistory = true) => { void openSession(provider, id, updateHistory); };
 
   const closeSelectedSession = useCallback(() => {
     const sessionId = selectedIdRef.current;
-    if (sessionId && !dashboardSubscriptions.current.has(sessionId)) {
-      void client.request("session.unsubscribe", { sessionId }).catch(() => undefined);
+    const provider = selectedProviderRef.current;
+    const key = sessionId ? providerSessionKey(provider, sessionId) : "";
+    if (sessionId && !dashboardSubscriptions.current.has(key)) {
+      void client.request("provider.session.unsubscribe", { provider, sessionId }).catch(() => undefined);
     }
     selectedIdRef.current = null;
+    selectedProviderRef.current = "codex";
     setSelectedId(null);
+    setSelectedProvider("codex");
     setCurrent(null);
   }, [client]);
 
@@ -849,14 +927,18 @@ function App() {
     setView(route.view);
     if (route.view !== "detail") {
       selectedIdRef.current = null;
+      selectedProviderRef.current = "codex";
       setSelectedId(null);
+      setSelectedProvider("codex");
       setCurrent(null);
       return;
     }
     selectedIdRef.current = route.sessionId;
+    selectedProviderRef.current = route.provider;
     setSelectedId(route.sessionId);
-    if (openConnectedDetail && currentRef.current?.id !== route.sessionId) {
-      openSessionRef.current(route.sessionId, false);
+    setSelectedProvider(route.provider);
+    if (openConnectedDetail && (currentRef.current?.id !== route.sessionId || sessionProvider(currentRef.current) !== route.provider)) {
+      openSessionRef.current(route.provider, route.sessionId, false);
     }
   }, []);
 
@@ -888,7 +970,7 @@ function App() {
   }, [clearHostProjections, client, persistRegistry, restoreView]);
 
   notificationOpenRef.current = (hostId, sessionId) => {
-    activateHost(hostId, { view: "detail", sessionId });
+    activateHost(hostId, { view: "detail", provider: "codex", sessionId });
   };
 
   useEffect(() => {
@@ -1019,32 +1101,35 @@ function App() {
     }
   };
 
-  const dashboardOpen = useCallback((id: string) => {
-    void openSession(id);
+  const dashboardOpen = useCallback((session: SessionSummary) => {
+    void openSession(sessionProvider(session), session.id);
   }, [openSession]);
   const dashboardOpenApproval = useCallback((approval: ApprovalRequest) => {
-    void openSession(approval.sessionId, true, null, approval.id);
+    void openSession("codex", approval.sessionId, true, null, approval.id);
   }, [openSession]);
   const dashboardOpenInput = useCallback((input: InputRequest) => {
-    void openSession(input.sessionId, true, null, input.id);
+    void openSession("codex", input.sessionId, true, null, input.id);
   }, [openSession]);
-  const searchResultOpen = useCallback((id: string, itemId?: string | null) => {
-    void openSession(id, true, itemId ?? null);
+  const searchResultOpen = useCallback((provider: ProviderId, id: string, itemId?: string | null) => {
+    void openSession(provider, id, true, itemId ?? null);
   }, [openSession]);
   const dashboardInterrupt = useCallback((session: SessionSummary) => {
     if (!session.activeTurnId) return;
-    void client.request("turn.interrupt", {
+    const provider = sessionProvider(session);
+    const type = provider === "claude-code" ? "provider.turn.interrupt" : "turn.interrupt";
+    void client.request(type, {
+      ...(provider === "claude-code" ? { provider } : {}),
       sessionId: session.id,
-      turnId: session.activeTurnId,
+      ...(provider === "codex" ? { turnId: session.activeTurnId } : {}),
     }).catch((caught) => setError(caught instanceof Error ? caught.message : "Interrupt failed"));
   }, [client]);
   const dashboardRefresh = useCallback(() => {
     const hostId = activeHostIdRef.current;
     if (hostId) void refreshState(hostId).catch((caught) => setError(String(caught)));
   }, [refreshState]);
-  const unifiedOpenSession = useCallback((item: UnifiedAttentionItem | { hostId: string; sessionId: string }) => {
+  const unifiedOpenSession = useCallback((item: UnifiedAttentionItem | { hostId: string; provider?: ProviderId; sessionId: string }) => {
     const wasActive = item.hostId === activeHostIdRef.current;
-    activateHost(item.hostId, { view: "detail", sessionId: item.sessionId });
+    activateHost(item.hostId, { view: "detail", provider: item.provider ?? "codex", sessionId: item.sessionId });
     setFocusedApprovalId("approvalId" in item ? item.approvalId ?? null : null);
     if (wasActive && !connectedRef.current) {
       const host = hostRegistryRef.current.hosts.find(({ id }) => id === item.hostId);
@@ -1079,26 +1164,48 @@ function App() {
     [organization, repositories, searchFilters, searchResults, serviceStatus?.repositoryRoot, sessions],
   );
   const discoveryActive = activeFilterCount(searchFilters) > 0;
-  const togglePin = useCallback((id: string) => {
+  const togglePin = useCallback((provider: ProviderId, id: string) => {
+    if (provider !== "codex") return;
+    const key = providerSessionKey(provider, id);
     setOrganization((previous) => {
-      const pinnedIds = previous.pinnedIds.includes(id)
-        ? previous.pinnedIds.filter((value) => value !== id)
-        : [...previous.pinnedIds, id];
+      const pinnedIds = previous.pinnedIds.includes(key)
+        ? previous.pinnedIds.filter((value) => value !== key)
+        : [...previous.pinnedIds, key];
       const next = { ...previous, pinnedIds };
       if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
       return next;
     });
   }, []);
-  const toggleHidden = useCallback((id: string) => {
+  const toggleHidden = useCallback((provider: ProviderId, id: string) => {
+    if (provider !== "codex") return;
+    const key = providerSessionKey(provider, id);
     setOrganization((previous) => {
-      const hiddenIds = previous.hiddenIds.includes(id)
-        ? previous.hiddenIds.filter((value) => value !== id)
-        : [...previous.hiddenIds, id];
+      const hiddenIds = previous.hiddenIds.includes(key)
+        ? previous.hiddenIds.filter((value) => value !== key)
+        : [...previous.hiddenIds, key];
       const next = { ...previous, hiddenIds };
       if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
       return next;
     });
   }, []);
+  const requestAndReconcile = useCallback(async <T extends Record<string, unknown>,>(
+    type: string,
+    payload?: Record<string, unknown>,
+  ): Promise<T> => {
+    const result = await client.request<T>(type, payload);
+    const returned = result.session as SessionSummary | undefined;
+    if (returned && typeof returned.id === "string") {
+      const provider = payload?.provider === "claude-code" ? "claude-code" : sessionProvider(returned);
+      const projected = { ...returned, provider };
+      setCurrent(projected);
+      setSessions((previous) => previous.map((session) =>
+        session.id === projected.id && sessionProvider(session) === provider
+          ? { ...session, ...projected, messages: session.messages ?? projected.messages }
+          : session,
+      ));
+    }
+    return result;
+  }, [client]);
 
   if (!activeHost) {
     return (
@@ -1200,7 +1307,7 @@ function App() {
             inputs={inputs}
             serviceStatus={serviceStatus}
             repositories={repositories}
-            recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(entry.sessionId))}
+            recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(providerSessionKey("codex", entry.sessionId)))}
             pairedClients={pairedClients}
             connection={connection}
             disabled={!connected}
@@ -1235,6 +1342,7 @@ function App() {
             searchLoading={searchLoading}
             searchError={searchError}
             selectedId={selectedId}
+            selectedProvider={selectedProvider}
             disabled={!connected}
             onOpen={searchResultOpen}
             onRefresh={() => {
@@ -1275,9 +1383,11 @@ function App() {
                     return next;
                   });
                 }
-                if (selectedIdRef.current === session.id) {
+                if (selectedIdRef.current === session.id && selectedProviderRef.current === "codex") {
                   selectedIdRef.current = null;
+                  selectedProviderRef.current = "codex";
                   setSelectedId(null);
+                  setSelectedProvider("codex");
                   setCurrent(null);
                   showSessions(true);
                 }
@@ -1289,22 +1399,24 @@ function App() {
           <section className="detail-pane">
             {current ? (
               <ConversationView
-                key={`${activeHost.id}:${current.id}`}
+                key={`${activeHost.id}:${sessionProvider(current)}:${current.id}`}
                 session={current}
                 approvals={approvals.filter((approval) => approval.sessionId === current.id)}
                 inputs={inputs.filter((pending) => pending.sessionId === current.id)}
-                models={models}
-                accessLevels={accessLevels}
+                models={sessionProvider(current) === "claude-code" ? claudeModels : models}
+                accessLevels={sessionProvider(current) === "claude-code" ? claudePermissionModes : accessLevels}
                 connected={connected}
                 activityDetail={appearance.activityDetail}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
-                draft={messageDraft(messageDrafts, activeHost.id, current.id)}
+                initialScrollTop={scrollPositions.current.get(sessionIdentityKey({ hostId: activeHost.id, provider: sessionProvider(current), sessionId: current.id }))}
+                onScrollPosition={(scrollTop) => scrollPositions.current.set(sessionIdentityKey({ hostId: activeHost.id, provider: sessionProvider(current), sessionId: current.id }), scrollTop)}
+                draft={messageDraft(messageDrafts, activeHost.id, sessionProvider(current), current.id)}
                 onDraftChange={(text) => setMessageDrafts((previous) =>
-                  updateMessageDraft(previous, activeHost.id, current.id, text)
+                  updateMessageDraft(previous, activeHost.id, sessionProvider(current), current.id, text)
                 )}
                 onBack={() => showSessions()}
-                onRequest={(type, payload) => client.request(type, payload)}
+                onRequest={requestAndReconcile}
                 onError={setError}
               />
             ) : (
@@ -1324,22 +1436,43 @@ function App() {
           repositoryRoot={serviceStatus?.repositoryRoot ?? ""}
           models={models}
           accessLevels={accessLevels}
+          providers={providers}
+          claudeModels={claudeModels}
+          claudePermissionModes={claudePermissionModes}
           onClose={() => setNewSessionOpen(false)}
           onCreate={async (settings) => {
             setBusy(true);
             try {
+              const requestType = settings.provider === "claude-code" ? "provider.session.start" : "session.start";
+              const payload = settings.provider === "claude-code"
+                ? {
+                  provider: settings.provider,
+                  repositoryId: settings.repositoryId,
+                  text: settings.text,
+                  model: settings.model,
+                  permissionMode: settings.permissionMode,
+                }
+                : {
+                  repositoryId: settings.repositoryId,
+                  model: settings.model,
+                  reasoningEffort: settings.reasoningEffort,
+                  accessLevel: settings.accessLevel,
+                };
               const result = await client.request<
                 { session: SessionSummary } & Record<string, unknown>
-              >("session.start", { ...settings });
-              setSessions((previous) => previous.some((session) => session.id === result.session.id)
-                ? previous.map((session) => session.id === result.session.id ? result.session : session)
-                : [result.session, ...previous]);
+              >(requestType, payload);
+              const created = { ...result.session, provider: settings.provider };
+              setSessions((previous) => previous.some((session) => session.id === created.id && sessionProvider(session) === settings.provider)
+                ? previous.map((session) => session.id === created.id && sessionProvider(session) === settings.provider ? created : session)
+                : [created, ...previous]);
               selectedIdRef.current = result.session.id;
+              selectedProviderRef.current = settings.provider;
               setSelectedId(result.session.id);
-              setCurrent(result.session);
+              setSelectedProvider(settings.provider);
+              setCurrent(created);
               viewRef.current = "detail";
               setView("detail");
-              updateRoute({ view: "detail", sessionId: result.session.id });
+              updateRoute({ view: "detail", provider: settings.provider, sessionId: result.session.id });
               setNewSessionOpen(false);
             } catch (caught) {
               setError(caught instanceof Error ? caught.message : "Session could not be started");
@@ -1450,6 +1583,7 @@ function SessionList({
   searchLoading,
   searchError,
   selectedId,
+  selectedProvider,
   disabled,
   onOpen,
   onRefresh,
@@ -1466,15 +1600,16 @@ function SessionList({
   searchLoading: boolean;
   searchError: string;
   selectedId: string | null;
+  selectedProvider: ProviderId;
   disabled: boolean;
-  onOpen: (id: string, itemId?: string | null) => void;
+  onOpen: (provider: ProviderId, id: string, itemId?: string | null) => void;
   onRefresh: () => void;
   onNew: () => void;
   onAction: (action: "archive" | "delete", session: SessionSummary) => void;
   onFilters: (filters: SessionFilters) => void;
   onSearchNow: () => void;
-  onPin: (id: string) => void;
-  onHide: (id: string) => void;
+  onPin: (provider: ProviderId, id: string) => void;
+  onHide: (provider: ProviderId, id: string) => void;
 }) {
   const sessions = results.map(({ session }) => session);
   const pinnedSessions = results.filter(({ pinned }) => pinned).map(({ session }) => session);
@@ -1505,19 +1640,20 @@ function SessionList({
               <h2>{group === "pinned" ? "Pinned" : group === "waiting" ? "Needs attention" : group === "active" ? "Active" : "Recent"}</h2>
               {groups[group].map((session) => (
                 <article
-                  key={session.id}
-                  className={`session-card ${selectedId === session.id ? "selected" : ""}`}
-                  onClick={() => onOpen(session.id)}
+                  key={`${sessionProvider(session)}:${session.id}`}
+                  className={`session-card ${selectedId === session.id && selectedProvider === sessionProvider(session) ? "selected" : ""}`}
+                  onClick={() => onOpen(sessionProvider(session), session.id)}
                 >
-                  <div className="session-title-row"><h3>{session.title}</h3><StatusPill status={session.status} /></div>
+                  <div className="session-title-row"><h3>{session.title}</h3><ProviderBadge provider={sessionProvider(session)} /><StatusPill status={session.status} /></div>
                   <p className="repository">{shortRepository(session.repository)}</p>
+                  {sessionProvider(session) === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
                   <div className="session-meta">
                     <span>{formatActivity(session.lastActivity)}</span>
                     <span className="card-actions">
-                      <button className={results.find((item) => item.session.id === session.id)?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(session.id); }} aria-label={`${results.find((item) => item.session.id === session.id)?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id)?.pinned ? "★" : "☆"}</button>
-                      <button onClick={(event) => { event.stopPropagation(); onHide(session.id); }}>Hide</button>
-                      <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>
-                      <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>
+                      {sessionProvider(session) === "codex" && <button className={results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin("codex", session.id); }} aria-label={`${results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id && sessionProvider(item.session) === "codex")?.pinned ? "★" : "☆"}</button>}
+                      {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onHide("codex", session.id); }}>Hide</button>}
+                      {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
+                      {sessionProvider(session) === "codex" && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
                     </span>
                   </div>
                 </article>
@@ -1541,6 +1677,8 @@ export function ConversationView({
   activityDetail = "focused",
   highlightItemId,
   focusedApprovalId,
+  initialScrollTop,
+  onScrollPosition,
   draft,
   onDraftChange,
   onBack,
@@ -1556,13 +1694,21 @@ export function ConversationView({
   activityDetail?: ActivityDetail;
   highlightItemId: string | null;
   focusedApprovalId: string | null;
+  initialScrollTop?: number;
+  onScrollPosition?: (scrollTop: number) => void;
   draft: string;
   onDraftChange: (text: string) => void;
   onBack: () => void;
   onRequest: <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>;
   onError: (message: string) => void;
 }) {
-  const initialRoute = useMemo(() => routeForSession(session, models, accessLevels), [session, models, accessLevels]);
+  const provider = sessionProvider(session);
+  const initialRoute = useMemo(() => {
+    if (provider === "codex") return routeForSession(session, models, accessLevels);
+    const model = models.find((entry) => entry.id === session.model) ?? models[0];
+    const permission = accessLevels.find((entry) => entry.id === session.permissionMode) ?? accessLevels[0];
+    return { model: model?.id ?? "sonnet", reasoningEffort: "", accessLevel: permission?.id ?? "default" };
+  }, [accessLevels, models, provider, session]);
   const [model, setModel] = useState(initialRoute.model);
   const [effort, setEffort] = useState(initialRoute.reasoningEffort);
   const [access, setAccess] = useState(initialRoute.accessLevel);
@@ -1600,12 +1746,14 @@ export function ConversationView({
   }, [highlightItemId, session.messages?.length]);
 
   useEffect(() => {
-    following.current = !highlightItemId;
+    following.current = !highlightItemId && initialScrollTop === undefined;
     setJumpVisible(false);
     if (!highlightItemId) {
-      requestAnimationFrame(() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }));
+      requestAnimationFrame(() => transcriptRef.current?.scrollTo({
+        top: initialScrollTop ?? transcriptRef.current.scrollHeight,
+      }));
     }
-  }, [highlightItemId, session.id]);
+  }, [highlightItemId, initialScrollTop, provider, session.id]);
 
   const transcriptKey = `${session.messages?.length ?? 0}:${session.messages?.at(-1)?.text?.length ?? 0}:${session.activityText?.length ?? 0}:${approvals.map(({ id, status }) => `${id}:${status}`).join(",")}:${inputs.map(({ id, status }) => `${id}:${status}`).join(",")}`;
   useEffect(() => {
@@ -1619,7 +1767,7 @@ export function ConversationView({
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
   const hasActiveTurn = (session.status === "working" || session.status === "waiting") && !!session.activeTurnId;
-  const canSubmit = connected && !submitting && !updatingRoute && !processing && (!!draft.trim() || images.length > 0);
+  const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
 
@@ -1633,7 +1781,16 @@ export function ConversationView({
         text: draft,
         images: images.map(({ mimeType, data }) => ({ mimeType, data })),
       };
-      if (active) {
+      if (provider === "claude-code") {
+        await onRequest(session.source === "external" ? "provider.session.resume" : "provider.turn.prompt", {
+          provider,
+          sessionId: session.id,
+          repositoryId: session.repositoryId ?? ".",
+          text: draft,
+          model: model || "sonnet",
+          permissionMode: access || "default",
+        });
+      } else if (active) {
         await onRequest("turn.steer", { ...base, turnId: session.activeTurnId });
       } else {
         await onRequest("turn.prompt", {
@@ -1688,6 +1845,7 @@ export function ConversationView({
   const updateAccess = async (value: string) => {
     const previous = access;
     setAccess(value);
+    if (provider === "claude-code") return;
     setUpdatingRoute(true);
     try {
       await onRequest("session.settings", { sessionId: session.id, accessLevel: value });
@@ -1706,6 +1864,7 @@ export function ConversationView({
     const nextEffort = next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? "";
     setModel(value);
     setEffort(nextEffort);
+    if (provider === "claude-code") return;
     setUpdatingRoute(true);
     try {
       await onRequest("session.settings", {
@@ -1744,7 +1903,7 @@ export function ConversationView({
     <div className="conversation">
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
-        <div><h1>{session.title}</h1><p>{shortRepository(session.repository)}</p></div>
+        <div><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
         <StatusPill status={session.status} />
       </header>
       <div
@@ -1754,10 +1913,13 @@ export function ConversationView({
           const target = event.currentTarget;
           const atBottom = isNearBottom(target.scrollTop, target.clientHeight, target.scrollHeight);
           following.current = atBottom;
+          onScrollPosition?.(target.scrollTop);
           if (atBottom) setJumpVisible(false);
         }}
       >
-        {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>Choose a route below and send the first prompt.</p></div>}
+        {provider === "claude-code" && session.source === "external" && <div className="provider-limitation" role="note"><strong>Resumable · Not live-attached</strong><p>Open history here, then resume in Foreman to prompt, stream, or interrupt. Foreman cannot attach to the external running process.</p></div>}
+        {provider === "claude-code" && session.status === "waiting" && <div className="provider-limitation warning" role="status"><strong>Permission required in Claude session.</strong><p>Foreman web approval support is not yet available.</p></div>}
+        {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>{provider === "claude-code" ? "Send a prompt using the Claude model and permission mode below." : "Choose a route below and send the first prompt."}</p></div>}
         {displayBlocks.map((block) => {
           if (block.collapsedActivity) {
             return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} />;
@@ -1777,16 +1939,16 @@ export function ConversationView({
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
-          <RouteSelect label="Access" value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: level.id === "full" }))} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateAccess(value)} />
+          <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} onChange={(value) => void updateAccess(value)} />
           <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateModel(value)} />
-          <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateEffort(value)} />
+          {provider === "codex" && <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateEffort(value)} />}
         </div>
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
-          <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>
-          <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={pasteImages} placeholder={active ? "Steer the active turn…" : "Message Codex…"} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-          {hasActiveTurn && <button type="button" className="interrupt" disabled={!connected || submitting || updatingRoute} onClick={() => void onRequest("turn.interrupt", { sessionId: session.id, turnId: session.activeTurnId }).catch((caught) => onError(String(caught)))}>Stop</button>}
-          <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : active ? "Steer" : "Send"}</button>
+          {provider === "codex" && <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>}
+          <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={provider === "codex" ? pasteImages : undefined} placeholder={provider === "claude-code" ? hasActiveTurn ? "Claude is working…" : "Message Claude Code…" : active ? "Steer the active turn…" : "Message Codex…"} disabled={provider === "claude-code" && hasActiveTurn} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+          {hasActiveTurn && <button type="button" className="interrupt" disabled={!connected || submitting || updatingRoute} onClick={() => void onRequest(provider === "claude-code" ? "provider.turn.interrupt" : "turn.interrupt", { ...(provider === "claude-code" ? { provider } : {}), sessionId: session.id, ...(provider === "codex" ? { turnId: session.activeTurnId } : {}) }).catch((caught) => onError(String(caught)))}>Stop</button>}
+          <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : provider === "claude-code" && session.source === "external" ? "Resume in Foreman" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
       </form>
@@ -1974,34 +2136,76 @@ function shortPath(path?: string): string | null {
 }
 
 export interface NewSessionSettings {
+  provider: ProviderId;
   repositoryId: string;
+  text?: string;
   model?: string;
   reasoningEffort?: string;
   accessLevel?: string;
+  permissionMode?: string;
 }
 
-export function NewSessionDialog({ repositories, repositoryRoot, models, accessLevels, onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
+export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState(".");
+  const [provider, setProvider] = useState<ProviderId>("codex");
+  const [prompt, setPrompt] = useState("");
   const defaultRoute = routeForSession(null, models, accessLevels);
   const [model, setModel] = useState(defaultRoute.model);
   const [effort, setEffort] = useState(defaultRoute.reasoningEffort);
   const [access, setAccess] = useState(defaultRoute.accessLevel);
+  const [claudeModel, setClaudeModel] = useState(claudeModels[0]?.id ?? "sonnet");
+  const [permissionMode, setPermissionMode] = useState("default");
   const hasRepositories = repositories.length > 0;
   const rootRepository = repositories.find((repository) => repository.id === ".");
   const selectableRepositories = repositories.filter((repository) => repository.id !== ".");
   const selectionAvailable = selected === "." || repositories.some((repository) => repository.id === selected);
   const location = selectionAvailable ? selected : ".";
   const selectedModel = models.find((entry) => entry.id === model);
+  const selectedProviderInfo = providers.find((entry) => entry.id === provider);
   useEffect(() => {
     if (!selectionAvailable) setSelected(".");
   }, [selectionAvailable]);
   const submit = () => onCreate({
+    provider,
     repositoryId: location,
-    ...(model ? { model } : {}),
-    ...(effort ? { reasoningEffort: effort } : {}),
-    ...(access ? { accessLevel: access } : {}),
+    ...(provider === "claude-code" ? {
+      text: prompt,
+      model: claudeModel || "sonnet",
+      permissionMode,
+    } : {
+      ...(model ? { model } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
+      ...(access ? { accessLevel: access } : {}),
+    }),
   });
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location) void submit(); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>{hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}<div className="new-session-settings">{accessLevels.length > 0 && <label>Access<select value={access} onChange={(event) => setAccess(event.target.value)}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>}{models.length > 0 && <label>Model<select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>}{selectedModel && selectedModel.reasoningEfforts.length > 0 && <label>Reasoning<select value={effort} onChange={(event) => setEffort(event.target.value)}>{selectedModel.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{reasoningLabel(entry)}</option>)}</select></label>}</div><div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary">{hasRepositories ? "Create" : "Start in workspace"}</button></div></form></div>;
+  const unavailable = provider === "claude-code" && selectedProviderInfo?.available !== true;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location && !unavailable && (provider === "codex" || prompt.trim())) void submit(); }}>
+    <div className="modal-heading"><div><span className="eyebrow">{provider === "claude-code" ? "Claude Code" : "Codex"}</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
+    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{providers.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
+    {unavailable && <div className="new-session-empty" role="status"><strong>Claude Code is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason)}</p></div>}
+    {hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}
+    {provider === "claude-code" && !unavailable && <label>Initial prompt<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="What should Claude work on?" required /></label>}
+    <div className="new-session-settings">{provider === "codex" ? <>
+      {accessLevels.length > 0 && <label>Access<select value={access} onChange={(event) => setAccess(event.target.value)}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>}
+      {models.length > 0 && <label>Model<select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>}
+      {selectedModel && selectedModel.reasoningEfforts.length > 0 && <label>Reasoning<select value={effort} onChange={(event) => setEffort(event.target.value)}>{selectedModel.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{reasoningLabel(entry)}</option>)}</select></label>}
+    </> : !unavailable && <>
+      <label>Permission mode<select aria-label="Permission mode" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value)}>{claudePermissionModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.displayName}{mode.highRisk ? " · high risk" : ""}</option>)}</select><small>{claudePermissionModes.find((mode) => mode.id === permissionMode)?.description}</small></label>
+      <label>Claude model<select aria-label="Claude model" value={claudeModel} onChange={(event) => setClaudeModel(event.target.value)}>{claudeModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select><small>Adapter-supported list; not dynamically discovered.</small></label>
+    </>}</div>
+    <div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={unavailable || (provider === "claude-code" && !prompt.trim())}>{provider === "claude-code" ? "Start Claude session" : hasRepositories ? "Create" : "Start in workspace"}</button></div>
+  </form></div>;
+}
+
+function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"]): string {
+  const descriptions: Record<string, string> = {
+    "cli-missing": "The Claude Code CLI is missing.",
+    "node-missing": "Node.js 20 or newer is missing.",
+    "sdk-missing": "The pinned Claude Agent SDK is missing.",
+    "authentication-unavailable": "Claude authentication is unavailable on the host.",
+    "adapter-unavailable": "The Claude adapter is unavailable.",
+  };
+  return descriptions[reason ?? "adapter-unavailable"];
 }
 
 function SettingsView({
@@ -2077,6 +2281,10 @@ function SettingsView({
 
 function StatusPill({ status }: { status: string }) {
   return <span className={`status-pill ${status}`}>{status === "working" ? "Active" : status === "waiting" ? "Attention" : titleCase(status)}</span>;
+}
+
+function ProviderBadge({ provider }: { provider: ProviderId }) {
+  return <span className={`provider-badge ${provider}`}>{provider === "claude-code" ? "Claude Code" : "Codex"}</span>;
 }
 
 function safeLink(href?: string): string | null {

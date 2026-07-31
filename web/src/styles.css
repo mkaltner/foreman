@@ -68,6 +68,10 @@ button.full{width:100%;min-height:44px}
 .status-pill{background:var(--surface-alt);min-height:20px;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;border-radius:999px;align-items:center;padding:2px 7px;font-size:9px;font-weight:800;display:inline-flex}
 .status-pill.working{color:var(--accent-strong);background:var(--accent-soft)}
 .status-pill.waiting,.status-pill.failed{color:#b54708;background:#ffead5}
+.status-pill.resumable{color:#175cd3;background:#eff8ff}
+.provider-badge{background:var(--surface-alt);color:var(--muted);letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;border-radius:999px;padding:2px 7px;font:800 9px/1.6 ui-sans-serif,system-ui,sans-serif;display:inline-flex;vertical-align:middle}
+.provider-badge.claude-code{color:#9a3412;background:#fff7ed}
+:root[data-theme=dark] .provider-badge.claude-code{color:#fdba74;background:#431407}
 .status-pill.stale{color:#b54708;background:#fff4e5}
 :root[data-theme=dark] .status-pill.waiting,:root[data-theme=dark] .status-pill.failed{color:#fdba74;background:#4a2810}
 .empty-list,.empty-detail,.empty-conversation{text-align:center;color:var(--muted);align-content:center;place-items:center;display:grid}
@@ -80,6 +84,10 @@ button.full{width:100%;min-height:44px}
 .conversation-header>div{flex:1;min-width:0}
 .conversation-header h1{white-space:nowrap;text-overflow:ellipsis;margin:0 0 3px;font-size:17px;overflow:hidden}
 .conversation-header p{color:var(--muted);margin:0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.provider-limitation{border:1px solid var(--border);background:var(--surface-alt);max-width:760px;border-radius:11px;margin:0 auto 14px;padding:12px 14px}
+.provider-limitation strong{font-size:12px}.provider-limitation p{color:var(--muted);margin:4px 0 0;font-size:12px;line-height:1.45}.provider-limitation.warning{border-color:#f79009;background:#fffaeb}
+:root[data-theme=dark] .provider-limitation.warning{background:#3b2710}
+.session-limitation{color:var(--muted);margin:5px 0 0;font-size:11px}
 .mobile-back{color:var(--accent);background:0 0;border:0;padding:4px 0;display:none}
 .transcript{scroll-behavior:auto;padding:28px max(24px,50% - 410px) 34px;overflow-y:auto}
 .message{max-width:760px;margin:0 auto 24px}
@@ -228,6 +236,8 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .new-session-empty p{color:var(--muted);margin:0;font-size:12px;line-height:1.5}
 .new-session-empty code{color:var(--text);text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden}
 .new-session-settings{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;display:grid}
+.modal textarea{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);resize:vertical;border-radius:9px;min-height:88px;padding:10px;font:inherit}
+.modal label small{font-weight:500;line-height:1.35}
 .modal-actions{justify-content:flex-end;gap:8px;margin-top:8px;display:flex}
 .modal-actions button:not(.primary){border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:8px 12px}
 .dashboard-page{grid-row:4;width:100%;max-height:100%;padding:30px clamp(16px,3vw,40px) 60px;overflow-y:auto}

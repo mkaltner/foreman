@@ -115,7 +115,7 @@ export type WebRoute =
   | { view: "dashboard" }
   | { view: "sessions" }
   | { view: "settings" }
-  | { view: "detail"; sessionId: string };
+  | { view: "detail"; provider: "codex" | "claude-code"; sessionId: string };
 
 export function parseWebRoute(pathname: string): WebRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
@@ -123,11 +123,20 @@ export function parseWebRoute(pathname: string): WebRoute {
   if (normalized === "/dashboard" || normalized === "/hosts") return { view: "dashboard" };
   if (normalized === "/settings") return { view: "settings" };
   if (normalized === "/sessions") return { view: "sessions" };
+  const providerMatch = /^\/sessions\/(codex|claude-code)\/([^/]+)$/.exec(normalized);
+  if (providerMatch) {
+    try {
+      const sessionId = decodeURIComponent(providerMatch[2]);
+      if (sessionId) return { view: "detail", provider: providerMatch[1] as "codex" | "claude-code", sessionId };
+    } catch {
+      // Treat malformed URL escapes as the session list.
+    }
+  }
   const match = /^\/sessions\/([^/]+)$/.exec(normalized);
   if (match) {
     try {
       const sessionId = decodeURIComponent(match[1]);
-      if (sessionId) return { view: "detail", sessionId };
+      if (sessionId) return { view: "detail", provider: "codex", sessionId };
     } catch {
       // Treat malformed URL escapes as the session list.
     }
@@ -138,7 +147,7 @@ export function parseWebRoute(pathname: string): WebRoute {
 export function webRoutePath(route: WebRoute): string {
   if (route.view === "dashboard") return "/dashboard";
   if (route.view === "settings") return "/settings";
-  if (route.view === "detail") return `/sessions/${encodeURIComponent(route.sessionId)}`;
+  if (route.view === "detail") return `/sessions/${route.provider}/${encodeURIComponent(route.sessionId)}`;
   return "/";
 }
 

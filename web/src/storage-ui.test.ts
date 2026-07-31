@@ -224,17 +224,18 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(parseWebRoute("/hosts")).toEqual({ view: "dashboard" });
     expect(parseWebRoute("/dashboard")).toEqual({ view: "dashboard" });
     expect(parseWebRoute("/settings")).toEqual({ view: "settings" });
-    expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", sessionId: "thread/one" });
+    expect(parseWebRoute("/sessions/thread%2Fone")).toEqual({ view: "detail", provider: "codex", sessionId: "thread/one" });
+    expect(parseWebRoute("/sessions/claude-code/thread%2Fone")).toEqual({ view: "detail", provider: "claude-code", sessionId: "thread/one" });
     expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
     expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
     expect(webRoutePath({ view: "dashboard" })).toBe("/dashboard");
     expect(webRoutePath({ view: "sessions" })).toBe("/");
-    expect(webRoutePath({ view: "detail", sessionId: "thread/one" }))
-      .toBe("/sessions/thread%2Fone");
-    const deepLink = `${webRoutePath({ view: "detail", sessionId: "same" })}${withHostInSearch("", "host-work")}`;
-    expect(deepLink).toBe("/sessions/same?host=host-work");
+    expect(webRoutePath({ view: "detail", provider: "claude-code", sessionId: "thread/one" }))
+      .toBe("/sessions/claude-code/thread%2Fone");
+    const deepLink = `${webRoutePath({ view: "detail", provider: "codex", sessionId: "same" })}${withHostInSearch("", "host-work")}`;
+    expect(deepLink).toBe("/sessions/codex/same?host=host-work");
     expect(parseWebRoute(new URL(deepLink, "https://foreman.local").pathname))
-      .toEqual({ view: "detail", sessionId: "same" });
+      .toEqual({ view: "detail", provider: "codex", sessionId: "same" });
     expect(hostIdFromUrl(new URL(deepLink, "https://foreman.local").search)).toBe("host-work");
   });
 });

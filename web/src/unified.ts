@@ -1,11 +1,12 @@
 import type { ConnectionState } from "./client";
-import type { ApprovalRequest, InputRequest, ServiceStatus, SessionSummary } from "./protocol";
+import { sessionProvider, type ApprovalRequest, type InputRequest, type ProviderId, type ServiceStatus, type SessionSummary } from "./protocol";
 
 export const MAX_WEB_HOST_CONNECTIONS = 4;
 export const WEB_HOST_ROTATION_MS = 60_000;
 
 export interface GlobalSessionIdentity {
   hostId: string;
+  provider?: ProviderId;
   sessionId: string;
 }
 
@@ -28,8 +29,8 @@ export interface HostOverviewSnapshot {
   active: number;
   waiting: number;
   failed: number;
-  oldestTurn: { hostId: string; sessionId: string; title: string; startedAt: number } | null;
-  latestCompletion: { hostId: string; sessionId: string; title: string; completedAt: number } | null;
+  oldestTurn: { hostId: string; provider?: ProviderId; sessionId: string; title: string; startedAt: number } | null;
+  latestCompletion: { hostId: string; provider?: ProviderId; sessionId: string; title: string; completedAt: number } | null;
   latestActivity: number | null;
   attention: UnifiedAttentionItem[];
 }
@@ -63,8 +64,8 @@ export function projectHostSnapshot(
   const pendingInputs = inputs.filter(({ status }) => status === "pending" || status === "submitting");
   const requestSessions = new Set([...pending.map(({ sessionId }) => sessionId), ...pendingInputs.map(({ sessionId }) => sessionId)]);
   const activeSessions = sessions.filter(({ status }) => status === "working");
-  const waitingSessions = sessions.filter((session) => session.status === "waiting" || session.attention);
-  const failedSessions = sessions.filter(({ status }) => status === "failed");
+  const waitingSessions = sessions.filter((session) => sessionProvider(session) === "codex" && (session.status === "waiting" || session.attention));
+  const failedSessions = sessions.filter((session) => sessionProvider(session) === "codex" && session.status === "failed");
   const oldest = [...activeSessions, ...waitingSessions]
     .filter(({ activeTurnStartedAt }) => millis(activeTurnStartedAt) !== null)
     .sort((left, right) => millis(left.activeTurnStartedAt)! - millis(right.activeTurnStartedAt)!)[0];
@@ -128,12 +129,14 @@ export function projectHostSnapshot(
     failed: failedSessions.length,
     oldestTurn: oldest ? {
       hostId,
+      provider: sessionProvider(oldest),
       sessionId: oldest.id,
       title: oldest.title,
       startedAt: millis(oldest.activeTurnStartedAt)!,
     } : null,
     latestCompletion: latest ? {
       hostId,
+      provider: sessionProvider(latest),
       sessionId: latest.id,
       title: latest.title,
       completedAt: millis(latest.terminalAt)!,
@@ -177,7 +180,8 @@ export function mergeHostSnapshot(
 }
 
 export function sessionIdentityKey(identity: GlobalSessionIdentity): string {
-  return `${identity.hostId.length}:${identity.hostId}${identity.sessionId}`;
+  const provider = identity.provider ?? "codex";
+  return `${identity.hostId.length}:${identity.hostId}${provider.length}:${provider}${identity.sessionId}`;
 }
 
 export function liveBackgroundHostIds(
