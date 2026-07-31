@@ -908,16 +908,35 @@ class Codex:
         return await self._read_thread_with_history(thread_id)
 
     async def start_thread(
-        self, cwd: str, ephemeral: bool = False
+        self,
+        cwd: str,
+        ephemeral: bool = False,
+        model_id: str | None = None,
+        effort: str | None = None,
+        selected_access_level: str | None = None,
     ) -> dict[str, Any]:
+        params: dict[str, Any] = {"cwd": cwd, "ephemeral": ephemeral}
+        if model_id:
+            params["model"] = model_id
+        if effort:
+            params["config"] = {"model_reasoning_effort": effort}
+        if selected_access_level:
+            params.update(thread_start_access_params(selected_access_level))
         result = await self.request(
             "thread/start",
-            {"cwd": cwd, "ephemeral": ephemeral},
+            params,
         )
         thread = self._remember_route(result)
+        previous_model, previous_effort = self._routes[thread["id"]]
+        self._routes[thread["id"]] = (
+            model_id or previous_model,
+            effort or previous_effort,
+        )
+        if selected_access_level:
+            self._access_levels[thread["id"]] = selected_access_level
         self._loaded.add(thread["id"])
         self._subscribed.add(thread["id"])
-        return thread
+        return self._with_route(result["thread"])
 
     async def resume_thread(self, thread_id: str) -> dict[str, Any]:
         result = await self.request("thread/resume", {"threadId": thread_id})
@@ -1149,6 +1168,17 @@ def access_params(selected: str) -> dict[str, str]:
         "approvalPolicy": level["approvalPolicy"],
         "approvalsReviewer": level["approvalsReviewer"],
     }
+
+
+def thread_start_access_params(selected: str) -> dict[str, str]:
+    params = access_params(selected)
+    permission_profile = params.pop("permissions")
+    params["sandbox"] = (
+        "danger-full-access"
+        if permission_profile == ":danger-full-access"
+        else "workspace-write"
+    )
+    return params
 
 
 def access_level(result: dict[str, Any]) -> str | None:

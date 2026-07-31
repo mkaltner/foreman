@@ -219,10 +219,15 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .settings-card dd{overflow-wrap:anywhere;margin:0;font-size:13px}
 .danger{border:1px solid color-mix(in srgb, var(--danger) 45%, var(--border));color:var(--danger);background:0 0;border-radius:9px;margin-top:18px;padding:9px 12px;font-size:12px;font-weight:700}
 .modal-backdrop{z-index:20;-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px);background:#070c1694;place-items:center;padding:18px;display:grid;position:fixed;inset:0}
-.modal{border:1px solid var(--border);background:var(--surface);width:min(100%,460px);box-shadow:var(--shadow);border-radius:16px;padding:24px}
+.modal{border:1px solid var(--border);background:var(--surface);width:min(100%,460px);max-height:calc(100dvh - 36px);box-shadow:var(--shadow);border-radius:16px;padding:24px;overflow-y:auto}
 .modal-heading{justify-content:space-between;align-items:start;display:flex}
 .modal-heading h2{margin:2px 0 0}
 .modal-heading button{color:var(--muted);background:0 0;border:0;font-size:24px}
+.new-session-empty{border:1px solid var(--border);background:var(--surface-alt);border-radius:11px;padding:14px;display:grid;gap:6px}
+.new-session-empty strong{font-size:13px}
+.new-session-empty p{color:var(--muted);margin:0;font-size:12px;line-height:1.5}
+.new-session-empty code{color:var(--text);text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden}
+.new-session-settings{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;display:grid}
 .modal-actions{justify-content:flex-end;gap:8px;margin-top:8px;display:flex}
 .modal-actions button:not(.primary){border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:8px 12px}
 .dashboard-page{grid-row:4;width:100%;max-height:100%;padding:30px clamp(16px,3vw,40px) 60px;overflow-y:auto}
@@ -385,6 +390,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .permission-choices{border:1px solid var(--border);border-radius:10px;margin:12px 0 0;padding:12px;display:grid;gap:8px}.permission-choices legend{padding:0 5px;font-size:12px;font-weight:800}.permission-choices>label{align-items:start;gap:8px;display:flex}.permission-choices input{margin-top:2px}.scope-choice{border-top:1px solid var(--border);justify-content:space-between;align-items:center!important;margin-top:4px;padding-top:10px}.scope-choice select{width:auto;min-width:150px}.unsupported-request{border:1px solid var(--border);background:var(--surface-alt);border-radius:9px;padding:12px;line-height:1.5}.approval-status,.approval-error{margin:12px 0 0;font-size:12px;font-weight:750}.approval-status{color:var(--accent)}.approval-error{color:var(--danger)}
 .approval-actions{border-top:1px solid var(--border);flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;display:flex}.approval-actions button{border:1px solid var(--border);border-radius:8px;min-height:38px;padding:8px 12px;font-weight:750}.approval-primary{background:var(--accent);color:var(--on-accent)}.approval-broad{background:#fff4e5;color:#934d06;border-color:#fdb022!important}.approval-danger{background:var(--surface);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--border))!important}.approval-actions button:disabled{opacity:.55}.approval-attention-card .monitor-actions button{color:#b54708}
 @media (width<=720px){.app-shell{grid-template-rows:54px auto auto minmax(0,1fr)}
+.new-session-settings{grid-template-columns:1fr}
 .dashboard-pinned{padding:0 12px}.dashboard-pinned .search-results{grid-template-columns:1fr}
 .dashboard-discovery{padding:12px 12px 0}.search-row{display:grid;grid-template-columns:1fr auto}.search-field input{width:100%;min-width:0}.filter-grid,.session-pane .filter-grid{position:fixed;top:120px;right:12px;left:12px;width:auto;max-height:calc(100vh - 140px);overflow:auto;grid-template-columns:1fr}.filter-grid fieldset{grid-column:auto}.status-options{gap:8px}.dashboard-page.search-page .search-results{grid-template-columns:1fr}
 .topbar{gap:10px;padding:0 13px}

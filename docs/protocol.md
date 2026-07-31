@@ -51,6 +51,12 @@ Implemented types:
 - `approval.list`, `approval.respond`;
 - `input.list`, `input.respond`.
 
+`session.start` accepts a discovered Git repository ID. The special ID `.` starts
+the session in the configured repository root, allowing a session before any Git
+repositories exist while keeping the workspace inside that configured boundary.
+Optional `model`, `reasoningEffort`, and `accessLevel` fields set the new
+session's route before it is returned.
+
 `pair` accepts `pairingKey` and `deviceName`, then returns one persistent
 `deviceToken`. `service.status` returns authenticated, user-facing host health:
 Foreman and Codex versions, uptime, runtime mode, listener ports, repository

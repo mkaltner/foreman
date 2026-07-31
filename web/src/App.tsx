@@ -1321,13 +1321,16 @@ function App() {
       {newSessionOpen && (
         <NewSessionDialog
           repositories={repositories}
+          repositoryRoot={serviceStatus?.repositoryRoot ?? ""}
+          models={models}
+          accessLevels={accessLevels}
           onClose={() => setNewSessionOpen(false)}
-          onCreate={async (repositoryId) => {
+          onCreate={async (settings) => {
             setBusy(true);
             try {
               const result = await client.request<
                 { session: SessionSummary } & Record<string, unknown>
-              >("session.start", { repositoryId });
+              >("session.start", { ...settings });
               setSessions((previous) => previous.some((session) => session.id === result.session.id)
                 ? previous.map((session) => session.id === result.session.id ? result.session : session)
                 : [result.session, ...previous]);
@@ -1970,9 +1973,29 @@ function shortPath(path?: string): string | null {
   return path.replace(/\/+$/, "").split("/").filter(Boolean).at(-1) ?? path;
 }
 
-function NewSessionDialog({ repositories, onClose, onCreate }: { repositories: RepositoryInfo[]; onClose: () => void; onCreate: (id: string) => Promise<void> }) {
+export interface NewSessionSettings {
+  repositoryId: string;
+  model?: string;
+  reasoningEffort?: string;
+  accessLevel?: string;
+}
+
+export function NewSessionDialog({ repositories, repositoryRoot, models, accessLevels, onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState("");
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (selected) void onCreate(selected); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div><label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label>{repositories.length === 0 && <p className="muted">No Git repositories were found under Foreman’s configured root.</p>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!selected}>Create</button></div></form></div>;
+  const defaultRoute = routeForSession(null, models, accessLevels);
+  const [model, setModel] = useState(defaultRoute.model);
+  const [effort, setEffort] = useState(defaultRoute.reasoningEffort);
+  const [access, setAccess] = useState(defaultRoute.accessLevel);
+  const hasRepositories = repositories.length > 0;
+  const location = hasRepositories ? selected : ".";
+  const selectedModel = models.find((entry) => entry.id === model);
+  const submit = () => onCreate({
+    repositoryId: location,
+    ...(model ? { model } : {}),
+    ...(effort ? { reasoningEffort: effort } : {}),
+    ...(access ? { accessLevel: access } : {}),
+  });
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location) void submit(); }}><div className="modal-heading"><div><span className="eyebrow">Codex</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>{hasRepositories ? <label>Repository<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value="">Choose a repository…</option>{repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}<div className="new-session-settings">{models.length > 0 && <label>Model<select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>}{selectedModel && selectedModel.reasoningEfforts.length > 0 && <label>Reasoning<select value={effort} onChange={(event) => setEffort(event.target.value)}>{selectedModel.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{reasoningLabel(entry)}</option>)}</select></label>}{accessLevels.length > 0 && <label>Access<select value={access} onChange={(event) => setAccess(event.target.value)}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>}</div><div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={hasRepositories && !selected}>{hasRepositories ? "Create" : "Start in workspace"}</button></div></form></div>;
 }
 
 function SettingsView({
