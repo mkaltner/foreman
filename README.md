@@ -336,20 +336,24 @@ does not stop Desktop's Codex runtime.
   transcripts, active monitoring, and notifications remain scoped to one host.
 - Recent dashboard activity is not a persistent audit history.
 - Dashboard stale activity is an observation, not a failure or automatic action.
-- Web support remains experimental during the alpha.
+- Chrome and Firefox are the supported 1.0 browsers; Edge is best-effort.
 
-## Alpha status
+## Release candidate status
 
-Foreman is usable but still evolving. Breaking protocol or configuration
-changes may occur, Android is currently distributed by sideloading, and web
-support remains experimental. Foreman is not production-ready. Issues and
-feedback are welcome in the [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
+Foreman 1.0 is in release-candidate validation. Protocol v1 and the documented
+state-preserving upgrade behavior are the intended compatibility contract for
+the 1.x series; incompatible wire or configuration changes will not be made
+silently. Android remains distributed by sideloading. Stable production status
+depends on completing the [v1.0 acceptance record](docs/acceptance-v1.0.0.md).
+Issues and feedback are welcome in the
+[GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
 
 ## Documentation
 
 - [Installation guide](docs/install.md)
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
+- [Compatibility policy](docs/compatibility.md)
 - [Release guide](docs/releasing.md)
-- [v0.1.0-alpha.6 candidate acceptance record](docs/acceptance-v0.1.0-alpha.6.md)
+- [v1.0 acceptance record](docs/acceptance-v1.0.0.md)
 - [Third-party notice inventory](THIRD_PARTY_NOTICES.md)

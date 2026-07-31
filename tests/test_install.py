@@ -202,7 +202,7 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any((install_dir / "web/assets").iterdir()))
             self.assertTrue((install_dir / "diagnostics.py").is_file())
             self.assertIn(
-                "foremanVersion=0.1.0-alpha.6",
+                "foremanVersion=1.0.0-rc.2",
                 (install_dir / "release.properties").read_text(encoding="utf-8"),
             )
 

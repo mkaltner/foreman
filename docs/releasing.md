@@ -13,7 +13,7 @@ intentional wire-compatibility change. The Linux status version, web package
 version, Android build defaults, and all three protocol constants are checked by:
 
 ```sh
-python3 scripts/verify_release.py --tag v0.1.0-alpha.6
+python3 scripts/verify_release.py --tag v1.0.0-rc.2
 ```
 
 Do not derive Android version code from a CI run number. Confirm the previous
@@ -25,8 +25,9 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
 
 1. Start from current `main`, choose the next unused SemVer prerelease, and open
    `release/<version>` as a draft PR titled `Prepare <version>`.
-2. Complete the matching `docs/acceptance-<version>.md`. Automated tests do not
-   replace physical Android, real-browser, shared Desktop, fallback, HTTPS
+2. Complete the stable target's acceptance record (for example, every
+   `v1.0.0-rc.*` candidate uses `docs/acceptance-v1.0.0.md`). Automated tests do
+   not replace physical Android, real-browser, shared Desktop, fallback, HTTPS
    notification, upgrade, or rollback evidence.
 3. Run Linux tests with system Python, web tests/typecheck/build with the pinned
    Node version, and Android test/lint/debug build with JDK 17. Confirm rebuilding
@@ -66,9 +67,9 @@ exact `main` commit. A maintainer may then create and push the annotated tag:
 ```sh
 git switch main
 git pull --ff-only
-python3 scripts/verify_release.py --tag v0.1.0-alpha.6
-git tag -a v0.1.0-alpha.6 -m "Foreman v0.1.0-alpha.6"
-git push origin v0.1.0-alpha.6
+python3 scripts/verify_release.py --tag v1.0.0-rc.2
+git tag -a v1.0.0-rc.2 -m "Foreman v1.0.0-rc.2"
+git push origin v1.0.0-rc.2
 ```
 
 Use `git tag -s` instead when the project has an established signing key and
