@@ -102,6 +102,7 @@ class FakeCodex:
         self.deleted: list[str] = []
         self.prompts: list[dict[str, Any]] = []
         self.settings_updates: list[dict[str, Any]] = []
+        self.starts: list[dict[str, Any]] = []
         self.reads: list[str] = []
         self.approvals: list[dict[str, Any]] = []
         self.approval_responses: list[tuple[str, dict[str, Any]]] = []
@@ -142,13 +143,32 @@ class FakeCodex:
     async def search_thread(self, thread_id: str) -> dict[str, Any]:
         return await self.read_thread(thread_id)
 
-    async def start_thread(self, cwd: str) -> dict[str, Any]:
+    async def start_thread(
+        self,
+        cwd: str,
+        ephemeral: bool = False,
+        model_id: str | None = None,
+        effort: str | None = None,
+        selected_access_level: str | None = None,
+    ) -> dict[str, Any]:
+        self.starts.append(
+            {
+                "cwd": cwd,
+                "ephemeral": ephemeral,
+                "model": model_id,
+                "effort": effort,
+                "accessLevel": selected_access_level,
+            }
+        )
         return {
             **THREAD,
             "id": "thread-new",
             "cwd": cwd,
             "turns": [],
             "status": {"type": "idle"},
+            "_foremanModel": model_id,
+            "_foremanReasoningEffort": effort,
+            "_foremanAccessLevel": selected_access_level,
         }
 
     async def resume_thread(self, thread_id: str) -> dict[str, Any]:
@@ -1431,6 +1451,42 @@ schema = {"oneOf": [
         self.assertEqual(requests[0][1]["approvalPolicy"], "never")
         self.assertEqual(requests[0][1]["approvalsReviewer"], "user")
 
+    async def test_applies_initial_route_in_atomic_thread_start(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requests.append((method, params))
+            return {
+                "thread": {**THREAD, "id": "thread-new", "turns": []},
+                "model": "gpt-test",
+                "reasoningEffort": "high",
+                "approvalPolicy": "on-request",
+                "approvalsReviewer": "auto_review",
+                "activePermissionProfile": {"id": ":workspace"},
+            }
+
+        adapter.request = request  # type: ignore[method-assign]
+        started = await adapter.start_thread(
+            "/projects/example",
+            model_id="gpt-test",
+            effort="high",
+            selected_access_level="auto",
+        )
+
+        self.assertEqual(requests, [("thread/start", {
+            "cwd": "/projects/example",
+            "ephemeral": False,
+            "model": "gpt-test",
+            "config": {"model_reasoning_effort": "high"},
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "auto_review",
+        })])
+        self.assertEqual(started["_foremanModel"], "gpt-test")
+        self.assertEqual(started["_foremanReasoningEffort"], "high")
+        self.assertEqual(started["_foremanAccessLevel"], "auto")
+
     async def test_updates_existing_thread_settings_for_subsequent_turns(self) -> None:
         adapter = Codex("unused", lambda _: asyncio.sleep(0))
         adapter._loaded.add("thread-1")
@@ -1639,14 +1695,16 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(root_started["reasoningEffort"], "high")
         self.assertEqual(root_started["accessLevel"], "ask")
         self.assertEqual(
-            self.app.codex.settings_updates[-1],
+            self.app.codex.starts[-1],
             {
-                "threadId": root_started["id"],
+                "cwd": str(self.repository_root.resolve()),
+                "ephemeral": False,
                 "model": "model-test",
                 "effort": "high",
                 "accessLevel": "ask",
             },
         )
+        self.assertEqual(self.app.codex.settings_updates, [])
         plain_directory = self.repository_root / "not-a-repository"
         plain_directory.mkdir()
         invalid_workspace = await self.request_error(

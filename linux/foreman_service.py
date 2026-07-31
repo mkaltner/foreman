@@ -1076,22 +1076,12 @@ class Foreman:
             repository = self.resolve_repository(repository_id)
             model_id, effort = await self.route(payload)
             selected_access_level = await self.access_level(payload)
-            thread = await self.codex.start_thread(str(repository))
-            if any((model_id, effort, selected_access_level)):
-                await self.codex.update_thread_settings(
-                    thread["id"],
-                    model_id,
-                    effort,
-                    selected_access_level,
-                )
-                thread = {
-                    **thread,
-                    "_foremanModel": model_id or thread.get("_foremanModel"),
-                    "_foremanReasoningEffort": effort
-                    or thread.get("_foremanReasoningEffort"),
-                    "_foremanAccessLevel": selected_access_level
-                    or thread.get("_foremanAccessLevel"),
-                }
+            thread = await self.codex.start_thread(
+                str(repository),
+                model_id=model_id,
+                effort=effort,
+                selected_access_level=selected_access_level,
+            )
             client.subscriptions.add(thread["id"])
             projected = self.projected_session(thread, True)
             await self.broadcast_lifecycle(thread["id"], "created", projected)
