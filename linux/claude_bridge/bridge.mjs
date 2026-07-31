@@ -20,6 +20,11 @@ import { fileURLToPath } from "node:url";
 export const PROTOCOL_VERSION = 1;
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 export const MAX_EVENT_TEXT_BYTES = 16 * 1024;
+export const MAX_HISTORY_ITEMS = 500;
+export const SUPPORTED_MODELS = Object.freeze([
+  { id: "sonnet", displayName: "Sonnet", description: "Adapter-supported Claude Sonnet alias" },
+  { id: "haiku", displayName: "Haiku", description: "Adapter-supported Claude Haiku alias" },
+]);
 export const PERMISSION_MODES = Object.freeze([
   "default",
   "dontAsk",
@@ -123,7 +128,7 @@ export async function detectClaudeCode({
     available,
     executable,
     permissionModes: [...PERMISSION_MODES],
-    models: [],
+    models: SUPPORTED_MODELS.map((model) => ({ ...model })),
     modelSelection: true,
     limitation: available
       ? "External sessions are discoverable and resumable, but Foreman cannot live-attach, stream, approve, or interrupt an external Claude process."
@@ -304,6 +309,92 @@ export function normalizedEvents(message, sessionId) {
   return events;
 }
 
+function safeToolSummary(name, status) {
+  const normalized = String(name ?? "").toLowerCase();
+  const action = normalized === "read" ? "Reading a file"
+    : normalized === "bash" ? "Running a command (output hidden)"
+      : normalized === "edit" || normalized === "write" ? "Editing a file"
+        : normalized === "grep" || normalized === "glob" ? "Searching files"
+          : `Using ${boundedText(name, 80) || "a tool"}`;
+  if (status === "failed") return `${action} failed`;
+  if (status === "denied") return `${action} was denied`;
+  if (status === "completed") return `${action} completed`;
+  return action;
+}
+
+function messageBody(value) {
+  return value && typeof value === "object" ? value : {};
+}
+
+function textContent(content) {
+  if (typeof content === "string") return boundedText(content, MAX_EVENT_TEXT_BYTES) || "";
+  if (!Array.isArray(content)) return "";
+  return boundedText(
+    content.filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text).join("\n"),
+    MAX_EVENT_TEXT_BYTES,
+  ) || "";
+}
+
+export function normalizedHistory(messages) {
+  const items = [];
+  const tools = new Map();
+  const append = (item) => {
+    if (items.length < MAX_HISTORY_ITEMS) items.push(item);
+  };
+  for (const entry of Array.isArray(messages) ? messages : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const body = messageBody(entry.message);
+    const uuid = boundedText(entry.uuid, 160) || `message-${items.length + 1}`;
+    const content = body.content;
+    if (entry.type === "user") {
+      const text = textContent(content);
+      if (text) append({ id: uuid, kind: "user", text });
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block?.type !== "tool_result") continue;
+        const toolUseId = boundedText(block.tool_use_id, 160);
+        const existing = toolUseId ? tools.get(toolUseId) : undefined;
+        if (!existing) continue;
+        existing.status = block.is_error ? "failed" : "completed";
+        existing.description = safeToolSummary(existing.toolName, existing.status);
+      }
+      continue;
+    }
+    if (entry.type === "assistant") {
+      const text = textContent(content);
+      if (text) append({ id: uuid, kind: "assistant", text });
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block?.type !== "tool_use") continue;
+        const toolUseId = boundedText(block.id, 160) || `${uuid}-tool-${items.length}`;
+        const name = boundedText(block.name, 120) || "Tool";
+        const item = {
+          id: `tool-${toolUseId}`,
+          kind: "tool",
+          description: safeToolSummary(name, "running"),
+          status: "running",
+          toolName: name,
+        };
+        append(item);
+        tools.set(toolUseId, item);
+      }
+      continue;
+    }
+    if (entry.type === "system" && (body.subtype === "permission_denied" || body.type === "permission_denied")) {
+      const name = boundedText(body.tool_name, 120) || "Tool";
+      append({
+        id: `permission-${uuid}`,
+        kind: "tool",
+        description: safeToolSummary(name, "denied"),
+        status: "denied",
+        toolName: name,
+      });
+    }
+  }
+  return items.map(({ toolName: _toolName, ...item }) => item);
+}
+
 export class ClaudeBridge {
   constructor({ statePath, send, env = process.env, sdkLoader } = {}) {
     if (!statePath) throw new Error("statePath is required");
@@ -342,20 +433,65 @@ export class ClaudeBridge {
       this.mapping.read(),
     ]);
     const managed = new Set(state.sessions.map((item) => item.sessionId));
-    return discovered.map((item) => {
+    const sessions = new Map();
+    for (const item of discovered) {
       const sessionId = opaque(item.sessionId, "sessionId");
       const active = this.activeSessions.has(sessionId);
-      return {
+      const sessionCwd = typeof item.cwd === "string" ? await checkedDirectory(item.cwd) : cwd;
+      if (sessionCwd !== cwd) continue;
+      const run = this.activeSessions.get(sessionId);
+      const projected = {
         provider: "claude-code",
         sessionId,
-        cwd: typeof item.cwd === "string" ? item.cwd : cwd,
+        cwd: sessionCwd,
+        title: boundedText(item.summary || item.customTitle || item.firstPrompt, 300) || "Claude Code session",
         classification: managed.has(sessionId) ? "managed" : "resumable",
         active,
         createdAt: Number.isFinite(item.createdAt) ? item.createdAt : undefined,
         lastSeenAt: Number.isFinite(item.lastModified) ? item.lastModified : undefined,
+        model: run?.model,
+        permissionMode: run?.permissionMode,
         liveAttachSupported: false,
       };
+      const key = `${sessionId}\u0000${sessionCwd}`;
+      const previous = sessions.get(key);
+      if (!previous || (projected.lastSeenAt ?? 0) > (previous.lastSeenAt ?? 0)) sessions.set(key, projected);
+    }
+    return [...sessions.values()].sort((left, right) => {
+      const rank = (item) => item.classification === "managed" && item.active ? 0
+        : item.classification === "managed" ? 1 : 2;
+      return rank(left) - rank(right) || (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0);
     });
+  }
+
+  async read(params) {
+    const cwd = await checkedDirectory(params?.cwd);
+    const sessionId = opaque(params?.sessionId, "sessionId");
+    const status = await this.status();
+    if (!status.available) throw new Error(status.limitation);
+    const { getSessionInfo, getSessionMessages } = await this.loadSdk();
+    const info = await getSessionInfo(sessionId, { dir: cwd });
+    if (!info || opaque(info.sessionId, "sessionId") !== sessionId) throw new Error("Claude session was not found");
+    const infoCwd = typeof info.cwd === "string" ? await checkedDirectory(info.cwd) : cwd;
+    if (infoCwd !== cwd) throw new Error("Claude session working directory does not match");
+    const messages = await getSessionMessages(sessionId, {
+      dir: cwd,
+      limit: MAX_HISTORY_ITEMS,
+      includeSystemMessages: true,
+    });
+    const run = this.activeSessions.get(sessionId);
+    return {
+      provider: "claude-code",
+      sessionId,
+      cwd,
+      title: boundedText(info.summary || info.customTitle || info.firstPrompt, 300) || "Claude Code session",
+      createdAt: Number.isFinite(info.createdAt) ? info.createdAt : undefined,
+      lastSeenAt: Number.isFinite(info.lastModified) ? info.lastModified : undefined,
+      active: Boolean(run),
+      model: run?.model,
+      permissionMode: run?.permissionMode,
+      messages: normalizedHistory(messages),
+    };
   }
 
   async start(params) {
@@ -432,6 +568,7 @@ export class ClaudeBridge {
             kind: "query.started",
             runId: run.runId,
             sessionId,
+            cwd: run.cwd,
             model: boundedText(message.model, 120),
             permissionMode: run.permissionMode,
           };
@@ -629,6 +766,7 @@ async function serve() {
         result = { protocol: PROTOCOL_VERSION, maxMessageBytes: MAX_MESSAGE_BYTES, pid: process.pid };
       } else if (request.method === "status") result = await bridge.status();
       else if (request.method === "discover") result = await bridge.discover(request.params);
+      else if (request.method === "read") result = await bridge.read(request.params);
       else if (request.method === "start") result = await bridge.start({ ...request.params, clientRequestId: request.id });
       else if (request.method === "resume") result = await bridge.resume({ ...request.params, clientRequestId: request.id });
       else if (request.method === "interrupt") result = await bridge.interrupt(request.params);

@@ -21,6 +21,18 @@ TERMINAL_EVENTS = {
     "query.failed",
     "query.interrupted",
 }
+SUPPORTED_MODELS = [
+    {
+        "id": "sonnet",
+        "displayName": "Sonnet",
+        "description": "Adapter-supported Claude Sonnet alias",
+    },
+    {
+        "id": "haiku",
+        "displayName": "Haiku",
+        "description": "Adapter-supported Claude Haiku alias",
+    },
+]
 
 
 class ClaudeCodeError(RuntimeError):
@@ -55,7 +67,7 @@ def unavailable_status(limitation: str) -> dict[str, Any]:
             "auto",
             "bypassPermissions",
         ],
-        "models": [],
+        "models": [dict(model) for model in SUPPORTED_MODELS],
         "modelSelection": True,
         "limitation": limitation,
         "capabilities": {
@@ -168,6 +180,16 @@ class ClaudeCode:
     async def discover(self, cwd: str | Path) -> list[dict[str, Any]]:
         directory = self._cwd(cwd)
         return await self._request("discover", {"cwd": str(directory)}, timeout=30)
+
+    async def read_session(
+        self, session_id: str, cwd: str | Path
+    ) -> dict[str, Any]:
+        directory = self._cwd(cwd)
+        return await self._request(
+            "read",
+            {"sessionId": session_id, "cwd": str(directory)},
+            timeout=30,
+        )
 
     async def start_session(
         self,
@@ -402,6 +424,7 @@ class ClaudeCode:
             for key in ("installed", "cliVersion", "sdkVersion", "nodeVersion", "executable"):
                 if key in previous:
                     self.runtime_status[key] = previous[key]
+        await self._notify_status()
         if self.desired and not self.stopping and self.restart_attempt < len(self.restart_delays):
             delay = self.restart_delays[self.restart_attempt]
             self.restart_attempt += 1
@@ -416,6 +439,7 @@ class ClaudeCode:
             await self._spawn()
             self.runtime_status = await self._request("status", timeout=15)
             self.restart_attempt = 0
+            await self._notify_status()
         except Exception as error:
             self.runtime_status = unavailable_status(_safe_error(error))
             await self._terminate_process()
@@ -423,6 +447,17 @@ class ClaudeCode:
                 next_delay = self.restart_delays[self.restart_attempt]
                 self.restart_attempt += 1
                 self.restart_task = asyncio.create_task(self._restart_after(next_delay))
+
+    async def _notify_status(self) -> None:
+        result = self.on_event(
+            {
+                "provider": "claude-code",
+                "kind": "provider.status",
+                "available": self.runtime_status.get("available") is True,
+            }
+        )
+        if inspect.isawaitable(result):
+            await result
 
     async def _terminate_process(self) -> None:
         process = self.process

@@ -44,6 +44,7 @@ from approvals import (  # noqa: E402
     bounded_approval_params,
 )
 from foreman_service import (  # noqa: E402
+    CapabilityError,
     Client,
     Foreman,
     PairingLimiter,
@@ -359,6 +360,9 @@ class FakeClaude:
         self.bridge_path = bridge_path
         self.started = False
         self.stopped = False
+        self.starts: list[dict[str, Any]] = []
+        self.resumes: list[dict[str, Any]] = []
+        self.interrupts: list[str] = []
         self.status_value = {
             "provider": "claude-code",
             "installed": True,
@@ -377,6 +381,82 @@ class FakeClaude:
 
     async def status(self) -> dict[str, Any]:
         return self.status_value
+
+    async def discover(self, cwd: str | Path) -> list[dict[str, Any]]:
+        return [
+            {
+                "provider": "claude-code",
+                "sessionId": "external-session",
+                "cwd": str(cwd),
+                "title": "External Claude session",
+                "classification": "resumable",
+                "active": False,
+                "lastSeenAt": 200,
+                "liveAttachSupported": False,
+            }
+        ]
+
+    async def read_session(
+        self, session_id: str, cwd: str | Path
+    ) -> dict[str, Any]:
+        return {
+            "provider": "claude-code",
+            "sessionId": session_id,
+            "cwd": str(cwd),
+            "title": "External Claude session",
+            "active": False,
+            "lastSeenAt": 200,
+            "messages": [
+                {"id": "user-1", "kind": "user", "text": "Hello Claude"},
+                {"id": "assistant-1", "kind": "assistant", "text": "Hello"},
+                {
+                    "id": "tool-1",
+                    "kind": "tool",
+                    "description": "Running a command (output hidden) completed",
+                    "status": "completed",
+                },
+            ],
+        }
+
+    async def start_session(
+        self,
+        cwd: str | Path,
+        prompt: str,
+        model: str | None = None,
+        permission_mode: str = "default",
+    ) -> dict[str, str]:
+        self.starts.append(
+            {
+                "cwd": str(cwd),
+                "prompt": prompt,
+                "model": model,
+                "permissionMode": permission_mode,
+            }
+        )
+        return {"sessionId": "managed-session", "runId": "run-start"}
+
+    async def resume_session(
+        self,
+        session_id: str,
+        cwd: str | Path,
+        prompt: str,
+        model: str | None = None,
+        permission_mode: str = "default",
+    ) -> dict[str, str]:
+        self.resumes.append(
+            {
+                "sessionId": session_id,
+                "cwd": str(cwd),
+                "prompt": prompt,
+                "model": model,
+                "permissionMode": permission_mode,
+            }
+        )
+        return {"sessionId": session_id, "runId": "run-resume"}
+
+    async def interrupt(self, session_id: str) -> dict[str, Any]:
+        self.interrupts.append(session_id)
+        return {"sessionId": session_id, "interrupted": True}
 
 
 class ProtocolTests(unittest.TestCase):
@@ -523,6 +603,142 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await app.stop()
             self.assertTrue(claude.stopped)
+
+    async def test_authenticated_provider_catalog_and_claude_vertical_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FakeClaude.instances.clear()
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            client = Client(None, "test")
+            with self.assertRaises(PermissionError):
+                await app.dispatch(
+                    client,
+                    {"type": "provider.list", "payload": {}},
+                )
+            client.authenticated = True
+
+            catalog = await app.dispatch(
+                client,
+                {"type": "provider.list", "payload": {}},
+            )
+            self.assertEqual(
+                [provider["id"] for provider in catalog["providers"]],
+                ["codex", "claude-code"],
+            )
+            claude_provider = catalog["providers"][1]
+            self.assertTrue(claude_provider["available"])
+            self.assertEqual(claude_provider["cliVersion"], "2.1.220")
+            self.assertIn("external-running-no-live-attach", claude_provider["limitations"])
+
+            listed = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.list",
+                    "payload": {"provider": "claude-code"},
+                },
+            )
+            external = listed["sessions"][0]
+            self.assertEqual(external["provider"], "claude-code")
+            self.assertEqual(external["source"], "external")
+            self.assertEqual(external["state"], "resumable")
+            self.assertFalse(external["liveAttached"])
+
+            read = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.read",
+                    "payload": {
+                        "provider": "claude-code",
+                        "sessionId": "external-session",
+                        "repositoryId": ".",
+                    },
+                },
+            )
+            self.assertEqual(
+                [item["kind"] for item in read["session"]["messages"]],
+                ["user", "assistant", "tool"],
+            )
+
+            started = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.start",
+                    "payload": {
+                        "provider": "claude-code",
+                        "repositoryId": ".",
+                        "text": "Inspect this workspace",
+                        "model": "sonnet",
+                        "permissionMode": "dontAsk",
+                    },
+                },
+            )
+            self.assertTrue(started["accepted"])
+            self.assertEqual(started["session"]["provider"], "claude-code")
+            self.assertEqual(started["session"]["model"], "sonnet")
+            claude = FakeClaude.instances[-1]
+            self.assertEqual(claude.starts[0]["permissionMode"], "dontAsk")
+
+            resumed = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.resume",
+                    "payload": {
+                        "provider": "claude-code",
+                        "sessionId": "external-session",
+                        "repositoryId": ".",
+                        "text": "Continue",
+                        "model": "haiku",
+                        "permissionMode": "plan",
+                    },
+                },
+            )
+            self.assertTrue(resumed["accepted"])
+            self.assertEqual(claude.resumes[0]["model"], "haiku")
+
+            with self.assertRaisesRegex(CapabilityError, "not live-attached"):
+                await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.turn.interrupt",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": "unknown-external",
+                        },
+                    },
+                )
+            interrupted = await app.dispatch(
+                client,
+                {
+                    "type": "provider.turn.interrupt",
+                    "payload": {
+                        "provider": "claude-code",
+                        "sessionId": "external-session",
+                    },
+                },
+            )
+            self.assertTrue(interrupted["accepted"])
+            self.assertEqual(claude.interrupts, ["external-session"])
+
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "query.interrupted",
+                    "sessionId": "external-session",
+                    "runId": "run-resume",
+                }
+            )
+            self.assertEqual(
+                app.claude_session_overlays["external-session"]["state"],
+                "interrupted",
+            )
 
 
 class DiagnosticBufferTests(unittest.TestCase):

@@ -12,6 +12,7 @@ import {
   MAX_EVENT_TEXT_BYTES,
   MAX_MESSAGE_BYTES,
   normalizedEvents,
+  normalizedHistory,
   parseClaudeVersion,
 } from "./bridge.mjs";
 import * as fakeSdk from "./test_fake_sdk.mjs";
@@ -93,6 +94,14 @@ test("normalization bounds visible text and discards raw tool output", () => {
   assert.equal(JSON.stringify(tool).includes("SECRET"), false);
 });
 
+test("history projection keeps visible messages and safe tool cards only", async () => {
+  const history = normalizedHistory(await fakeSdk.getSessionMessages("session-1"));
+  assert.deepEqual(history.map((item) => item.kind), ["user", "assistant", "tool"]);
+  assert.equal(history[2].status, "completed");
+  assert.match(history[2].description, /output hidden/);
+  assert.equal(JSON.stringify(history).includes("SECRET"), false);
+});
+
 test("start, model, permission callback, discovery, interrupt, and minimal mapping", async () => {
   const directory = await mkdtemp(join(tmpdir(), "foreman-claude-unit-"));
   const statePath = join(directory, "state.json");
@@ -122,6 +131,10 @@ test("start, model, permission callback, discovery, interrupt, and minimal mappi
   assert.equal(discovered[0].classification, "resumable");
   assert.equal(discovered[0].liveAttachSupported, false);
   assert.equal("summary" in discovered[0], false);
+  const read = await bridge.read({ cwd: directory, sessionId: "external-session" });
+  assert.equal(read.title, "External Claude work");
+  assert.deepEqual(read.messages.map((item) => item.kind), ["user", "assistant", "tool"]);
+  assert.equal(JSON.stringify(read).includes("SECRET"), false);
   assert.throws(() => bridge.attachExternal(), /not supported/);
 
   const sleeping = await bridge.start({ cwd: directory, prompt: "sleep", permissionMode: "dontAsk" });

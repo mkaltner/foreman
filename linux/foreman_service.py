@@ -33,7 +33,7 @@ from codex import (
     search_matches,
     session,
 )
-from claude_code import ClaudeCode
+from claude_code import ClaudeCode, ClaudeCodeError, SUPPORTED_MODELS
 from diagnostics import DiagnosticBuffer, request_category
 from protocol import (
     MAX_FRAME_BYTES,
@@ -67,6 +67,28 @@ SEARCH_STATUSES = {
     "failed",
     "interrupted",
 }
+PROVIDERS = {"codex", "claude-code"}
+CLAUDE_PERMISSION_MODES = (
+    "default",
+    "dontAsk",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "bypassPermissions",
+)
+CLAUDE_LIMITATIONS = [
+    "external-running-no-live-attach",
+    "external-running-no-interrupt",
+    "external-running-no-approval-response",
+    "no-web-approval-response",
+    "no-transcript-search",
+    "no-notifications",
+    "no-images",
+]
+
+
+class CapabilityError(ValueError):
+    pass
 
 
 def load_env(path: Path) -> None:
@@ -179,6 +201,8 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        self.claude_session_overlays: dict[str, dict[str, Any]] = {}
+        self.claude_session_cwds: dict[str, str] = {}
         self.remote_restart_enabled = remote_restart_enabled
         self.restart_runner = restart_runner or self.systemd_restart
         self.restart_scheduled = False
@@ -260,6 +284,9 @@ class Foreman:
 
     async def claude_event(self, message: dict[str, Any]) -> None:
         kind = message.get("kind")
+        if kind == "provider.status":
+            await self.broadcast_provider_status()
+            return
         if kind in {
             "query.started",
             "query.completed",
@@ -270,22 +297,419 @@ class Foreman:
         }:
             self.diagnostics.record(f"claude.{kind}")
 
+        session_id = message.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return
+        observed_at = int(time.time())
+        cwd = message.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            self.claude_session_cwds[session_id] = cwd
+        overlay = self.claude_session_overlays.setdefault(session_id, {})
+        run_id = message.get("runId")
+        outgoing_event: dict[str, Any]
+        if kind == "query.started":
+            overlay.update(
+                {
+                    "source": "managed",
+                    "state": "working",
+                    "status": "working",
+                    "activeTurnId": run_id,
+                    "activeTurnStartedAt": observed_at,
+                    "attention": False,
+                    "model": message.get("model"),
+                    "permissionMode": message.get("permissionMode", "default"),
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "status",
+                "status": "working",
+                "turnId": run_id,
+                "startedAt": observed_at,
+                "observedAt": observed_at,
+            }
+        elif kind == "assistant.delta":
+            text = message.get("text") if isinstance(message.get("text"), str) else ""
+            overlay.update({"activityLabel": "Responding", "lastActivity": observed_at})
+            outgoing_event = {
+                "kind": "assistant.delta",
+                "turnId": run_id,
+                "itemId": f"assistant-{run_id or 'active'}",
+                "text": text,
+                "observedAt": observed_at,
+            }
+        elif kind == "tool":
+            name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
+            raw_status = message.get("status")
+            item_status = {
+                "started": "running",
+                "completed": "completed",
+                "failed": "failed",
+                "denied": "denied",
+            }.get(raw_status, "running")
+            tool_id = message.get("toolUseId")
+            item_id = f"claude-tool-{tool_id or run_id or 'active'}"
+            description = self.claude_tool_summary(name, item_status)
+            overlay.update(
+                {
+                    "activityLabel": description if item_status == "running" else "Thinking",
+                    "activityText": "",
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "item",
+                "phase": "started" if item_status == "running" else "completed",
+                "turnId": run_id,
+                "item": {
+                    "id": item_id,
+                    "kind": "tool",
+                    "description": description,
+                    "status": item_status,
+                },
+                "observedAt": observed_at,
+            }
+        elif kind == "permission.requested":
+            overlay.update(
+                {
+                    "state": "working",
+                    "status": "waiting",
+                    "attention": True,
+                    "waitType": "approval",
+                    "waitDescription": "Permission required in Claude session. Foreman web approval support is not yet available.",
+                    "activityLabel": "Permission required",
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "status",
+                "status": "waiting",
+                "turnId": run_id,
+                "waitType": "approval",
+                "waitDescription": overlay["waitDescription"],
+                "observedAt": observed_at,
+            }
+        elif kind == "permission.denied":
+            name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
+            overlay.update(
+                {
+                    "status": "working",
+                    "attention": False,
+                    "waitType": None,
+                    "waitDescription": None,
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "item",
+                "phase": "completed",
+                "turnId": run_id,
+                "item": {
+                    "id": f"claude-permission-{message.get('toolUseId') or run_id or 'active'}",
+                    "kind": "tool",
+                    "description": self.claude_tool_summary(name, "denied"),
+                    "status": "denied",
+                },
+                "observedAt": observed_at,
+            }
+        elif kind in {"query.completed", "query.failed", "query.interrupted"}:
+            state = kind.removeprefix("query.")
+            overlay.update(
+                {
+                    "state": state,
+                    "status": state,
+                    "activeTurnId": None,
+                    "activeTurnStartedAt": None,
+                    "attention": False,
+                    "waitType": None,
+                    "waitDescription": None,
+                    "terminalAt": observed_at,
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "status",
+                "status": state,
+                "turnId": run_id,
+                "completedAt": observed_at,
+                "failureSummary": message.get("message") if state == "failed" else None,
+                "observedAt": observed_at,
+            }
+        else:
+            return
+
+        outgoing = {
+            "version": VERSION,
+            "type": "session.event",
+            "payload": {
+                "provider": "claude-code",
+                "sessionId": session_id,
+                "event": outgoing_event,
+            },
+        }
+        subscription = self.provider_subscription("claude-code", session_id)
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+                and (
+                    outgoing_event.get("kind") == "status"
+                    or subscription in client.subscriptions
+                )
+            ),
+            return_exceptions=True,
+        )
+
     async def provider_status(self) -> list[dict[str, Any]]:
-        """Internal projection; Claude is intentionally absent from protocol v1."""
+        """Bounded provider catalog backed by the current adapter status."""
         claude = (
             await self.claude.status()
             if self.claude is not None
             else {"provider": "claude-code", "available": False}
         )
+        codex_capabilities = [
+            "session.list",
+            "session.read",
+            "session.start",
+            "session.resume",
+            "session.subscribe",
+            "turn.prompt",
+            "turn.interrupt",
+            "model.select",
+            "permission.select",
+        ]
+        claude_capabilities = [
+            "session.list",
+            "session.read",
+            "session.start",
+            "session.resume",
+            "session.subscribe",
+            "turn.prompt",
+            "turn.interrupt",
+            "model.select",
+            "permission.select",
+        ] if claude.get("available") else []
         return [
             {
+                "id": "codex",
                 "provider": "codex",
+                "displayName": "Codex",
                 "available": self.codex.is_connected,
                 "version": self.codex.version,
                 "runtime": self.codex.runtime_status,
+                "capabilities": codex_capabilities if self.codex.is_connected else [],
+                "limitations": [],
             },
-            claude,
+            {
+                "id": "claude-code",
+                "provider": "claude-code",
+                "displayName": "Claude Code",
+                "available": claude.get("available") is True,
+                "cliVersion": claude.get("cliVersion"),
+                "sdkVersion": claude.get("sdkVersion"),
+                "nodeVersion": claude.get("nodeVersion"),
+                "capabilities": claude_capabilities,
+                "limitations": CLAUDE_LIMITATIONS,
+                "unavailableReason": (
+                    None if claude.get("available")
+                    else self.claude_unavailable_reason(claude)
+                ),
+            },
         ]
+
+    async def broadcast_provider_status(self) -> None:
+        if self.stopping:
+            return
+        outgoing = {
+            "version": VERSION,
+            "type": "provider.event",
+            "payload": {"providers": await self.provider_status()},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
+        )
+
+    @staticmethod
+    def provider_subscription(provider: str, session_id: str) -> str:
+        return f"{provider}:{session_id}"
+
+    @staticmethod
+    def claude_unavailable_reason(status: dict[str, Any]) -> str:
+        limitation = str(status.get("limitation", "")).lower()
+        if "native claude" in limitation or "executable" in limitation:
+            return "cli-missing"
+        if "node.js" in limitation:
+            return "node-missing"
+        if "sdk" in limitation:
+            return "sdk-missing"
+        if "auth" in limitation:
+            return "authentication-unavailable"
+        return "adapter-unavailable"
+
+    @staticmethod
+    def claude_tool_summary(name: str, status: str) -> str:
+        normalized = name.casefold()
+        action = (
+            "Reading a file"
+            if normalized == "read"
+            else "Running a command (output hidden)"
+            if normalized == "bash"
+            else "Editing a file"
+            if normalized in {"edit", "write"}
+            else "Searching files"
+            if normalized in {"grep", "glob", "search"}
+            else f"Using {name[:80]}"
+        )
+        if status == "denied":
+            return f"{action} was denied"
+        if status == "failed":
+            return f"{action} failed"
+        if status == "completed":
+            return f"{action} completed"
+        return action
+
+    @staticmethod
+    def required_provider(payload: dict[str, Any]) -> str:
+        provider = required_text(payload, "provider", 40)
+        if provider not in PROVIDERS:
+            raise CapabilityError(f"provider {provider} is unsupported")
+        return provider
+
+    async def require_claude(self) -> None:
+        if self.claude is None:
+            raise CapabilityError("Claude Code is unavailable on this host")
+        status = await self.claude.status()
+        if status.get("available") is not True:
+            reason = self.claude_unavailable_reason(status).replace("-", " ")
+            raise CapabilityError(f"Claude Code is unavailable on this host: {reason}")
+
+    def claude_repository_id(self, cwd: str) -> str:
+        try:
+            relative = str(Path(cwd).resolve().relative_to(self.repository_root))
+        except (OSError, ValueError):
+            return "."
+        return relative or "."
+
+    async def discover_claude_sessions(self) -> list[dict[str, Any]]:
+        if self.claude is None:
+            return []
+        status = await self.claude.status()
+        if status.get("available") is not True:
+            return []
+        repository_ids = [".", *(item["id"] for item in await asyncio.to_thread(self.repositories))]
+        discovered: dict[tuple[str, str], dict[str, Any]] = {}
+        for repository_id in dict.fromkeys(repository_ids):
+            try:
+                cwd = self.resolve_repository(repository_id)
+                items = await self.claude.discover(cwd)
+            except (ValueError, ClaudeCodeError):
+                continue
+            for item in items[:500]:
+                session_id = item.get("sessionId")
+                item_cwd = item.get("cwd")
+                if not isinstance(session_id, str) or not isinstance(item_cwd, str):
+                    continue
+                key = (session_id, item_cwd)
+                previous = discovered.get(key)
+                if previous is None or (item.get("lastSeenAt") or 0) > (previous.get("lastSeenAt") or 0):
+                    discovered[key] = item
+                self.claude_session_cwds[session_id] = item_cwd
+        return [self.project_claude_session(item) for item in discovered.values()]
+
+    def project_claude_session(
+        self, item: dict[str, Any], include_messages: bool = False
+    ) -> dict[str, Any]:
+        session_id = str(item.get("sessionId", ""))
+        cwd = str(item.get("cwd", ""))
+        overlay = self.claude_session_overlays.get(session_id, {})
+        source = "managed" if item.get("classification") == "managed" or overlay.get("source") == "managed" else "external"
+        state = "working" if item.get("active") else "resumable"
+        if source == "managed" and overlay.get("state") in {
+            "working",
+            "completed",
+            "failed",
+            "interrupted",
+        }:
+            state = overlay["state"]
+        capabilities = ["session.read", "session.resume"]
+        if source == "managed":
+            capabilities.append("turn.prompt")
+        if state == "working":
+            capabilities.append("turn.interrupt")
+        projected = {
+            "provider": "claude-code",
+            "id": session_id,
+            "sessionId": session_id,
+            "cwd": cwd,
+            "repository": cwd,
+            "repositoryId": self.claude_repository_id(cwd),
+            "title": item.get("title") or overlay.get("title") or "Claude Code session",
+            "source": source,
+            "state": state,
+            "status": overlay.get("status", state),
+            "lastActivity": overlay.get("lastActivity", item.get("lastSeenAt")),
+            "model": overlay.get("model", item.get("model")),
+            "permissionMode": overlay.get("permissionMode", item.get("permissionMode") or "default"),
+            "capabilities": capabilities,
+            "liveAttached": state == "working" and source == "managed",
+            "externalLimitation": (
+                "Not live-attached. Resume in Foreman to stream, interrupt, or prompt."
+                if source == "external"
+                else None
+            ),
+            **overlay,
+        }
+        if include_messages:
+            projected["messages"] = item.get("messages", [])
+        return projected
+
+    async def read_claude_session(
+        self, session_id: str, repository_id: str
+    ) -> dict[str, Any]:
+        await self.require_claude()
+        assert self.claude is not None
+        cwd = self.resolve_repository(repository_id)
+        item = await self.claude.read_session(session_id, cwd)
+        self.claude_session_cwds[session_id] = str(cwd)
+        classification = (
+            "managed"
+            if self.claude_session_overlays.get(session_id, {}).get("source") == "managed"
+            else "resumable"
+        )
+        item["classification"] = classification
+        return self.project_claude_session(item, True)
+
+    async def broadcast_claude_lifecycle(
+        self, session_id: str, session_projection: dict[str, Any]
+    ) -> None:
+        outgoing = {
+            "version": VERSION,
+            "type": "session.event",
+            "payload": {
+                "provider": "claude-code",
+                "sessionId": session_id,
+                "event": {
+                    "kind": "lifecycle",
+                    "action": "created",
+                    "session": session_projection,
+                    "observedAt": int(time.time()),
+                },
+            },
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
+        )
 
     async def codex_event(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -688,7 +1112,10 @@ class Foreman:
         except PermissionError as exc:
             self.record_request_failure(request)
             await client.send(error(request, "unauthorized", str(exc)))
-        except (ValueError, CodexError) as exc:
+        except CapabilityError as exc:
+            self.record_request_failure(request)
+            await client.send(error(request, "capabilityUnavailable", str(exc)))
+        except (ValueError, CodexError, ClaudeCodeError) as exc:
             self.record_request_failure(request)
             await client.send(error(request, "requestFailed", str(exc)))
         except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError):
@@ -1049,6 +1476,198 @@ class Foreman:
 
         if message_type == "repository.list":
             return {"repositories": await asyncio.to_thread(self.repositories)}
+        if message_type == "provider.list":
+            return {"providers": await self.provider_status()}
+        if message_type == "provider.session.list":
+            provider = self.required_provider(payload)
+            if provider == "codex":
+                return {
+                    "provider": provider,
+                    "sessions": [
+                        {
+                            **self.projected_session(item),
+                            "provider": "codex",
+                            "sessionId": item["id"],
+                            "source": "managed",
+                            "state": self.projected_session(item).get("status", "idle"),
+                        }
+                        for item in await self.codex.list_threads()
+                    ],
+                }
+            return {
+                "provider": provider,
+                "sessions": await self.discover_claude_sessions(),
+            }
+        if message_type == "provider.session.read":
+            provider = self.required_provider(payload)
+            session_id = required_text(payload, "sessionId", 160)
+            if provider == "codex":
+                projected = self.projected_session(
+                    await self.codex.read_thread(session_id), True
+                )
+                return {
+                    "session": {
+                        **projected,
+                        "provider": "codex",
+                        "sessionId": session_id,
+                        "source": "managed",
+                        "state": projected.get("status", "idle"),
+                    }
+                }
+            repository_id = required_text(payload, "repositoryId", 500)
+            return {
+                "session": await self.read_claude_session(
+                    session_id, repository_id
+                )
+            }
+        if message_type == "provider.model.list":
+            provider = self.required_provider(payload)
+            if provider == "codex":
+                return {
+                    "provider": provider,
+                    "models": await self.codex.list_models(
+                        refresh=payload.get("refresh") is True
+                    ),
+                    "dynamic": True,
+                }
+            await self.require_claude()
+            return {
+                "provider": provider,
+                "models": [dict(model) for model in SUPPORTED_MODELS],
+                "dynamic": False,
+                "source": "adapter-supported",
+            }
+        if message_type == "provider.permission.list":
+            provider = self.required_provider(payload)
+            if provider == "codex":
+                return {
+                    "provider": provider,
+                    "modes": await self.codex.list_access_levels(
+                        refresh=payload.get("refresh") is True
+                    ),
+                }
+            await self.require_claude()
+            descriptions = {
+                "default": ("Default", "Ask when required"),
+                "dontAsk": ("Don’t ask", "Deny unapproved actions"),
+                "acceptEdits": ("Accept edits", "Allow file edits under Claude’s documented behavior"),
+                "plan": ("Plan", "Planning-only behavior"),
+                "auto": ("Auto", "Claude-managed automatic policy"),
+                "bypassPermissions": ("Bypass permissions", "Unrestricted/high risk"),
+            }
+            return {
+                "provider": provider,
+                "modes": [
+                    {
+                        "id": mode,
+                        "displayName": descriptions[mode][0],
+                        "description": descriptions[mode][1],
+                        "highRisk": mode == "bypassPermissions",
+                    }
+                    for mode in CLAUDE_PERMISSION_MODES
+                ],
+            }
+        if message_type in {"provider.session.start", "provider.session.resume", "provider.turn.prompt"}:
+            provider = self.required_provider(payload)
+            if provider == "codex":
+                raise CapabilityError(
+                    "Use the compatible Codex session.start, session.resume, or turn.prompt operation"
+                )
+            await self.require_claude()
+            assert self.claude is not None
+            repository_id = required_text(payload, "repositoryId", 500)
+            cwd = self.resolve_repository(repository_id)
+            text = required_text(payload, "text", 100_000)
+            model = optional_text(payload, "model", 100) or "sonnet"
+            if model not in {item["id"] for item in SUPPORTED_MODELS}:
+                raise ValueError("selected Claude model is unavailable")
+            permission_mode = optional_text(payload, "permissionMode", 100) or "default"
+            if permission_mode not in CLAUDE_PERMISSION_MODES:
+                raise ValueError("selected Claude permission mode is unavailable")
+            if message_type == "provider.session.start":
+                result = await self.claude.start_session(
+                    cwd, text, model, permission_mode
+                )
+            else:
+                session_id = required_text(payload, "sessionId", 160)
+                await self.claude.read_session(session_id, cwd)
+                result = await self.claude.resume_session(
+                    session_id, cwd, text, model, permission_mode
+                )
+            session_id = result["sessionId"]
+            run_id = result.get("runId")
+            self.claude_session_cwds[session_id] = str(cwd)
+            overlay = self.claude_session_overlays.setdefault(session_id, {})
+            overlay.update(
+                {
+                    "source": "managed",
+                    "state": "working",
+                    "status": "working",
+                    "title": overlay.get("title") or text.strip().splitlines()[0][:300],
+                    "model": model,
+                    "permissionMode": permission_mode,
+                    "activeTurnId": run_id,
+                    "lastActivity": int(time.time()),
+                }
+            )
+            client.subscriptions.add(
+                self.provider_subscription("claude-code", session_id)
+            )
+            projected = self.project_claude_session(
+                {
+                    "sessionId": session_id,
+                    "cwd": str(cwd),
+                    "classification": "managed",
+                    "active": True,
+                    "title": overlay["title"],
+                    "model": model,
+                    "permissionMode": permission_mode,
+                    "messages": [
+                        {
+                            "id": f"user-{run_id or int(time.time() * 1000)}",
+                            "kind": "user",
+                            "text": text,
+                            "turnId": run_id,
+                        }
+                    ],
+                },
+                True,
+            )
+            if message_type == "provider.session.start":
+                await self.broadcast_claude_lifecycle(session_id, projected)
+            return {
+                "accepted": True,
+                "session": projected,
+                "turnId": run_id,
+            }
+        if message_type in {"provider.session.subscribe", "provider.session.unsubscribe"}:
+            provider = self.required_provider(payload)
+            session_id = required_text(payload, "sessionId", 160)
+            subscription = self.provider_subscription(provider, session_id)
+            subscribed = message_type.endswith("subscribe") and not message_type.endswith("unsubscribe")
+            if subscribed:
+                client.subscriptions.add(subscription)
+                if provider == "codex":
+                    await self.codex.subscribe_thread(session_id)
+            else:
+                client.subscriptions.discard(subscription)
+            return {"provider": provider, "sessionId": session_id, "subscribed": subscribed}
+        if message_type == "provider.turn.interrupt":
+            provider = self.required_provider(payload)
+            if provider != "claude-code":
+                raise CapabilityError("Use the compatible Codex turn.interrupt operation")
+            session_id = required_text(payload, "sessionId", 160)
+            overlay = self.claude_session_overlays.get(session_id)
+            if not overlay:
+                raise CapabilityError(
+                    "External Claude sessions cannot be interrupted because Foreman is not live-attached"
+                )
+            if overlay.get("state") != "working" or not overlay.get("activeTurnId"):
+                raise ValueError("Claude session does not have an active Foreman-owned query")
+            await self.require_claude()
+            assert self.claude is not None
+            await self.claude.interrupt(session_id)
+            return {"accepted": True, "provider": provider, "sessionId": session_id}
         if message_type == "service.status":
             return self.service_status()
         if message_type == "diagnostics.list":
