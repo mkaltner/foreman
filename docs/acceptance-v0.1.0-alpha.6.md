@@ -21,7 +21,7 @@ digest. Use only a trusted LAN or private overlay.
 
 ## Clean install, upgrade, and rollback
 
-- [ ] Fresh clone/install succeeds as an unprivileged user with command traps
+- [x] Fresh release-branch clone/install succeeds as an unprivileged user with command traps
       proving `sudo`, pip, venv, Node, and Java are not invoked
 - [ ] Service is active; `foreman pair` is single-use; `foreman web` is correct;
       browser assets load; Android and browser pair
@@ -72,7 +72,7 @@ digest. Use only a trusted LAN or private overlay.
 | Area | Result | Tester/date | Evidence or issue |
 | --- | --- | --- | --- |
 | Automated/artifacts | PASS | Codex / 2026-07-30 | 73 Linux tests; 108 web tests; 48 Android tests; Android lint; debug/release APKs; local archive/checksums |
-| Clean install | PARTIAL | Codex / 2026-07-30 | Rootless/offline install integration and real candidate reinstall passed; fresh remote candidate clone and Android pairing remain |
+| Clean install | PARTIAL | Codex / 2026-07-30 | Fresh remote release-branch clone, rootless/offline install integration, real candidate install, service/web URL/assets, and Chrome pairing passed; default-branch clone cannot contain an unmerged candidate and Android pairing remains |
 | Upgrade/rollback | PASS | Codex / 2026-07-30 | Real `alpha.5 → alpha.6 → alpha.5 → alpha.6`; config/state hashes stable; obsolete probe removed; forced failure covered by integration test |
 | Shared/fallback runtime | PASS | Codex / 2026-07-30 | Live shared attach/safe stop plus live isolated fallback ownership; protocol operations covered by integration tests |
 | Physical Android | BLOCKED | Codex / 2026-07-30 | Network ADB device is unauthorized; no APK installation or physical UX evidence |
