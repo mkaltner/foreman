@@ -111,6 +111,13 @@ button.full{width:100%;min-height:44px}
 .tool-card strong{color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-size:10px}
 .tool-card p{color:var(--text);text-overflow:ellipsis;white-space:nowrap;margin:2px 0 0;font:12px ui-monospace,monospace;overflow:hidden}
 .tool-card small{color:var(--muted);font-size:10px}
+.collapsed-activity{border:1px solid var(--border);background:var(--surface);border-radius:10px;max-width:760px;margin:0 auto 10px;overflow:hidden}
+.collapsed-activity>summary{cursor:pointer;align-items:center;gap:12px;padding:10px 12px;display:flex;list-style:none}
+.collapsed-activity>summary::-webkit-details-marker{display:none}
+.collapsed-activity>summary>span:first-child{color:var(--accent);font-size:15px}
+.collapsed-activity>summary>span:nth-child(2){flex:1;display:grid;gap:2px}
+.collapsed-activity>summary strong{font-size:12px}.collapsed-activity>summary small,.collapsed-activity>summary i{color:var(--muted);font-size:10px;font-style:normal}
+.collapsed-activity>div{border-top:1px solid var(--border);padding:10px}.collapsed-activity>div .tool-card:last-child{margin-bottom:0}
 .message-images{flex-wrap:wrap;gap:8px;margin-top:10px;display:flex}
 .message-images img{object-fit:cover;border:1px solid color-mix(in srgb, var(--accent) 20%, var(--border));border-radius:9px;width:min(180px,46vw);height:120px}
 .image-indicator{color:var(--muted);margin-top:8px;font-size:11px;display:inline-block}

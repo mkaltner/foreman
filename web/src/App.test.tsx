@@ -164,3 +164,44 @@ describe("conversation drafts", () => {
     expect(screen.getByRole("button", { name: "Access: Full access" })).toBeInTheDocument();
   });
 });
+
+describe("conversation activity detail", () => {
+  const session: SessionSummary = {
+    id: "activity",
+    repository: "/projects/foreman",
+    title: "Activity",
+    status: "idle",
+    messages: [
+      { id: "command", kind: "command", description: "git status", status: "completed", exitCode: 0 },
+      { id: "tool", kind: "tool", description: "Read file", status: "completed" },
+      { id: "failed", kind: "command", description: "run tests", status: "completed", exitCode: 1 },
+    ],
+  };
+  const props = {
+    session,
+    approvals: [],
+    models: [],
+    accessLevels: [],
+    connected: true,
+    highlightItemId: null,
+    focusedApprovalId: null,
+    draft: "",
+    onDraftChange: vi.fn(),
+    onBack: vi.fn(),
+    onRequest: vi.fn().mockResolvedValue({}),
+    onError: vi.fn(),
+  };
+
+  it("defaults to a collapsed routine group while leaving failures visible", () => {
+    const { container } = render(<ConversationView {...props} />);
+    expect(screen.getByText("2 completed activity items")).toBeInTheDocument();
+    expect(container.querySelector("details.collapsed-activity")).not.toHaveAttribute("open");
+    expect(container.querySelector(".transcript > .tool-card p")).toHaveTextContent("run tests");
+  });
+
+  it("renders every activity item directly in full mode", () => {
+    const { container } = render(<ConversationView {...props} activityDetail="full" />);
+    expect(container.querySelector("details.collapsed-activity")).toBeNull();
+    expect(container.querySelectorAll(".transcript > .tool-card")).toHaveLength(3);
+  });
+});

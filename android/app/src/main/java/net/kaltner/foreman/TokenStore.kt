@@ -356,6 +356,7 @@ class PreferenceStore(context: Context, hostId: String?) {
                     )
                 }.getOrDefault(ThemeMode.System),
             accentColor = parseAccentColor(preferences.getString("accentColor", null)),
+            activityDetail = enumPreference("activityDetail", ActivityDetail.Focused),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
             hapticsEnabled = preferences.getBoolean("hapticsEnabled", true),
             monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
@@ -374,6 +375,7 @@ class PreferenceStore(context: Context, hostId: String?) {
 
     fun setThemeMode(mode: ThemeMode) { preferences.edit().putString("themeMode", mode.name).apply() }
     fun setAccentColor(color: AccentColor) { preferences.edit().putString("accentColor", color.name).apply() }
+    fun setActivityDetail(detail: ActivityDetail) { preferences.edit().putString("activityDetail", detail.name).apply() }
     fun setFollowNewMessages(enabled: Boolean) { preferences.edit().putBoolean("followNewMessages", enabled).apply() }
     fun setHapticsEnabled(enabled: Boolean) { preferences.edit().putBoolean("hapticsEnabled", enabled).apply() }
     fun setMonitorActiveTurns(enabled: Boolean) { preferences.edit().putBoolean("monitorActiveTurns", enabled).apply() }
@@ -415,6 +417,7 @@ internal fun parseAccentColor(value: String?): AccentColor =
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
+    val activityDetail: ActivityDetail = ActivityDetail.Focused,
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,

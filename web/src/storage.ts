@@ -1,5 +1,8 @@
+import type { ActivityDetail } from "./activity-detail";
+
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
+export type { ActivityDetail } from "./activity-detail";
 export type StoredHostStatus = "connected" | "reconnecting" | "disconnected";
 
 export interface StoredHost {
@@ -39,6 +42,7 @@ interface LegacyStoredHost {
 export interface Appearance {
   theme: ThemeMode;
   accent: AccentColor;
+  activityDetail: ActivityDetail;
 }
 
 const LEGACY_HOST_KEY = "foreman.host.v1";
@@ -57,7 +61,11 @@ const HOST_SCOPED_KEYS = [
   SESSION_ORGANIZATION_KEY,
   SESSION_SEARCH_KEY,
 ];
-export const DEFAULT_APPEARANCE: Appearance = { theme: "system", accent: "purple" };
+export const DEFAULT_APPEARANCE: Appearance = {
+  theme: "system",
+  accent: "purple",
+  activityDetail: "focused",
+};
 export const ACCENTS: AccentColor[] = [
   "purple",
   "blue",
@@ -188,6 +196,7 @@ export function loadAppearance(hostId?: string | null, storage: Storage = localS
       accent: ACCENTS.includes(parsed?.accent as AccentColor)
         ? (parsed?.accent as AccentColor)
         : DEFAULT_APPEARANCE.accent,
+      activityDetail: parsed?.activityDetail === "full" ? "full" : "focused",
     };
   } catch {
     return DEFAULT_APPEARANCE;
