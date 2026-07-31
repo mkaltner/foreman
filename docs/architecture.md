@@ -16,9 +16,9 @@ Browser Foreman ── static HTTP + authenticated WS :8766 ─┘
 ```
 
 The Linux service also owns one optional Node companion for the official Claude
-Agent SDK. Additive protocol-v1 provider operations expose that adapter to web;
-Android remains Codex-only and can ignore the new capabilities and provider
-events. The companion uses bounded request-ID JSON over stdio, persists only
+Agent SDK. Additive protocol-v1 provider operations expose that adapter to both
+clients. Older Android builds can ignore the capabilities and provider events.
+The companion uses bounded request-ID JSON over stdio, persists only
 Claude `{sessionId, cwd}` mappings, and never mirrors transcripts or attaches to
 external live processes. If it fails, Codex stays available, active Claude work
 becomes resumable, and no query is replayed.
@@ -56,14 +56,15 @@ Linux files:
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
 - `foreman`, `install.sh`, and `foreman.service`: operation and installation.
 
-The React/TypeScript SPA under `web/` uses native WebSocket and local component
-state. It reloads provider-authoritative sessions and history after reconnect,
-resubscribes to the open compound identity, and never replays prompt, steer,
-interrupt, archive, or delete requests. Claude deletion is provider-aware and
+The React/TypeScript SPA under `web/` and the Compose app under `android/` reload
+provider-authoritative sessions and history after reconnect, resubscribe to the
+open compound identity, and never replay prompt, steer, interrupt, archive, or
+delete requests. Claude deletion is provider-aware and
 uses the official SDK; Claude archive is absent because the SDK has no matching
-operation. Durable routes, selection, drafts, and
-scroll state use `hostId + provider + sessionId`; Claude and Codex IDs are never
-treated as the same namespace. Its committed `web/dist` output is copied into
+operation. Durable routes, selection, drafts, subscriptions, notifications, and
+relevant local UI state use `hostId + provider + sessionId`; legacy Android keys
+migrate into the Codex namespace, and Claude and Codex IDs are never treated as
+the same namespace. The committed `web/dist` output is copied into
 the installed data directory. Node is optional at runtime and required only for
 enabled Claude support.
 
@@ -110,9 +111,12 @@ that monitoring service can occupy the second connection, inactive-host probes
 pause and their existing stale snapshots are the fallback.
 
 Completion and attention notifications retain their existing opt-in behavior.
-They always carry both host and session IDs, but overview sockets and probes do
-not generate additional notifications. Opening a notification or a combined
-attention row selects the saved host before opening its session.
+Android notification identities and routes carry host, provider, and session
+IDs; overview sockets and probes do not generate additional notifications.
+Claude alerts derive only from authoritative provider-tagged lifecycle for a
+monitored Foreman-managed query. Merely resumable external sessions do not
+notify. Opening a notification or a combined attention row selects the saved
+host and provider before opening its session.
 
 Pending approvals and inputs live only in the Codex adapter. Each has an opaque Foreman ID,
 the exact upstream JSON-RPC ID and connection, and one small lock. The adapter
@@ -125,8 +129,9 @@ Android uses one Compose activity, one connection/protocol file, a small image
 processor, and one Keystore-backed multi-host token store. Its cache is in memory and
 disposable. When the user enables active-turn notifications, an on-demand
 foreground service opens its own authenticated connection and subscribes only
-to turns the user opens or starts on the active host. Approval notifications carry
-host and session identity, are deduplicated by opaque request ID, contain no
+to turns the user opens or starts on the active host. Provider lifecycle
+notifications carry compound identity; Codex approval notifications carry host
+and session identity, are deduplicated by opaque request ID, contain no
 command or path, and are cancelled when another
 client resolves the request. The service stops after every subscribed turn is
 terminal; it is not an always-running poller or push client.

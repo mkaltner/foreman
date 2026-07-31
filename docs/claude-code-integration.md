@@ -35,7 +35,7 @@ normalized only when a client opens one session; list discovery never fetches
 every transcript.
 
 Claude support is optional on the Linux host and exposed through the Foreman web
-client. It requires an authenticated native `claude` executable, Node.js 20 or
+and Android clients. It requires an authenticated native `claude` executable, Node.js 20 or
 newer, and the pinned SDK dependency. Tagged Foreman Linux archives contain the
 production dependency and notices. The installer never runs npm; a source
 checkout intended to expose Claude must be prepared with
@@ -44,15 +44,16 @@ checkout intended to expose Claude must be prepared with
 startup intact. Local status is available with `foreman claude-status`.
 
 The authenticated protocol-v1 provider catalog reports availability, CLI/SDK
-versions, capabilities, and explicit limitations. Web sessions use the compound
-`hostId + provider + sessionId` identity and durable provider routes. The web
-client can list/read/start/resume/delete sessions, stream text and safe
+versions, capabilities, and explicit limitations. Web and Android sessions use
+the compound `hostId + provider + sessionId` identity for routes, selection,
+drafts, subscriptions, notifications, and local organization. Both clients can
+list/read/start/resume/delete sessions, stream text and safe
 Read/Bash/edit/search/other tool cards, interrupt a still-active Foreman-owned
 query, and choose `sonnet`, `haiku`, or one exact SDK permission mode. Deletion
 uses the official SDK, validates the exact workspace, requires explicit
 confirmation, and is unavailable while a Foreman-owned query is active. Claude
-Code has no SDK archive/unarchive operation, so the web UI does not show a fake
-Claude archive action. Pin and Hide remain browser-local organization controls
+Code has no SDK archive/unarchive operation, so clients do not show a fake
+Claude archive action. Pin and Hide remain client-local organization controls
 and use the full host/provider/session identity for Claude just as they do for
 Codex. Claude model aliases are an explicit adapter-supported list, not dynamic
 enumeration.
@@ -60,18 +61,21 @@ enumeration.
 The user-visible states are `working`, `completed`, `failed`, `interrupted`, and
 `resumable`; unavailable adapter entries use `unavailable`. `managed` means
 Foreman owns or has resumed the current query. An externally created session is
-`external` and `resumable` until a web user explicitly resumes it. Recency is
+`external` and `resumable` until a user explicitly resumes it. Recency is
 never evidence of live work, so Foreman does not emit `external-active` without
 official proof. Interrupt and other live controls are rejected for external or
 terminal sessions. An interrupted session keeps its exact ID and remains
 resumable.
 
-Claude permission callbacks remain inside the adapter. Web does not silently
-approve or reuse Codex approval actions. A blocked query is shown as
-“Permission required in Claude session. Foreman web approval support is not yet
-available.” A `dontAsk` denial appears as a bounded denied tool card. Claude web
-approvals, transcript search, images, background/browser notifications, Android
-support, and cross-provider search are deferred.
+Claude permission callbacks remain inside the adapter. Neither client silently
+approves or reuses Codex approval actions. Android identifies the wait safely as
+“Permission required in Claude Code. This request cannot yet be answered from
+Android.” A `dontAsk` denial appears as a bounded denied tool card. Claude
+client approval responses, transcript search, images, background browser
+notifications, and cross-provider transcript search are deferred. Android can
+notify for authoritative provider lifecycle observed for a monitored managed
+query; this is active-host monitoring, not a second server notification stream,
+and it excludes merely resumable external sessions.
 
 From a source checkout, maintainers can repeat the authenticated disposable
 proof explicitly:

@@ -175,6 +175,15 @@ private fun ConversationItem.isRoutineCompletedActivity(): Boolean =
         status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done") &&
         (exitCode == null || exitCode == 0)
 
+internal fun activeTurnActivityItemIds(session: SessionSummary): Set<String> {
+    val activeTurnId = session.activeTurnId ?: return emptySet()
+    if (session.status !in setOf("working", "waiting")) return emptySet()
+    return session.messages
+        .asSequence()
+        .filter { it.turnId == activeTurnId && it.kind in setOf("command", "tool") }
+        .mapTo(linkedSetOf()) { it.id }
+}
+
 @Serializable
 data class SessionSummary(
     val id: String,
@@ -195,6 +204,17 @@ data class SessionSummary(
     val turnDurationMs: Long? = null,
     val failureSummary: String? = null,
     val waitType: String? = null,
+    val provider: String? = null,
+    val sessionId: String? = null,
+    val repositoryId: String? = null,
+    val permissionMode: String? = null,
+    val source: String? = null,
+    val state: String? = null,
+    val capabilities: List<String> = emptyList(),
+    val liveAttached: Boolean? = null,
+    val externalLimitation: String? = null,
+    val waitDescription: String? = null,
+    val statusChangedAt: Long? = null,
 )
 
 @Serializable

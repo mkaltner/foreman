@@ -10,7 +10,11 @@ const val ANDROID_OVERVIEW_POLL_INTERVAL_MS = 60_000L
 const val ANDROID_DASHBOARD_RECENT_WINDOW_MS = 60 * 60 * 1000L
 
 @Serializable
-data class GlobalSessionIdentity(val hostId: String, val sessionId: String)
+data class GlobalSessionIdentity(
+    val hostId: String,
+    val sessionId: String,
+    val provider: String = PROVIDER_CODEX,
+)
 
 @Serializable
 data class OverviewAttentionItem(
@@ -21,6 +25,7 @@ data class OverviewAttentionItem(
     val repository: String,
     val type: String,
     val startedAt: Long? = null,
+    val provider: String = PROVIDER_CODEX,
 )
 
 @Serializable
@@ -33,6 +38,9 @@ data class HostOverviewSnapshot(
     val runtimeMode: String? = null,
     val runtimeConnected: Boolean = false,
     val active: Int = 0,
+    val codexActive: Int = 0,
+    val claudeActive: Int = 0,
+    val claudeUnavailable: Boolean = false,
     val waiting: Int = 0,
     val failed: Int = 0,
     val oldestTurn: OverviewTurn? = null,
@@ -47,6 +55,7 @@ data class OverviewTurn(
     val sessionId: String,
     val title: String,
     val timestamp: Long,
+    val provider: String = PROVIDER_CODEX,
 )
 
 data class UnifiedOverviewTotals(
@@ -77,12 +86,12 @@ internal fun projectAndroidDashboard(
     fun latestFirst(values: List<SessionSummary>) =
         values.sortedByDescending { epochMillis(it.lastActivity ?: it.terminalAt) ?: 0L }
 
-    val active = latestFirst(sessions.filter { it.status == "working" })
+    val active = latestFirst(sessions.filter { it.status == "working" && it.source != "external" })
     val attention =
         latestFirst(
             sessions.filter {
                 it.status == "waiting" || it.status == "failed" || it.attention ||
-                    it.id in requestSessionIds
+                    (sessionProvider(it) == PROVIDER_CODEX && it.id in requestSessionIds)
             },
         )
     val recent =
@@ -108,7 +117,8 @@ internal fun projectAndroidDashboard(
         waitingCount =
             sessions.count {
                 it.status != "failed" &&
-                    (it.status == "waiting" || it.attention || it.id in requestSessionIds)
+                    (it.status == "waiting" || it.attention ||
+                        (sessionProvider(it) == PROVIDER_CODEX && it.id in requestSessionIds))
             },
         failedCount = sessions.count { it.status == "failed" },
         oldestTurn = oldestTurn,
@@ -133,8 +143,11 @@ internal fun projectHostOverview(
     val pending = approvals.filter { it.status == "pending" || it.status == "submitting" }
     val pendingInputs = inputs.filter { it.status == "pending" || it.status == "submitting" }
     val requestSessions = (pending.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet()
-    val active = sessions.filter { it.status == "working" }
-    val waiting = sessions.filter { it.status == "waiting" || it.attention }
+    val active = sessions.filter { it.status == "working" && it.source != "external" }
+    val waiting = sessions.filter {
+        (it.status == "waiting" || it.attention) &&
+            !(sessionProvider(it) == PROVIDER_CLAUDE_CODE && it.source == "external")
+    }
     val failed = sessions.filter { it.status == "failed" }
     val oldest = (active + waiting).mapNotNull { session ->
         epochMillis(session.activeTurnStartedAt)?.let { session to it }
@@ -144,54 +157,58 @@ internal fun projectHostOverview(
         .maxByOrNull { it.second }
     val attention = buildList {
         pending.forEach { approval ->
-            val session = sessions.firstOrNull { it.id == approval.sessionId }
+            val session = sessions.firstOrNull { it.matches(PROVIDER_CODEX, approval.sessionId) }
             add(
                 OverviewAttentionItem(
-                    hostId,
-                    approval.sessionId,
-                    approval.id,
-                    session?.title ?: "Codex session",
-                    session?.repository.orEmpty(),
-                    "approval",
-                    epochMillis(approval.startedAt ?: approval.createdAt),
+                    hostId = hostId,
+                    sessionId = approval.sessionId,
+                    approvalId = approval.id,
+                    sessionTitle = session?.title ?: "Codex session",
+                    repository = session?.repository.orEmpty(),
+                    type = "approval",
+                    startedAt = epochMillis(approval.startedAt ?: approval.createdAt),
+                    provider = PROVIDER_CODEX,
                 ),
             )
         }
         pendingInputs.forEach { input ->
-            val session = sessions.firstOrNull { it.id == input.sessionId }
+            val session = sessions.firstOrNull { it.matches(PROVIDER_CODEX, input.sessionId) }
             add(
                 OverviewAttentionItem(
-                    hostId,
-                    input.sessionId,
-                    input.id,
-                    session?.title ?: "Codex session",
-                    session?.repository.orEmpty(),
-                    "input",
-                    epochMillis(input.createdAt),
+                    hostId = hostId,
+                    sessionId = input.sessionId,
+                    approvalId = input.id,
+                    sessionTitle = session?.title ?: "Codex session",
+                    repository = session?.repository.orEmpty(),
+                    type = "input",
+                    startedAt = epochMillis(input.createdAt),
+                    provider = PROVIDER_CODEX,
                 ),
             )
         }
         waiting.filterNot { it.id in requestSessions }.forEach { session ->
             add(
                 OverviewAttentionItem(
-                    hostId,
-                    session.id,
+                    hostId = hostId,
+                    sessionId = session.id,
                     sessionTitle = session.title,
                     repository = session.repository,
                     type = if (session.waitType == "input") "input" else "approval",
                     startedAt = epochMillis(session.activeTurnStartedAt ?: session.lastActivity),
+                    provider = sessionProvider(session),
                 ),
             )
         }
         failed.forEach { session ->
             add(
                 OverviewAttentionItem(
-                    hostId,
-                    session.id,
+                    hostId = hostId,
+                    sessionId = session.id,
                     sessionTitle = session.title,
                     repository = session.repository,
                     type = "failed",
                     startedAt = epochMillis(session.terminalAt ?: session.lastActivity),
+                    provider = sessionProvider(session),
                 ),
             )
         }
@@ -205,10 +222,12 @@ internal fun projectHostOverview(
         runtimeMode = runtimeMode,
         runtimeConnected = runtimeConnected,
         active = active.size,
+        codexActive = active.count { sessionProvider(it) == PROVIDER_CODEX },
+        claudeActive = active.count { sessionProvider(it) == PROVIDER_CLAUDE_CODE },
         waiting = waiting.size,
         failed = failed.size,
-        oldestTurn = oldest?.let { OverviewTurn(hostId, it.first.id, it.first.title, it.second) },
-        latestCompletion = latest?.let { OverviewTurn(hostId, it.first.id, it.first.title, it.second) },
+        oldestTurn = oldest?.let { OverviewTurn(hostId, it.first.id, it.first.title, it.second, sessionProvider(it.first)) },
+        latestCompletion = latest?.let { OverviewTurn(hostId, it.first.id, it.first.title, it.second, sessionProvider(it.first)) },
         latestActivity = sessions.mapNotNull { epochMillis(it.lastActivity) }.maxOrNull(),
         attention = attention,
     )
@@ -232,7 +251,7 @@ internal fun aggregateHostOverviews(
 }
 
 internal fun globalSessionKey(identity: GlobalSessionIdentity): String =
-    "${identity.hostId.length}:${identity.hostId}${identity.sessionId}"
+    sessionIdentityKey(SessionIdentity(identity.hostId, identity.provider, identity.sessionId))
 
 internal class AndroidOverviewLifecycle {
     var foreground: Boolean = false
