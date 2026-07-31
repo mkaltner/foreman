@@ -62,9 +62,15 @@ jobs:
         run: python -m compileall -q linux scripts tests
       - name: Run Linux service tests
         run: python -m unittest discover -s tests -v
+      - name: Add pinned production Claude bridge dependency
+        working-directory: linux/claude_bridge
+        run: npm ci --omit=dev --ignore-scripts
       - name: Package Linux service
         run: |
-          tar --exclude='__pycache__' --exclude='*.py[co]' -czf foreman-linux.tar.gz \
+          tar --exclude='__pycache__' --exclude='*.py[co]' \
+            --exclude='linux/claude_bridge/bridge.test.mjs' \
+            --exclude='linux/claude_bridge/test_fake_sdk.mjs' \
+            -czf foreman-linux.tar.gz \
             install.sh release.properties requirements.txt linux web/dist \
             scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
       - name: Verify Linux archive
@@ -78,6 +84,11 @@ jobs:
           grep -Fxq 'linux/claude_code.py' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/bridge.mjs' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/package-lock.json' <<<"$archive_listing"
+          grep -Fxq 'linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json' <<<"$archive_listing"
+          if grep -Eq 'linux/claude_bridge/(bridge\.test|test_fake_sdk)\.mjs' <<<"$archive_listing"; then
+            echo "Linux archive contains Claude bridge test fixtures" >&2
+            exit 1
+          fi
           if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
             echo "Linux archive contains Python cache files" >&2
             exit 1

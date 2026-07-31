@@ -97,14 +97,9 @@ cp -a "$project_dir/linux/claude_bridge" "$staging_dir/claude_bridge"
 if [[ -L "$staging_dir/claude_bridge/node_modules" ]]; then
   rm -f -- "$staging_dir/claude_bridge/node_modules"
 fi
-if [[ ! -d "$staging_dir/claude_bridge/node_modules" ]] \
-  && [[ -n "$claude_executable" ]] \
-  && command -v node >/dev/null \
-  && command -v npm >/dev/null; then
-  if ! npm ci --omit=dev --ignore-scripts --prefix "$staging_dir/claude_bridge"; then
-    rm -rf -- "$staging_dir/claude_bridge/node_modules"
-    echo "Claude Code support is unavailable: pinned Agent SDK installation failed" >&2
-  fi
+if [[ -n "$claude_executable" ]] \
+  && [[ ! -f "$staging_dir/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]]; then
+  echo "Claude Code support is unavailable: the install payload does not include the pinned Agent SDK" >&2
 fi
 install -m 644 "$project_dir/release.properties" "$staging_dir/release.properties"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
