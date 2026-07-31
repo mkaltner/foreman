@@ -368,4 +368,16 @@ describe("NewSessionDialog", () => {
       accessLevel: "full",
     });
   });
+
+  it("returns to the workspace root when repository discovery removes the selection", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const repository = { id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false };
+    const view = render(<NewSessionDialog repositories={[repository]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "foreman" } });
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
+    fireEvent.click(screen.getByRole("button", { name: "Start in workspace" }));
+
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repositoryId: "." }));
+  });
 });

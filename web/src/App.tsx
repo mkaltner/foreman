@@ -1989,8 +1989,12 @@ export function NewSessionDialog({ repositories, repositoryRoot, models, accessL
   const hasRepositories = repositories.length > 0;
   const rootRepository = repositories.find((repository) => repository.id === ".");
   const selectableRepositories = repositories.filter((repository) => repository.id !== ".");
-  const location = selected;
+  const selectionAvailable = selected === "." || repositories.some((repository) => repository.id === selected);
+  const location = selectionAvailable ? selected : ".";
   const selectedModel = models.find((entry) => entry.id === model);
+  useEffect(() => {
+    if (!selectionAvailable) setSelected(".");
+  }, [selectionAvailable]);
   const submit = () => onCreate({
     repositoryId: location,
     ...(model ? { model } : {}),
