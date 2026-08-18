@@ -2147,30 +2147,43 @@ export function Markdown({ text }: { text: string }) {
 }
 
 function CopyableCodeBlock({ children }: { children?: ReactNode }) {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const copyInFlight = useRef(false);
+  const mounted = useRef(true);
   const resetTimer = useRef<number | null>(null);
   const code = reactNodeText(children).replace(/\n$/, "");
 
-  useEffect(() => () => {
-    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    };
   }, []);
 
   const copy = async () => {
+    if (copyInFlight.current) return;
+    copyInFlight.current = true;
     if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    setCopyState("copying");
+    let result: "copied" | "failed";
     try {
       await copyText(code);
-      setCopyState("copied");
+      result = "copied";
     } catch {
-      setCopyState("failed");
+      result = "failed";
     }
+    copyInFlight.current = false;
+    if (!mounted.current) return;
+    setCopyState(result);
     resetTimer.current = window.setTimeout(() => setCopyState("idle"), 2_000);
   };
 
-  const label = copyState === "copied" ? "Code copied" : copyState === "failed" ? "Copy failed. Try again" : "Copy code";
+  const label = copyState === "copying" ? "Copying code" : copyState === "copied" ? "Code copied" : copyState === "failed" ? "Copy failed. Try again" : "Copy code";
   return (
     <div className="code-block">
-      <button type="button" className="copy-code" aria-label={label} onClick={() => void copy()}>
-        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Retry" : "Copy"}
+      <button type="button" className="copy-code" aria-label={label} disabled={copyState === "copying"} onClick={() => void copy()}>
+        {copyState === "copying" ? "Copying…" : copyState === "copied" ? "Copied" : copyState === "failed" ? "Retry" : "Copy"}
       </button>
       <pre>{children}</pre>
     </div>
