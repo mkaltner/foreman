@@ -3,6 +3,8 @@ import {
   type ChangeEvent,
   type ClipboardEvent,
   type FormEvent,
+  isValidElement,
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -2125,7 +2127,7 @@ export function LinkedUserText({ text }: { text: string }) {
     : segment.text)}</p>;
 }
 
-function Markdown({ text }: { text: string }) {
+export function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
       {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
@@ -2137,10 +2139,86 @@ function Markdown({ text }: { text: string }) {
                 const safe = safeLink(href);
                 return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
               },
+              pre: CopyableCodeBlock,
             }}
           >{segment.text}</ReactMarkdown>)}
     </div>
   );
+}
+
+function CopyableCodeBlock({ children }: { children?: ReactNode }) {
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const copyInFlight = useRef(false);
+  const mounted = useRef(true);
+  const resetTimer = useRef<number | null>(null);
+  const code = reactNodeText(children).replace(/\n$/, "");
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    };
+  }, []);
+
+  const copy = async () => {
+    if (copyInFlight.current) return;
+    copyInFlight.current = true;
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    setCopyState("copying");
+    let result: "copied" | "failed";
+    try {
+      await copyText(code);
+      result = "copied";
+    } catch {
+      result = "failed";
+    }
+    copyInFlight.current = false;
+    if (!mounted.current) return;
+    setCopyState(result);
+    resetTimer.current = window.setTimeout(() => setCopyState("idle"), 2_000);
+  };
+
+  const label = copyState === "copying" ? "Copying code" : copyState === "copied" ? "Code copied" : copyState === "failed" ? "Copy failed. Try again" : "Copy code";
+  return (
+    <div className="code-block">
+      <button type="button" className="copy-code" aria-label={label} disabled={copyState === "copying"} onClick={() => void copy()}>
+        {copyState === "copying" ? "Copying…" : copyState === "copied" ? "Copied" : copyState === "failed" ? "Retry" : "Copy"}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Local Foreman hosts may not have a secure context; fall back to a selected textarea.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand?.("copy")) throw new Error("Clipboard unavailable");
+  } finally {
+    textarea.remove();
+  }
+}
+
+function reactNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactNodeText).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return reactNodeText(node.props.children);
+  return "";
 }
 
 function AppDirectiveCard({ directive }: { directive: AppDirective }) {

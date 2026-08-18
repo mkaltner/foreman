@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest } from "./App";
+import App, { appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
@@ -253,6 +253,79 @@ describe("route selector", () => {
     fireEvent.click(screen.getByRole("option", { name: /Ask for approval/ }));
     expect(onChange).toHaveBeenCalledWith("ask");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("assistant code blocks", () => {
+  it("copies fenced code blocks without adding controls to inline code", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    try {
+      render(<Markdown text={"Run `npm ci`, then:\n\n```sh\nnpm ci\nnpm test\n```"} />);
+
+      const copy = screen.getByRole("button", { name: "Copy code" });
+      expect(screen.getAllByRole("button", { name: /Copy code/ })).toHaveLength(1);
+      fireEvent.click(copy);
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm ci\nnpm test"));
+      expect(screen.getByRole("button", { name: "Code copied" })).toHaveTextContent("Copied");
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("copies through the local-host fallback when the Clipboard API is unavailable", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+
+    try {
+      render(<Markdown text={"```\nforeman status\n```"} />);
+      fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+
+      await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
+      expect(screen.getByRole("button", { name: "Code copied" })).toBeInTheDocument();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      else Reflect.deleteProperty(document, "execCommand");
+    }
+  });
+
+  it("prevents overlapping clipboard attempts", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    let finishCopy: () => void = () => undefined;
+    const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve; });
+    const writeText = vi.fn().mockReturnValue(pendingCopy);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    try {
+      render(<Markdown text={"```\nnpm test\n```"} />);
+      const copy = screen.getByRole("button", { name: "Copy code" });
+
+      fireEvent.click(copy);
+      expect(screen.getByRole("button", { name: "Copying code" })).toBeDisabled();
+      fireEvent.click(copy);
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => finishCopy());
+      expect(screen.getByRole("button", { name: "Code copied" })).toBeEnabled();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 });
 
