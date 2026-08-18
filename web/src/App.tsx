@@ -2182,8 +2182,8 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }) {
   const label = copyState === "copying" ? "Copying code" : copyState === "copied" ? "Code copied" : copyState === "failed" ? "Copy failed. Try again" : "Copy code";
   return (
     <div className="code-block">
-      <button type="button" className="copy-code" aria-label={label} disabled={copyState === "copying"} onClick={() => void copy()}>
-        {copyState === "copying" ? "Copying…" : copyState === "copied" ? "Copied" : copyState === "failed" ? "Retry" : "Copy"}
+      <button type="button" className={`copy-code ${copyState}`} aria-label={label} title={label} disabled={copyState === "copying"} onClick={() => void copy()}>
+        <span className="copy-icon" aria-hidden="true" />
       </button>
       <pre>{children}</pre>
     </div>

@@ -270,10 +270,13 @@ describe("assistant code blocks", () => {
 
       const copy = screen.getByRole("button", { name: "Copy code" });
       expect(screen.getAllByRole("button", { name: /Copy code/ })).toHaveLength(1);
+      expect(copy.textContent).toBe("");
       fireEvent.click(copy);
 
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm ci\nnpm test"));
-      expect(screen.getByRole("button", { name: "Code copied" })).toHaveTextContent("Copied");
+      const copied = screen.getByRole("button", { name: "Code copied" });
+      expect(copied).toHaveClass("copied");
+      expect(copied.textContent).toBe("");
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");
@@ -316,7 +319,9 @@ describe("assistant code blocks", () => {
       const copy = screen.getByRole("button", { name: "Copy code" });
 
       fireEvent.click(copy);
-      expect(screen.getByRole("button", { name: "Copying code" })).toBeDisabled();
+      const copying = screen.getByRole("button", { name: "Copying code" });
+      expect(copying).toBeDisabled();
+      expect(copying.textContent).toBe("");
       fireEvent.click(copy);
       expect(writeText).toHaveBeenCalledTimes(1);
 

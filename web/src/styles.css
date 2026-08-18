@@ -103,10 +103,16 @@ button.full{width:100%;min-height:44px}
 .markdown h3{font-size:17px}
 .markdown code{background:var(--surface-alt);border-radius:5px;padding:2px 5px;font:.9em ui-monospace,SFMono-Regular,Menlo,monospace}
 .markdown .code-block{margin:1em 0;position:relative}
-.markdown pre{border:1px solid var(--border);background:var(--surface);border-radius:10px;margin:0;padding:13px;padding-right:76px;overflow-x:auto}
+.markdown pre{border:1px solid var(--border);background:var(--surface);border-radius:10px;margin:0;padding:13px;padding-right:50px;overflow-x:auto}
 .markdown pre code{background:0 0;padding:0}
-.copy-code{border:1px solid var(--border);background:color-mix(in srgb,var(--surface-alt) 90%,transparent);color:var(--muted);z-index:1;border-radius:7px;padding:5px 8px;font-size:10px;font-weight:750;line-height:1;position:absolute;top:9px;right:9px}
+.copy-code{border:1px solid var(--border);background:color-mix(in srgb,var(--surface-alt) 90%,transparent);color:var(--muted);z-index:1;border-radius:7px;width:30px;height:28px;padding:0;place-items:center;display:grid;position:absolute;top:8px;right:8px}
 .copy-code:hover{color:var(--text);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.copy-code.copied{color:var(--accent)}
+.copy-code.failed{color:var(--danger)}
+.copy-icon{width:13px;height:14px;display:block;position:relative}
+.copy-icon:before,.copy-icon:after{content:"";border:1.5px solid currentColor;border-radius:2px;width:8px;height:9px;position:absolute}
+.copy-icon:before{opacity:.65;top:0;right:0}
+.copy-icon:after{background:var(--surface-alt);bottom:0;left:0}
 .markdown a{color:var(--accent)}
 .app-directive{border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));background:color-mix(in srgb,var(--accent-soft) 45%,var(--surface));color:var(--text)!important;text-decoration:none;border-radius:10px;align-items:center;gap:10px;margin:9px 0;padding:9px 11px;display:flex}
 .app-directive>span{background:var(--accent);color:var(--surface);border-radius:50%;flex:0 0 20px;width:20px;height:20px;text-align:center;font-size:12px;font-weight:900;line-height:20px}
