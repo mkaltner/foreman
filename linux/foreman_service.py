@@ -57,6 +57,8 @@ IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_SEARCH_RESULTS = 100
 MAX_SEARCH_QUERY_BYTES = 500
 MAX_TRANSCRIPT_SEARCH_CANDIDATES = 100
+MAX_WORKSPACE_FILE_BYTES = 1024 * 1024
+MAX_WORKSPACE_PATH_BYTES = 4096
 SHUTDOWN_TIMEOUT_SECONDS = 10
 SEARCH_STATUSES = {
     "active",
@@ -1574,6 +1576,7 @@ class Foreman:
                     "images": True,
                     "search": True,
                     "diagnostics": True,
+                    "workspaceFiles": True,
                     "remoteRestart": self.remote_restart_enabled,
                 },
             }
@@ -1616,6 +1619,9 @@ class Foreman:
 
         if message_type == "repository.list":
             return {"repositories": await asyncio.to_thread(self.repositories)}
+        if message_type == "workspace.file.read":
+            path = required_text(payload, "path", MAX_WORKSPACE_PATH_BYTES)
+            return await asyncio.to_thread(self.read_workspace_file, path)
         if message_type == "provider.list":
             return {"providers": await self.provider_status()}
         if message_type == "provider.session.list":
@@ -2303,6 +2309,30 @@ class Foreman:
         if not (path / ".git").exists():
             raise ValueError("repository was not found")
         return path
+
+    def read_workspace_file(self, raw_path: str) -> dict[str, Any]:
+        requested = Path(raw_path)
+        if not requested.is_absolute():
+            raise ValueError("workspace file path must be absolute")
+        try:
+            path = requested.resolve(strict=True)
+            path.relative_to(self.repository_root)
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                "workspace file is outside configured root or was not found"
+            ) from error
+        if not path.is_file():
+            raise ValueError("workspace file was not found")
+        if path.stat().st_size > MAX_WORKSPACE_FILE_BYTES:
+            raise ValueError("workspace file is larger than 1 MiB")
+        content = path.read_bytes()
+        if b"\x00" in content:
+            raise ValueError("workspace file is not a text file")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("workspace file is not UTF-8 text") from error
+        return {"path": str(path), "content": text}
 
 
 def required_text(payload: dict[str, Any], key: str, maximum: int) -> str:

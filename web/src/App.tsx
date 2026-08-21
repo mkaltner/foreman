@@ -132,6 +132,15 @@ import {
 
 export type View = "dashboard" | "sessions" | "detail" | "settings";
 
+interface WorkspaceFileTarget {
+  path: string;
+  line?: number;
+}
+
+interface WorkspaceFile extends WorkspaceFileTarget {
+  content: string;
+}
+
 export function appShellClassName(view: View): string {
   return view === "settings" ? "app-shell settings-shell" : "app-shell";
 }
@@ -1753,6 +1762,8 @@ export function ConversationView({
   const following = useRef(true);
   const openingScrollTop = useRef(initialScrollTop);
   const [jumpVisible, setJumpVisible] = useState(false);
+  const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFile | null>(null);
+  const [openingWorkspaceFile, setOpeningWorkspaceFile] = useState<string | null>(null);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
     ...approvals.flatMap(({ itemId }) => itemId ? [itemId] : []),
@@ -1802,6 +1813,18 @@ export function ConversationView({
   const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
+
+  const openWorkspaceFile = async ({ path, line }: WorkspaceFileTarget) => {
+    setOpeningWorkspaceFile(path);
+    try {
+      const result = await onRequest<{ path: string; content: string }>("workspace.file.read", { path });
+      setWorkspaceFile({ ...result, line });
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Workspace file could not be opened");
+    } finally {
+      setOpeningWorkspaceFile(null);
+    }
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1954,17 +1977,17 @@ export function ConversationView({
         {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>{provider === "claude-code" ? "Send a prompt using the Claude model and permission mode below." : "Choose a route below and send the first prompt."}</p></div>}
         {displayBlocks.map((block) => {
           if (block.collapsedActivity) {
-            return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} />;
+            return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} onOpenWorkspaceFile={openWorkspaceFile} />;
           }
           const item = block.items[0];
-          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
+          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} onOpenWorkspaceFile={openWorkspaceFile} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
         })}
         {approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
         {inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
         {(session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
-            <div>{activityMessage ? <><Markdown text={activityMessage} /><small>{activityLabel}…</small></> : <strong>{session.status === "waiting" ? "Waiting for attention…" : `${activityLabel}…`}</strong>}</div>
+            <div>{activityMessage ? <><Markdown text={activityMessage} onOpenWorkspaceFile={openWorkspaceFile} /><small>{activityLabel}…</small></> : <strong>{session.status === "waiting" ? "Waiting for attention…" : `${activityLabel}…`}</strong>}</div>
           </div>
         )}
       </div>
@@ -1984,6 +2007,8 @@ export function ConversationView({
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
       </form>
+      {openingWorkspaceFile && <div className="file-opening" role="status">Opening {openingWorkspaceFile}…</div>}
+      {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onClose={() => setWorkspaceFile(null)} />}
     </div>
   );
 }
@@ -2097,28 +2122,28 @@ export function RouteSelect({
   );
 }
 
-function ConversationItemView({ item, highlighted = false }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean }) {
+function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   if (item.kind === "command" || item.kind === "tool") {
     return <article id={`message-${item.id}`} className={`tool-card ${highlighted ? "search-highlight" : ""}`}><span>{item.kind === "command" ? "›_" : "◇"}</span><div><strong>{item.kind === "command" ? "Command" : "Tool"}</strong><p>{item.description || "Working"}</p></div><small>{item.status || "in progress"}{item.exitCode != null ? ` · exit ${item.exitCode}` : ""}</small></article>;
   }
   return (
     <article id={`message-${item.id}`} className={`message ${item.kind} ${highlighted ? "search-highlight" : ""}`}>
       <div className="message-label">{item.kind === "user" ? "You" : "Foreman"}</div>
-      {item.kind === "assistant" ? <Markdown text={item.text ?? ""} /> : <LinkedUserText text={item.text ?? ""} />}
+      {item.kind === "assistant" ? <Markdown text={item.text ?? ""} onOpenWorkspaceFile={onOpenWorkspaceFile} /> : <LinkedUserText text={item.text ?? ""} />}
       {!!item.images?.length && <div className="message-images">{item.images.map((image, index) => <img key={index} src={`data:${image.mimeType};base64,${image.data}`} alt={`Attachment ${index + 1}`} />)}</div>}
       {!!item.imageCount && !item.images?.length && <span className="image-indicator">▧ {item.imageCount} image{item.imageCount === 1 ? "" : "s"}</span>}
     </article>
   );
 }
 
-function CollapsedActivityGroup({ items }: { items: NonNullable<SessionSummary["messages"]> }) {
+function CollapsedActivityGroup({ items, onOpenWorkspaceFile }: { items: NonNullable<SessionSummary["messages"]>; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   const commands = items.filter(({ kind }) => kind === "command").length;
   const tools = items.length - commands;
   const breakdown = [
     commands ? `${commands} command${commands === 1 ? "" : "s"}` : "",
     tools ? `${tools} tool${tools === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(" · ");
-  return <details className="collapsed-activity"><summary><span aria-hidden="true">◇</span><span><strong>{items.length} completed activity item{items.length === 1 ? "" : "s"}</strong><small>{breakdown}</small></span><i>Details</i></summary><div>{items.map((item) => <ConversationItemView key={item.id} item={item} />)}</div></details>;
+  return <details className="collapsed-activity"><summary><span aria-hidden="true">◇</span><span><strong>{items.length} completed activity item{items.length === 1 ? "" : "s"}</strong><small>{breakdown}</small></span><i>Details</i></summary><div>{items.map((item) => <ConversationItemView key={item.id} item={item} onOpenWorkspaceFile={onOpenWorkspaceFile} />)}</div></details>;
 }
 
 export function LinkedUserText({ text }: { text: string }) {
@@ -2127,7 +2152,7 @@ export function LinkedUserText({ text }: { text: string }) {
     : segment.text)}</p>;
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   return (
     <div className="markdown">
       {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
@@ -2136,12 +2161,50 @@ export function Markdown({ text }: { text: string }) {
             key={`markdown-${index}`}
             components={{
               a: ({ href, children }) => {
+                const localFile = workspaceFileTarget(href);
+                if (localFile && onOpenWorkspaceFile) {
+                  return <a href={href} onClick={(event) => { event.preventDefault(); onOpenWorkspaceFile(localFile); }}>{children}</a>;
+                }
                 const safe = safeLink(href);
                 return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
               },
               pre: CopyableCodeBlock,
             }}
           >{segment.text}</ReactMarkdown>)}
+    </div>
+  );
+}
+
+export function workspaceFileTarget(href?: string): WorkspaceFileTarget | null {
+  if (!href || !href.startsWith("/")) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(href);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0") || decoded.includes("?") || decoded.includes("#")) return null;
+  const location = decoded.match(/^(.*):(\d+)(?::\d+)?$/);
+  const path = location?.[1] ?? decoded;
+  const line = location ? Number(location[2]) : undefined;
+  if (!path.startsWith("/") || (line !== undefined && (!Number.isSafeInteger(line) || line < 1))) return null;
+  return { path, ...(line === undefined ? {} : { line }) };
+}
+
+function WorkspaceFileDialog({ file, onClose }: { file: WorkspaceFile; onClose: () => void }) {
+  const selectedLine = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    selectedLine.current?.scrollIntoView?.({ block: "center" });
+  }, [file.line, file.path]);
+  return (
+    <div className="modal-backdrop workspace-file-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="workspace-file-dialog" role="dialog" aria-modal="true" aria-label={`Workspace file ${file.path}`}>
+        <header><code title={file.path}>{file.path}{file.line ? `:${file.line}` : ""}</code><button type="button" onClick={onClose} aria-label="Close workspace file">×</button></header>
+        <pre>{file.content.split("\n").map((content, index) => {
+          const number = index + 1;
+          return <span key={number} ref={number === file.line ? selectedLine : undefined} className={number === file.line ? "selected" : ""}><i aria-hidden="true">{number}</i>{content}{"\n"}</span>;
+        })}</pre>
+      </section>
     </div>
   );
 }

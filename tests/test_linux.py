@@ -2128,6 +2128,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hello["capabilities"]["delete"])
         self.assertTrue(hello["capabilities"]["search"])
         self.assertTrue(hello["capabilities"]["diagnostics"])
+        self.assertTrue(hello["capabilities"]["workspaceFiles"])
         self.assertFalse(hello["capabilities"]["remoteRestart"])
         self.assertTrue(hello["capabilities"]["threadSettings"])
         paired = await self.request(
@@ -2187,6 +2188,25 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         repositories = (await self.request("repository.list"))["repositories"]
         self.assertEqual(repositories[0]["path"], "example")
         self.assertTrue(repositories[0]["dirty"])
+        workspace_file = await self.request(
+            "workspace.file.read", {"path": str(self.repository / "new.txt")}
+        )
+        self.assertEqual(
+            workspace_file["path"], str((self.repository / "new.txt").resolve())
+        )
+        self.assertEqual(workspace_file["content"], "dirty\n")
+        outside = Path(self.temporary.name) / "outside.txt"
+        outside.write_text("private\n", encoding="utf-8")
+        invalid_file = await self.request_error(
+            "workspace.file.read", {"path": str(outside)}
+        )
+        self.assertIn("outside configured root", invalid_file["message"])
+        escaped_link = self.repository / "escaped.txt"
+        escaped_link.symlink_to(outside)
+        escaped_file = await self.request_error(
+            "workspace.file.read", {"path": str(escaped_link)}
+        )
+        self.assertIn("outside configured root", escaped_file["message"])
         sessions = (await self.request("session.list"))["sessions"]
         self.assertEqual(sessions[0]["title"], "Hello Foreman")
         self.assertNotIn("messages", sessions[0])
