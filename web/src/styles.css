@@ -114,6 +114,11 @@ button.full{width:100%;min-height:44px}
 .copy-icon:before{opacity:.65;top:0;right:0}
 .copy-icon:after{background:var(--surface-alt);bottom:0;left:0}
 .markdown a{color:var(--accent)}
+.markdown-table-wrap{max-width:100%;margin:1em 0;overflow-x:auto}
+.markdown-table-wrap table{border-collapse:collapse;width:100%;min-width:460px}
+.markdown-table-wrap th,.markdown-table-wrap td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+.markdown-table-wrap th{background:var(--surface-alt);font-size:12px;font-weight:750}
+.markdown-table-wrap tr:nth-child(even) td{background:color-mix(in srgb,var(--surface-alt) 48%,transparent)}
 .file-opening{background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);z-index:12;max-width:min(620px,calc(100% - 32px));text-overflow:ellipsis;white-space:nowrap;border-radius:9px;padding:8px 12px;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;position:fixed;bottom:18px;left:50%;overflow:hidden;transform:translateX(-50%)}
 .workspace-file-backdrop{z-index:20}
 .workspace-file-dialog{background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);border-radius:14px;width:min(1000px,calc(100vw - 36px));height:min(760px,calc(100vh - 48px));min-height:240px;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}

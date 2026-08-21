@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { InputCard, inputAttentionLabel } from "./InputCard";
 import { Dashboard } from "./Dashboard";
@@ -2167,7 +2168,7 @@ export function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWo
 }
 
 function MarkdownBody({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
-  return <ReactMarkdown components={{
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
     a: ({ href, children }) => {
       const localFile = workspaceFileTarget(href);
       if (localFile && onOpenWorkspaceFile) {
@@ -2177,6 +2178,7 @@ function MarkdownBody({ text, onOpenWorkspaceFile }: { text: string; onOpenWorks
       return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
     },
     pre: CopyableCodeBlock,
+    table: ({ children }) => <div className="markdown-table-wrap"><table>{children}</table></div>,
   }}>{text}</ReactMarkdown>;
 }
 

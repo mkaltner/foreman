@@ -278,7 +278,7 @@ describe("assistant workspace file links", () => {
   it("previews Markdown files without a source location and toggles to source", async () => {
     const onRequest = vi.fn().mockResolvedValue({
       path: "/projects/readme.md",
-      content: "# Rendered project\n\nThis is **Markdown**.",
+      content: "# Rendered project\n\nThis is **Markdown**.\n\n| Feature | Status |\n| --- | --- |\n| Tables | Working |",
     });
     render(<ConversationView
       session={{
@@ -305,6 +305,9 @@ describe("assistant workspace file links", () => {
 
     expect(await screen.findByRole("heading", { name: "Rendered project" })).toBeInTheDocument();
     expect(screen.getByText("Markdown")).toHaveProperty("tagName", "STRONG");
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Feature" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Tables" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "Source" }));
     expect(screen.queryByRole("heading", { name: "Rendered project" })).not.toBeInTheDocument();
@@ -406,7 +409,7 @@ describe("assistant code blocks", () => {
       fireEvent.click(copy);
 
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm ci\nnpm test"));
-      const copied = screen.getByRole("button", { name: "Code copied" });
+      const copied = await screen.findByRole("button", { name: "Code copied" });
       expect(copied).toHaveClass("copied");
       expect(copied.textContent).toBe("");
     } finally {
@@ -427,7 +430,7 @@ describe("assistant code blocks", () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
 
       await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
-      expect(screen.getByRole("button", { name: "Code copied" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Code copied" })).toBeInTheDocument();
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");
