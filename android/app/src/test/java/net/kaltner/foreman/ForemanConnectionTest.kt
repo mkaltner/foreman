@@ -823,6 +823,32 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun parsesGfmTablesAndTaskLists() {
+        val blocks =
+            parseMarkdown(
+                """
+                | Component | Status |
+                | --- | --- |
+                | Web | Ready |
+                | Android | Working |
+
+                - [x] Finished
+                - [ ] Device verification
+                """.trimIndent(),
+            )
+
+        assertEquals(
+            MarkdownBlock.Table(
+                headers = listOf("Component", "Status"),
+                rows = listOf(listOf("Web", "Ready"), listOf("Android", "Working")),
+            ),
+            blocks[0],
+        )
+        assertEquals(MarkdownBlock.TaskItem(true, "Finished"), blocks[1])
+        assertEquals(MarkdownBlock.TaskItem(false, "Device verification"), blocks[2])
+    }
+
+    @Test
     fun parsesSupportedAppDirectivesWithoutLeakingThemIntoMarkdown() {
         val blocks =
             parseMarkdown(
@@ -895,6 +921,32 @@ class ForemanConnectionTest {
             "https://en.wikipedia.org/wiki/Foreman_(software)",
             trimTrailingUrlPunctuation("https://en.wikipedia.org/wiki/Foreman_(software)."),
         )
+    }
+
+    @Test
+    fun opensAbsoluteWorkspaceMarkdownLinksAndRejectsUnsafeTargets() {
+        val target = WorkspaceFileTarget("/home/user/My Project/readme.md", 28)
+        assertEquals(target, workspaceFileTarget("/home/user/My%20Project/readme.md:28:4"))
+        assertEquals(WorkspaceFileTarget("/home/user/readme.md"), workspaceFileTarget("/home/user/readme.md"))
+        assertNull(workspaceFileTarget("docs/readme.md"))
+        assertNull(workspaceFileTarget("/home/user/readme.md:0"))
+        assertNull(workspaceFileTarget("/home/user/readme.md?raw=1"))
+        assertNull(workspaceFileTarget("/home/user/readme.md#section"))
+        assertNull(workspaceFileTarget("https://example.com/readme.md"))
+
+        var opened: WorkspaceFileTarget? = null
+        val rendered =
+            styledInlineMarkdown(
+                "Open [the document](/home/user/My%20Project/readme.md:28:4).",
+                color = Color.White,
+                linkColor = Color.Blue,
+                codeColor = Color.Gray,
+                onOpenWorkspaceFile = { opened = it },
+            )
+        val link = rendered.getLinkAnnotations(0, rendered.length).single().item
+        assertTrue(link is LinkAnnotation.Clickable)
+        (link as LinkAnnotation.Clickable).linkInteractionListener?.onClick(link)
+        assertEquals(target, opened)
     }
 
     @Test
