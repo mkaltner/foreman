@@ -126,8 +126,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -748,6 +751,8 @@ internal data class UiState(
     val loading: Boolean = false,
     val submitting: Boolean = false,
     val error: String? = null,
+    val openingWorkspaceFile: String? = null,
+    val workspaceFile: WorkspaceFile? = null,
     val sessions: List<SessionSummary> = emptyList(),
     val providers: List<ProviderInfo> = defaultProviders(),
     val repositories: List<RepositoryInfo> = emptyList(),
@@ -982,6 +987,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var restorationProvider: String = savedPreferences.selectedSessionProvider
     private var restorationSessionId: String? = savedPreferences.selectedSessionId
     private var searchJob: Job? = null
+    private var workspaceFileJob: Job? = null
     private var lastSearchRequestKey = ""
     private val overviewNavigation = OverviewNavigationState()
     private var overviewJob: Job? = null
@@ -1009,6 +1015,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     savedHosts = hosts.all().map(SavedHost::summary),
                     loading = false,
                     error = message,
+                    openingWorkspaceFile = null,
+                    workspaceFile = null,
                     capabilities = emptySet(),
                     pendingSessionAction = null,
                     approvals = it.approvals.map { approval ->
@@ -1388,6 +1396,41 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun composerError(message: String) = state.update { it.copy(error = message) }
+
+    fun openWorkspaceFile(target: WorkspaceFileTarget) {
+        workspaceFileJob?.cancel()
+        workspaceFileJob = viewModelScope.launch {
+            state.update { it.copy(openingWorkspaceFile = target.path, workspaceFile = null, error = null) }
+            runCatching {
+                client.request(
+                    "workspace.file.read",
+                    buildJsonObject { put("path", target.path) },
+                )
+            }.onSuccess { response ->
+                val path = response.payload.getValue("path").jsonPrimitive.content
+                val content = response.payload.getValue("content").jsonPrimitive.content
+                state.update {
+                    it.copy(
+                        openingWorkspaceFile = null,
+                        workspaceFile = WorkspaceFile(path = path, content = content, line = target.line),
+                    )
+                }
+            }.onFailure { error ->
+                state.update {
+                    it.copy(
+                        openingWorkspaceFile = null,
+                        error = error.message ?: "Workspace file could not be opened",
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeWorkspaceFile() {
+        workspaceFileJob?.cancel()
+        workspaceFileJob = null
+        state.update { it.copy(openingWorkspaceFile = null, workspaceFile = null) }
+    }
 
     fun setThemeMode(mode: ThemeMode) {
         preferences.setThemeMode(mode)
@@ -3270,6 +3313,125 @@ private fun ForemanApp(
                     onDismiss = viewModel::dismissSessionAction,
                 )
             }
+            state.openingWorkspaceFile?.let { path ->
+                WorkspaceFileLoadingDialog(path = path, onDismiss = viewModel::closeWorkspaceFile)
+            }
+            state.workspaceFile?.let { file ->
+                WorkspaceFileDialog(
+                    file = file,
+                    onOpenWorkspaceFile = viewModel::openWorkspaceFile,
+                    onDismiss = viewModel::closeWorkspaceFile,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceFileLoadingDialog(path: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        title = { Text("Opening document") },
+        text = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                Text(path, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+    )
+}
+
+@Composable
+private fun WorkspaceFileDialog(
+    file: WorkspaceFile,
+    onOpenWorkspaceFile: (WorkspaceFileTarget) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val markdown = file.path.endsWith(".md", ignoreCase = true) || file.path.endsWith(".markdown", ignoreCase = true)
+    var preview by remember(file.path, file.line) { mutableStateOf(markdown && file.line == null) }
+    val sourceState = rememberLazyListState()
+    LaunchedEffect(file.path, file.line, preview) {
+        if (!preview && file.line != null) sourceState.scrollToItem((file.line - 1).coerceAtLeast(0))
+    }
+    BackHandler(onBack = onDismiss)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        file.path + (file.line?.let { ":$it" } ?: ""),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    )
+                    if (markdown) {
+                        TextButton(onClick = { preview = true }, enabled = !preview) { Text("Preview") }
+                        TextButton(onClick = { preview = false }, enabled = preview) { Text("Source") }
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Close document") }
+                }
+                HorizontalDivider()
+                if (preview) {
+                    SelectionContainer {
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+                        ) {
+                            MarkdownText(
+                                text = file.content,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                                onOpenWorkspaceFile = onOpenWorkspaceFile,
+                            )
+                        }
+                    }
+                } else {
+                    val lines = remember(file.path, file.content) { file.content.split('\n') }
+                    SelectionContainer {
+                        LazyColumn(state = sourceState, modifier = Modifier.fillMaxSize()) {
+                            itemsIndexed(lines) { index, line ->
+                                val number = index + 1
+                                Row(
+                                    modifier =
+                                        Modifier.fillMaxWidth()
+                                            .background(
+                                                if (number == file.line) MaterialTheme.colorScheme.primaryContainer
+                                                else Color.Transparent,
+                                            ).padding(horizontal = 12.dp, vertical = 2.dp),
+                                ) {
+                                    Text(
+                                        number.toString(),
+                                        modifier = Modifier.width(44.dp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        line,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -4676,7 +4838,7 @@ private fun SessionDetailScreen(
                         } else {
                             val item = block.items.single()
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                ConversationRow(item)
+                                ConversationRow(item, viewModel::openWorkspaceFile)
                                 selectedApprovals.filter { it.itemId == item.id }.forEach { approval ->
                                     ApprovalCard(
                                         approval = approval,
@@ -4815,7 +4977,10 @@ private fun LiveActivityRow(session: SessionSummary) {
 }
 
 @Composable
-private fun ConversationRow(item: ConversationItem) {
+private fun ConversationRow(
+    item: ConversationItem,
+    onOpenWorkspaceFile: ((WorkspaceFileTarget) -> Unit)? = null,
+) {
     when (item.kind) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(
@@ -4847,11 +5012,22 @@ private fun ConversationRow(item: ConversationItem) {
                 }
             }
         }
-        "assistant" -> MarkdownText(
-            text = item.text,
+        "assistant" -> Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            contentColor = MaterialTheme.colorScheme.onBackground,
-        )
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "FOREMAN",
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            MarkdownText(
+                text = item.text,
+                contentColor = MaterialTheme.colorScheme.onBackground,
+                onOpenWorkspaceFile = onOpenWorkspaceFile,
+            )
+        }
         "command", "tool" -> Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
