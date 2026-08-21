@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest } from "./App";
+import App, { appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
@@ -226,6 +226,100 @@ describe("user message links", () => {
     expect(link).toHaveAttribute("href", "https://example.com/pr/11");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+});
+
+describe("assistant workspace file links", () => {
+  it("parses absolute paths with encoded spaces and optional source locations", () => {
+    expect(workspaceFileTarget("/projects/My%20App/readme.md:28")).toEqual({
+      path: "/projects/My App/readme.md",
+      line: 28,
+    });
+    expect(workspaceFileTarget("docs/readme.md:28")).toBeNull();
+    expect(workspaceFileTarget("https://example.com/readme.md:28")).toBeNull();
+  });
+
+  it("opens a linked workspace file at the requested line", async () => {
+    const onRequest = vi.fn().mockResolvedValue({
+      path: "/projects/My App/readme.md",
+      content: "first\nsecond\nthird",
+    });
+    render(<ConversationView
+      session={{
+        id: "file-link",
+        repository: "/projects/My App",
+        title: "File link",
+        status: "idle",
+        messages: [{ id: "answer", kind: "assistant", text: "Open [the file](</projects/My App/readme.md:2>)." }],
+      }}
+      approvals={[]}
+      models={[]}
+      accessLevels={[]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={onRequest}
+      onError={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole("link", { name: "the file" }));
+
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("workspace.file.read", {
+      path: "/projects/My App/readme.md",
+    }));
+    expect(screen.getByRole("dialog", { name: "Workspace file /projects/My App/readme.md" })).toBeInTheDocument();
+    expect(screen.getByText("second", { exact: false }).closest("span")).toHaveClass("selected");
+  });
+
+  it("keeps the newest file when reads complete out of order", async () => {
+    type FileResult = { path: string; content: string };
+    let resolveFirst!: (value: FileResult) => void;
+    let resolveSecond!: (value: FileResult) => void;
+    const first = new Promise<FileResult>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<FileResult>((resolve) => { resolveSecond = resolve; });
+    const onRequest = vi.fn((_type: string, payload?: Record<string, unknown>) =>
+      payload?.path === "/projects/first.md" ? first : second,
+    );
+    render(<ConversationView
+      session={{
+        id: "file-race",
+        repository: "/projects",
+        title: "File race",
+        status: "idle",
+        messages: [{ id: "answer", kind: "assistant", text: "Open [first](/projects/first.md) or [second](/projects/second.md)." }],
+      }}
+      approvals={[]}
+      models={[]}
+      accessLevels={[]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={onRequest as <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>}
+      onError={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole("link", { name: "first" }));
+    fireEvent.click(screen.getByRole("link", { name: "second" }));
+    await act(async () => {
+      resolveSecond({ path: "/projects/second.md", content: "newest" });
+      await second;
+    });
+    expect(screen.getByRole("dialog", { name: "Workspace file /projects/second.md" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /Opening/ })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirst({ path: "/projects/first.md", content: "stale" });
+      await first;
+    });
+    expect(screen.getByRole("dialog", { name: "Workspace file /projects/second.md" })).toBeInTheDocument();
+    expect(screen.getByText("newest", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("stale", { exact: false })).not.toBeInTheDocument();
   });
 });
 

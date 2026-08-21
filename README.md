@@ -219,6 +219,7 @@ The responsive dashboard provides:
 The full web client also supports:
 
 - the session list, conversation history, and live assistant/tool activity;
+- workspace-scoped source links with optional line-number highlighting;
 - provider-aware Codex and Claude session start, resume, prompts, and interrupts;
 - Codex model/reasoning/access and Claude model/permission selection;
 - Codex file-picker and clipboard image attachments;

@@ -21,4 +21,9 @@ Object.defineProperty(HTMLElement.prototype, "scrollTo", {
   value: () => undefined,
 });
 
+Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+  configurable: true,
+  value: () => undefined,
+});
+
 afterEach(cleanup);
