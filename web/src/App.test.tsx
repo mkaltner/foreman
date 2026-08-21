@@ -278,7 +278,7 @@ describe("assistant workspace file links", () => {
   it("previews Markdown files without a source location and toggles to source", async () => {
     const onRequest = vi.fn().mockResolvedValue({
       path: "/projects/readme.md",
-      content: "# Rendered project\n\nThis is **Markdown**.\n\n| Feature | Status |\n| --- | --- |\n| Tables | Working |\n\n- [x] Task lists",
+      content: "# Rendered project\n\nThis is **Markdown**.\n\n| Feature | Status |\n| --- | --- |\n| Tables | Working |\n\n- [x] **Task lists**\n\n- **Status:** Complete",
     });
     render(<ConversationView
       session={{
@@ -312,6 +312,7 @@ describe("assistant workspace file links", () => {
     expect(task).toBeChecked();
     expect(task).toBeDisabled();
     expect(task.closest("li")).toHaveClass("task-list-item");
+    expect(task.parentElement).toHaveProperty("tagName", "P");
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "Source" }));
     expect(screen.queryByRole("heading", { name: "Rendered project" })).not.toBeInTheDocument();
