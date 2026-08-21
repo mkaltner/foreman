@@ -1,6 +1,7 @@
 package net.kaltner.foreman
 
 import java.net.URI
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -9,10 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,6 +39,8 @@ internal sealed interface MarkdownBlock {
     data class Paragraph(val text: String) : MarkdownBlock
     data class Heading(val level: Int, val text: String) : MarkdownBlock
     data class ListItem(val marker: String, val text: String) : MarkdownBlock
+    data class TaskItem(val checked: Boolean, val text: String) : MarkdownBlock
+    data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownBlock
     data class Code(val language: String?, val text: String) : MarkdownBlock
     data class Quote(val text: String) : MarkdownBlock
     data class AppDirective(
@@ -43,6 +48,17 @@ internal sealed interface MarkdownBlock {
         val attributes: Map<String, String>,
     ) : MarkdownBlock
 }
+
+internal data class WorkspaceFileTarget(
+    val path: String,
+    val line: Int? = null,
+)
+
+internal data class WorkspaceFile(
+    val path: String,
+    val content: String,
+    val line: Int? = null,
+)
 
 private val displayedDirectives =
     setOf(
@@ -69,6 +85,24 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
 
     while (index < lines.size) {
         val line = lines[index]
+        val tableHeaders = parseTableRow(line)
+        val tableDelimiter = lines.getOrNull(index + 1)?.let(::parseTableRow)
+        if (
+            tableHeaders != null &&
+            tableDelimiter?.size == tableHeaders.size &&
+            tableDelimiter.all { Regex("^:?-{3,}:?$").matches(it) }
+        ) {
+            flushParagraph()
+            index += 2
+            val rows = mutableListOf<List<String>>()
+            while (index < lines.size) {
+                val row = parseTableRow(lines[index]) ?: break
+                rows += row.take(tableHeaders.size) + List((tableHeaders.size - row.size).coerceAtLeast(0)) { "" }
+                index++
+            }
+            blocks += MarkdownBlock.Table(tableHeaders, rows)
+            continue
+        }
         val directives = parseAppDirectiveLine(line)
         if (directives != null && directives.all { it.name in displayedDirectives }) {
             flushParagraph()
@@ -91,6 +125,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
             continue
         }
         val heading = Regex("^(#{1,6})\\s+(.+)$").matchEntire(line)
+        val task = Regex("^\\s*[-*+]\\s+\\[([ xX])]\\s+(.+)$").matchEntire(line)
         val bullet = Regex("^\\s*[-*+]\\s+(.+)$").matchEntire(line)
         val numbered = Regex("^\\s*(\\d+[.)])\\s+(.+)$").matchEntire(line)
         val quote = Regex("^\\s*>\\s?(.*)$").matchEntire(line)
@@ -99,6 +134,10 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
             heading != null -> {
                 flushParagraph()
                 blocks += MarkdownBlock.Heading(heading.groupValues[1].length, heading.groupValues[2])
+            }
+            task != null -> {
+                flushParagraph()
+                blocks += MarkdownBlock.TaskItem(task.groupValues[1].equals("x", ignoreCase = true), task.groupValues[2])
             }
             bullet != null -> {
                 flushParagraph()
@@ -118,6 +157,13 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
     }
     flushParagraph()
     return blocks
+}
+
+private fun parseTableRow(line: String): List<String>? {
+    val trimmed = line.trim()
+    if ('|' !in trimmed || trimmed.isBlank()) return null
+    val cells = trimmed.removePrefix("|").removeSuffix("|").split('|').map(String::trim)
+    return cells.takeIf { it.size >= 2 }
 }
 
 private fun parseAppDirectiveLine(line: String): List<MarkdownBlock.AppDirective>? {
@@ -173,6 +219,21 @@ internal fun safeMarkdownUrl(raw: String): String? =
         }
     }.getOrNull()
 
+internal fun workspaceFileTarget(raw: String): WorkspaceFileTarget? =
+    runCatching {
+        val uri = URI(raw)
+        if (uri.scheme != null || uri.rawAuthority != null || uri.rawQuery != null || uri.rawFragment != null) {
+            return@runCatching null
+        }
+        val decoded = uri.path ?: return@runCatching null
+        if (!decoded.startsWith('/') || decoded.any { it == '\u0000' || it == '?' || it == '#' }) return@runCatching null
+        val location = Regex("^(.*?):(\\d+)(?::\\d+)?$").matchEntire(decoded)
+        val path = location?.groupValues?.get(1) ?: decoded
+        val line = location?.groupValues?.get(2)?.toIntOrNull()
+        if (path.isEmpty() || (location != null && (line == null || line < 1))) return@runCatching null
+        WorkspaceFileTarget(path, line)
+    }.getOrNull()
+
 private val InlineToken =
     Regex("\\[([^]\\n]+)]\\(([^)\\s]+)\\)|\\*\\*([^*\\n]+)\\*\\*|__([^_\\n]+)__|`([^`\\n]+)`|\\*([^*\\n]+)\\*|_([^_\\n]+)_|\\b(https?://[^\\s<>\"']+)", RegexOption.IGNORE_CASE)
 
@@ -196,11 +257,26 @@ internal fun inlineMarkdown(text: String, color: Color): AnnotatedString =
         codeColor = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+@Composable
+internal fun inlineMarkdown(
+    text: String,
+    color: Color,
+    onOpenWorkspaceFile: ((WorkspaceFileTarget) -> Unit)?,
+): AnnotatedString =
+    styledInlineMarkdown(
+        text = text,
+        color = color,
+        linkColor = MaterialTheme.colorScheme.primary,
+        codeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        onOpenWorkspaceFile = onOpenWorkspaceFile,
+    )
+
 internal fun styledInlineMarkdown(
     text: String,
     color: Color,
     linkColor: Color,
     codeColor: Color,
+    onOpenWorkspaceFile: ((WorkspaceFileTarget) -> Unit)? = null,
 ): AnnotatedString =
     buildAnnotatedString {
         pushStyle(SpanStyle(color = color))
@@ -210,8 +286,26 @@ internal fun styledInlineMarkdown(
             val groups = match.groupValues
             when {
                 groups[1].isNotEmpty() -> {
+                    val workspaceFile = workspaceFileTarget(groups[2])
                     val safeUrl = safeMarkdownUrl(groups[2])
-                    if (safeUrl == null) {
+                    if (workspaceFile != null && onOpenWorkspaceFile != null) {
+                        pushLink(
+                            LinkAnnotation.Clickable(
+                                tag = groups[2],
+                                styles =
+                                    TextLinkStyles(
+                                        style =
+                                            SpanStyle(
+                                                color = linkColor,
+                                                textDecoration = TextDecoration.Underline,
+                                            ),
+                                    ),
+                                linkInteractionListener = { onOpenWorkspaceFile(workspaceFile) },
+                            ),
+                        )
+                        append(groups[1])
+                        pop()
+                    } else if (safeUrl == null) {
                         append(groups[1])
                     } else {
                         pushLink(
@@ -281,6 +375,7 @@ internal fun MarkdownText(
     text: String,
     modifier: Modifier = Modifier,
     contentColor: Color = MaterialTheme.colorScheme.onBackground,
+    onOpenWorkspaceFile: ((WorkspaceFileTarget) -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
     Column(
@@ -291,12 +386,12 @@ internal fun MarkdownText(
             when (block) {
                 is MarkdownBlock.Paragraph ->
                     Text(
-                        inlineMarkdown(block.text, contentColor),
+                        inlineMarkdown(block.text, contentColor, onOpenWorkspaceFile),
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 is MarkdownBlock.Heading ->
                     Text(
-                        inlineMarkdown(block.text, contentColor),
+                        inlineMarkdown(block.text, contentColor, onOpenWorkspaceFile),
                         style =
                             when (block.level) {
                                 1 -> MaterialTheme.typography.headlineMedium
@@ -309,17 +404,54 @@ internal fun MarkdownText(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(block.marker, color = contentColor)
                         Text(
-                            inlineMarkdown(block.text, contentColor),
+                            inlineMarkdown(block.text, contentColor, onOpenWorkspaceFile),
                             style = MaterialTheme.typography.bodyLarge,
                         )
                     }
+                is MarkdownBlock.TaskItem ->
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = block.checked,
+                            onCheckedChange = null,
+                            modifier = Modifier.size(36.dp),
+                        )
+                        Text(
+                            inlineMarkdown(block.text, contentColor, onOpenWorkspaceFile),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                is MarkdownBlock.Table -> {
+                    val horizontal = rememberScrollState()
+                    Column(Modifier.horizontalScroll(horizontal)) {
+                        (listOf(block.headers) + block.rows).forEachIndexed { rowIndex, cells ->
+                            Row {
+                                block.headers.indices.forEach { columnIndex ->
+                                    Surface(
+                                        modifier = Modifier.width(180.dp),
+                                        color =
+                                            if (rowIndex == 0) MaterialTheme.colorScheme.surfaceVariant
+                                            else Color.Transparent,
+                                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    ) {
+                                        Text(
+                                            inlineMarkdown(cells.getOrElse(columnIndex) { "" }, contentColor, onOpenWorkspaceFile),
+                                            modifier = Modifier.padding(8.dp),
+                                            fontWeight = if (rowIndex == 0) FontWeight.Bold else null,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 is MarkdownBlock.Quote ->
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(4.dp),
                     ) {
                         Text(
-                            inlineMarkdown(block.text, MaterialTheme.colorScheme.onSurfaceVariant),
+                            inlineMarkdown(block.text, MaterialTheme.colorScheme.onSurfaceVariant, onOpenWorkspaceFile),
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             style = MaterialTheme.typography.bodyLarge,
                             fontStyle = FontStyle.Italic,
