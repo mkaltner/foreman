@@ -271,7 +271,45 @@ describe("assistant workspace file links", () => {
       path: "/projects/My App/readme.md",
     }));
     expect(screen.getByRole("dialog", { name: "Workspace file /projects/My App/readme.md" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Source" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("second", { exact: false }).closest("span")).toHaveClass("selected");
+  });
+
+  it("previews Markdown files without a source location and toggles to source", async () => {
+    const onRequest = vi.fn().mockResolvedValue({
+      path: "/projects/readme.md",
+      content: "# Rendered project\n\nThis is **Markdown**.",
+    });
+    render(<ConversationView
+      session={{
+        id: "markdown-preview",
+        repository: "/projects",
+        title: "Markdown preview",
+        status: "idle",
+        messages: [{ id: "answer", kind: "assistant", text: "Open [the readme](/projects/readme.md)." }],
+      }}
+      approvals={[]}
+      models={[]}
+      accessLevels={[]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={onRequest}
+      onError={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole("link", { name: "the readme" }));
+
+    expect(await screen.findByRole("heading", { name: "Rendered project" })).toBeInTheDocument();
+    expect(screen.getByText("Markdown")).toHaveProperty("tagName", "STRONG");
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Source" }));
+    expect(screen.queryByRole("heading", { name: "Rendered project" })).not.toBeInTheDocument();
+    expect(screen.getByText("# Rendered project", { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Source" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("keeps the newest file when reads complete out of order", async () => {

@@ -119,7 +119,12 @@ button.full{width:100%;min-height:44px}
 .workspace-file-dialog{background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);border-radius:14px;width:min(1000px,calc(100vw - 36px));height:min(760px,calc(100vh - 48px));min-height:240px;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}
 .workspace-file-dialog>header{border-bottom:1px solid var(--border);align-items:center;gap:14px;padding:11px 14px;display:flex}
 .workspace-file-dialog>header code{min-width:0;text-overflow:ellipsis;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden}
-.workspace-file-dialog>header button{background:0 0;border:0;margin-left:auto;padding:0 4px;font-size:22px;line-height:1}
+.workspace-file-tabs{border:1px solid var(--border);background:var(--surface-alt);border-radius:7px;margin-left:auto;padding:2px;display:flex}
+.workspace-file-tabs button{background:0 0;border:0;border-radius:5px;padding:4px 9px;font-size:11px;font-weight:700}
+.workspace-file-tabs button.selected{background:var(--surface);color:var(--accent);box-shadow:0 1px 3px #0000001f}
+.workspace-file-close{background:0 0;border:0;padding:0 4px;font-size:22px;line-height:1}
+.workspace-file-preview{padding:22px 26px;overflow:auto}
+.workspace-file-preview>h1:first-child,.workspace-file-preview>h2:first-child,.workspace-file-preview>h3:first-child{margin-top:0}
 .workspace-file-dialog>pre{background:var(--surface-alt);counter-reset:line;margin:0;padding:12px 0;overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .workspace-file-dialog>pre>span{min-width:max-content;padding-right:18px;display:block}
 .workspace-file-dialog>pre>span.selected{background:color-mix(in srgb,var(--accent) 20%,transparent)}

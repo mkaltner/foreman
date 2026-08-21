@@ -2012,7 +2012,7 @@ export function ConversationView({
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
       </form>
       {openingWorkspaceFile && <div className="file-opening" role="status">Opening {openingWorkspaceFile}…</div>}
-      {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onClose={() => setWorkspaceFile(null)} />}
+      {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onOpenWorkspaceFile={openWorkspaceFile} onClose={() => setWorkspaceFile(null)} />}
     </div>
   );
 }
@@ -2161,22 +2161,23 @@ export function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWo
     <div className="markdown">
       {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
         ? <AppDirectiveCard key={`${segment.directive.name}-${index}`} directive={segment.directive} />
-        : <ReactMarkdown
-            key={`markdown-${index}`}
-            components={{
-              a: ({ href, children }) => {
-                const localFile = workspaceFileTarget(href);
-                if (localFile && onOpenWorkspaceFile) {
-                  return <a href={href} onClick={(event) => { event.preventDefault(); onOpenWorkspaceFile(localFile); }}>{children}</a>;
-                }
-                const safe = safeLink(href);
-                return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
-              },
-              pre: CopyableCodeBlock,
-            }}
-          >{segment.text}</ReactMarkdown>)}
+        : <MarkdownBody key={`markdown-${index}`} text={segment.text} onOpenWorkspaceFile={onOpenWorkspaceFile} />)}
     </div>
   );
+}
+
+function MarkdownBody({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+  return <ReactMarkdown components={{
+    a: ({ href, children }) => {
+      const localFile = workspaceFileTarget(href);
+      if (localFile && onOpenWorkspaceFile) {
+        return <a href={href} onClick={(event) => { event.preventDefault(); onOpenWorkspaceFile(localFile); }}>{children}</a>;
+      }
+      const safe = safeLink(href);
+      return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
+    },
+    pre: CopyableCodeBlock,
+  }}>{text}</ReactMarkdown>;
 }
 
 export function workspaceFileTarget(href?: string): WorkspaceFileTarget | null {
@@ -2195,19 +2196,33 @@ export function workspaceFileTarget(href?: string): WorkspaceFileTarget | null {
   return { path, ...(line === undefined ? {} : { line }) };
 }
 
-function WorkspaceFileDialog({ file, onClose }: { file: WorkspaceFile; onClose: () => void }) {
+function WorkspaceFileDialog({ file, onOpenWorkspaceFile, onClose }: { file: WorkspaceFile; onOpenWorkspaceFile: (target: WorkspaceFileTarget) => void; onClose: () => void }) {
+  const markdown = /\.(?:md|markdown)$/i.test(file.path);
+  const [view, setView] = useState<"preview" | "source">(markdown && !file.line ? "preview" : "source");
   const selectedLine = useRef<HTMLSpanElement>(null);
   useEffect(() => {
+    setView(markdown && !file.line ? "preview" : "source");
+  }, [file.line, file.path, markdown]);
+  useEffect(() => {
     selectedLine.current?.scrollIntoView?.({ block: "center" });
-  }, [file.line, file.path]);
+  }, [file.line, file.path, view]);
   return (
     <div className="modal-backdrop workspace-file-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="workspace-file-dialog" role="dialog" aria-modal="true" aria-label={`Workspace file ${file.path}`}>
-        <header><code title={file.path}>{file.path}{file.line ? `:${file.line}` : ""}</code><button type="button" onClick={onClose} aria-label="Close workspace file">×</button></header>
-        <pre>{file.content.split("\n").map((content, index) => {
-          const number = index + 1;
-          return <span key={number} ref={number === file.line ? selectedLine : undefined} className={number === file.line ? "selected" : ""}><i aria-hidden="true">{number}</i>{content}{"\n"}</span>;
-        })}</pre>
+        <header>
+          <code title={file.path}>{file.path}{file.line ? `:${file.line}` : ""}</code>
+          {markdown && <div className="workspace-file-tabs" role="tablist" aria-label="File view">
+            <button type="button" role="tab" aria-selected={view === "preview"} className={view === "preview" ? "selected" : ""} onClick={() => setView("preview")}>Preview</button>
+            <button type="button" role="tab" aria-selected={view === "source"} className={view === "source" ? "selected" : ""} onClick={() => setView("source")}>Source</button>
+          </div>}
+          <button className="workspace-file-close" type="button" onClick={onClose} aria-label="Close workspace file">×</button>
+        </header>
+        {view === "preview"
+          ? <div className="markdown workspace-file-preview"><MarkdownBody text={file.content} onOpenWorkspaceFile={onOpenWorkspaceFile} /></div>
+          : <pre>{file.content.split("\n").map((content, index) => {
+              const number = index + 1;
+              return <span key={number} ref={number === file.line ? selectedLine : undefined} className={number === file.line ? "selected" : ""}><i aria-hidden="true">{number}</i>{content}{"\n"}</span>;
+            })}</pre>}
       </section>
     </div>
   );
