@@ -273,6 +273,54 @@ describe("assistant workspace file links", () => {
     expect(screen.getByRole("dialog", { name: "Workspace file /projects/My App/readme.md" })).toBeInTheDocument();
     expect(screen.getByText("second", { exact: false }).closest("span")).toHaveClass("selected");
   });
+
+  it("keeps the newest file when reads complete out of order", async () => {
+    type FileResult = { path: string; content: string };
+    let resolveFirst!: (value: FileResult) => void;
+    let resolveSecond!: (value: FileResult) => void;
+    const first = new Promise<FileResult>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<FileResult>((resolve) => { resolveSecond = resolve; });
+    const onRequest = vi.fn((_type: string, payload?: Record<string, unknown>) =>
+      payload?.path === "/projects/first.md" ? first : second,
+    );
+    render(<ConversationView
+      session={{
+        id: "file-race",
+        repository: "/projects",
+        title: "File race",
+        status: "idle",
+        messages: [{ id: "answer", kind: "assistant", text: "Open [first](/projects/first.md) or [second](/projects/second.md)." }],
+      }}
+      approvals={[]}
+      models={[]}
+      accessLevels={[]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={onRequest as <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>}
+      onError={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole("link", { name: "first" }));
+    fireEvent.click(screen.getByRole("link", { name: "second" }));
+    await act(async () => {
+      resolveSecond({ path: "/projects/second.md", content: "newest" });
+      await second;
+    });
+    expect(screen.getByRole("dialog", { name: "Workspace file /projects/second.md" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /Opening/ })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirst({ path: "/projects/first.md", content: "stale" });
+      await first;
+    });
+    expect(screen.getByRole("dialog", { name: "Workspace file /projects/second.md" })).toBeInTheDocument();
+    expect(screen.getByText("newest", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("stale", { exact: false })).not.toBeInTheDocument();
+  });
 });
 
 describe("route selector", () => {

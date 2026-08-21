@@ -1764,6 +1764,7 @@ export function ConversationView({
   const [jumpVisible, setJumpVisible] = useState(false);
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFile | null>(null);
   const [openingWorkspaceFile, setOpeningWorkspaceFile] = useState<string | null>(null);
+  const workspaceFileRequest = useRef(0);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
     ...approvals.flatMap(({ itemId }) => itemId ? [itemId] : []),
@@ -1815,14 +1816,17 @@ export function ConversationView({
   const activityMessage = liveActivityMessage(session);
 
   const openWorkspaceFile = async ({ path, line }: WorkspaceFileTarget) => {
+    const request = ++workspaceFileRequest.current;
     setOpeningWorkspaceFile(path);
     try {
       const result = await onRequest<{ path: string; content: string }>("workspace.file.read", { path });
-      setWorkspaceFile({ ...result, line });
+      if (workspaceFileRequest.current === request) setWorkspaceFile({ ...result, line });
     } catch (caught) {
-      onError(caught instanceof Error ? caught.message : "Workspace file could not be opened");
+      if (workspaceFileRequest.current === request) {
+        onError(caught instanceof Error ? caught.message : "Workspace file could not be opened");
+      }
     } finally {
-      setOpeningWorkspaceFile(null);
+      if (workspaceFileRequest.current === request) setOpeningWorkspaceFile(null);
     }
   };
 

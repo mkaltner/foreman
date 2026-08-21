@@ -2207,6 +2207,41 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "workspace.file.read", {"path": str(escaped_link)}
         )
         self.assertIn("outside configured root", escaped_file["message"])
+        race_directory = self.repository_root / "race"
+        race_directory.mkdir()
+        race_file = race_directory / "secret.txt"
+        race_file.write_text("workspace\n", encoding="utf-8")
+        saved_directory = self.repository_root / "race-safe"
+        outside_directory = Path(self.temporary.name) / "outside-directory"
+        outside_directory.mkdir()
+        (outside_directory / "secret.txt").write_text("private\n", encoding="utf-8")
+        actual_open = os.open
+        swapped = False
+
+        def racing_open(
+            path: os.PathLike[str] | str,
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal swapped
+            descriptor = actual_open(path, flags, mode, dir_fd=dir_fd)
+            if dir_fd is None and Path(path) == self.repository_root and not swapped:
+                race_directory.rename(saved_directory)
+                race_directory.symlink_to(outside_directory, target_is_directory=True)
+                swapped = True
+            return descriptor
+
+        try:
+            with patch("foreman_service.os.open", side_effect=racing_open):
+                with self.assertRaisesRegex(ValueError, "outside configured root"):
+                    self.app.read_workspace_file(str(race_file))
+        finally:
+            if race_directory.is_symlink():
+                race_directory.unlink()
+            if saved_directory.exists():
+                saved_directory.rename(race_directory)
         sessions = (await self.request("session.list"))["sessions"]
         self.assertEqual(sessions[0]["title"], "Hello Foreman")
         self.assertNotIn("messages", sessions[0])

@@ -15,6 +15,7 @@ import math
 import mimetypes
 import os
 import signal
+import stat
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -2316,16 +2317,57 @@ class Foreman:
             raise ValueError("workspace file path must be absolute")
         try:
             path = requested.resolve(strict=True)
-            path.relative_to(self.repository_root)
+            relative = path.relative_to(self.repository_root)
         except (OSError, ValueError) as error:
             raise ValueError(
                 "workspace file is outside configured root or was not found"
             ) from error
-        if not path.is_file():
+        parts = relative.parts
+        if not parts:
             raise ValueError("workspace file was not found")
-        if path.stat().st_size > MAX_WORKSPACE_FILE_BYTES:
-            raise ValueError("workspace file is larger than 1 MiB")
-        content = path.read_bytes()
+        descriptors: set[int] = set()
+        try:
+            directory_fd = os.open(
+                self.repository_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            descriptors.add(directory_fd)
+            for component in parts[:-1]:
+                directory_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                descriptors.add(directory_fd)
+            file_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=directory_fd,
+            )
+            descriptors.add(file_fd)
+            file_stat = os.fstat(file_fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError("workspace file was not found")
+            if file_stat.st_size > MAX_WORKSPACE_FILE_BYTES:
+                raise ValueError("workspace file is larger than 1 MiB")
+            chunks: list[bytes] = []
+            remaining = MAX_WORKSPACE_FILE_BYTES + 1
+            while remaining:
+                chunk = os.read(file_fd, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content = b"".join(chunks)
+            if len(content) > MAX_WORKSPACE_FILE_BYTES:
+                raise ValueError("workspace file is larger than 1 MiB")
+        except OSError as error:
+            raise ValueError(
+                "workspace file is outside configured root or was not found"
+            ) from error
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
         if b"\x00" in content:
             raise ValueError("workspace file is not a text file")
         try:
