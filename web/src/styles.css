@@ -101,6 +101,7 @@ button.full{width:100%;min-height:44px}
 .markdown h1{font-size:23px}
 .markdown h2{font-size:20px}
 .markdown h3{font-size:17px}
+.markdown blockquote{color:var(--muted);border-left:3px solid var(--accent);margin:1em 0;padding:2px 0 2px 12px}
 .markdown code{background:var(--surface-alt);border-radius:5px;padding:2px 5px;font:.9em ui-monospace,SFMono-Regular,Menlo,monospace}
 .markdown .code-block{margin:1em 0;position:relative}
 .markdown pre{border:1px solid var(--border);background:var(--surface);border-radius:10px;margin:0;padding:13px;padding-right:50px;overflow-x:auto}
