@@ -74,6 +74,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
     val blocks = mutableListOf<MarkdownBlock>()
     val paragraph = mutableListOf<String>()
     val lines = source.replace("\r\n", "\n").split('\n')
+    val quotePattern = Regex("^\\s*>\\s?(.*)$")
     var index = 0
 
     fun flushParagraph() {
@@ -128,7 +129,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
         val task = Regex("^\\s*[-*+]\\s+\\[([ xX])]\\s+(.+)$").matchEntire(line)
         val bullet = Regex("^\\s*[-*+]\\s+(.+)$").matchEntire(line)
         val numbered = Regex("^\\s*(\\d+[.)])\\s+(.+)$").matchEntire(line)
-        val quote = Regex("^\\s*>\\s?(.*)$").matchEntire(line)
+        val quote = quotePattern.matchEntire(line)
         when {
             line.isBlank() -> flushParagraph()
             heading != null -> {
@@ -149,7 +150,15 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
             }
             quote != null -> {
                 flushParagraph()
-                blocks += MarkdownBlock.Quote(quote.groupValues[1])
+                val quotedLines = mutableListOf<String>()
+                while (index < lines.size) {
+                    val quotedLine = quotePattern.matchEntire(lines[index]) ?: break
+                    quotedLines += quotedLine.groupValues[1]
+                    index++
+                }
+                val quotedText = quotedLines.joinToString("\n")
+                if (quotedText.isNotBlank()) blocks += MarkdownBlock.Quote(quotedText)
+                continue
             }
             else -> paragraph += line
         }

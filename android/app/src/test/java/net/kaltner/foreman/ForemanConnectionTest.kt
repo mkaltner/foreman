@@ -815,6 +815,33 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun groupsMultiParagraphBlockquotesWithoutRenderingEmptySeparators() {
+        val blocks =
+            parseMarkdown(
+                """
+                > First quoted paragraph.
+                >
+                > Second quoted paragraph.
+                > Continued on another quoted line.
+
+                Outside the quote.
+
+                >
+                """.trimIndent(),
+            )
+
+        assertEquals(
+            listOf(
+                MarkdownBlock.Quote(
+                    "First quoted paragraph.\n\nSecond quoted paragraph.\nContinued on another quoted line.",
+                ),
+                MarkdownBlock.Paragraph("Outside the quote."),
+            ),
+            blocks,
+        )
+    }
+
+    @Test
     fun parsesGfmTablesAndTaskLists() {
         val blocks =
             parseMarkdown(
