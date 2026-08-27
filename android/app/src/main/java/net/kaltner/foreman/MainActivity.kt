@@ -4629,7 +4629,6 @@ private fun SessionDetailScreen(
             state.highlightedItemId?.let(::add)
             selectedApprovals.mapNotNullTo(this) { it.itemId }
             selectedInputs.mapNotNullTo(this) { it.itemId }
-            selected?.let { addAll(activeTurnActivityItemIds(it)) }
         }
     val displayBlocks =
         conversationBlocks(messages, state.activityDetail, protectedItemIds)
