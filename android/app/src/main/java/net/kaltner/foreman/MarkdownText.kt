@@ -2,12 +2,17 @@ package net.kaltner.foreman
 
 import java.net.URI
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,6 +79,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
     val blocks = mutableListOf<MarkdownBlock>()
     val paragraph = mutableListOf<String>()
     val lines = source.replace("\r\n", "\n").split('\n')
+    val quotePattern = Regex("^\\s*>\\s?(.*)$")
     var index = 0
 
     fun flushParagraph() {
@@ -128,7 +134,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
         val task = Regex("^\\s*[-*+]\\s+\\[([ xX])]\\s+(.+)$").matchEntire(line)
         val bullet = Regex("^\\s*[-*+]\\s+(.+)$").matchEntire(line)
         val numbered = Regex("^\\s*(\\d+[.)])\\s+(.+)$").matchEntire(line)
-        val quote = Regex("^\\s*>\\s?(.*)$").matchEntire(line)
+        val quote = quotePattern.matchEntire(line)
         when {
             line.isBlank() -> flushParagraph()
             heading != null -> {
@@ -149,7 +155,15 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
             }
             quote != null -> {
                 flushParagraph()
-                blocks += MarkdownBlock.Quote(quote.groupValues[1])
+                val quotedLines = mutableListOf<String>()
+                while (index < lines.size) {
+                    val quotedLine = quotePattern.matchEntire(lines[index]) ?: break
+                    quotedLines += quotedLine.groupValues[1]
+                    index++
+                }
+                val quotedText = quotedLines.joinToString("\n")
+                if (quotedText.isNotBlank()) blocks += MarkdownBlock.Quote(quotedText)
+                continue
             }
             else -> paragraph += line
         }
@@ -446,15 +460,23 @@ internal fun MarkdownText(
                     }
                 }
                 is MarkdownBlock.Quote ->
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(4.dp),
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        Box(
+                            Modifier
+                                .width(3.dp)
+                                .fillMaxHeight()
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = RoundedCornerShape(2.dp),
+                                ),
+                        )
                         Text(
                             inlineMarkdown(block.text, MaterialTheme.colorScheme.onSurfaceVariant, onOpenWorkspaceFile),
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier.weight(1f).padding(vertical = 2.dp),
                             style = MaterialTheme.typography.bodyLarge,
-                            fontStyle = FontStyle.Italic,
                         )
                     }
                 is MarkdownBlock.Code ->
