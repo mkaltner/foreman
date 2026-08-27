@@ -1047,6 +1047,27 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun foregroundSynchronizationKeepsRecoveredCanonicalMessagesBeforeNewerLiveActivity() {
+        val live =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+                messages = listOf(ConversationItem("new-command", "command", status = "completed", turnId = "new-turn")),
+            )
+        val canonical =
+            live.copy(
+                status = "completed",
+                messages = listOf(ConversationItem("older-user", "user", text = "Earlier prompt", turnId = "old-turn")),
+            )
+
+        val reconciled = reconcileSelectedSession(live, canonical)
+
+        assertEquals(listOf("older-user", "new-command"), reconciled?.messages?.map { it.id })
+    }
+
+    @Test
     fun unknownStatusDiscoversSessionsWithoutReplacingLiveRows() {
         val live =
             SessionSummary(

@@ -667,10 +667,30 @@ internal fun reconcileSelectedSession(
     incoming: SessionSummary?,
 ): SessionSummary? {
     if (incoming == null || previous?.providerKey() != incoming.providerKey()) return incoming
-    val incomingById = incoming.messages.associateByTo(linkedMapOf()) { it.id }
-    val messages = buildList {
-        previous.messages.forEach { item -> add(incomingById.remove(item.id) ?: item) }
-        addAll(incomingById.values)
+    val messages = incoming.messages.toMutableList()
+    val knownIds = messages.mapTo(mutableSetOf()) { it.id }
+    previous.messages.forEachIndexed { previousIndex, item ->
+        if (item.id in knownIds || item.kind !in setOf("command", "tool")) return@forEachIndexed
+        val followingId =
+            previous.messages.asSequence().drop(previousIndex + 1)
+                .firstOrNull { it.id in knownIds }?.id
+        val followingIndex = followingId?.let { id -> messages.indexOfFirst { it.id == id } } ?: -1
+        val sameTurnAssistantIndex =
+            messages.indexOfFirst { candidate ->
+                item.turnId != null && candidate.turnId == item.turnId && candidate.kind == "assistant"
+            }
+        val precedingId =
+            previous.messages.asSequence().take(previousIndex).toList().asReversed()
+                .firstOrNull { it.id in knownIds }?.id
+        val precedingIndex = precedingId?.let { id -> messages.indexOfFirst { it.id == id } } ?: -1
+        val insertionIndex = when {
+            followingIndex >= 0 -> followingIndex
+            sameTurnAssistantIndex >= 0 -> sameTurnAssistantIndex
+            precedingIndex >= 0 -> precedingIndex + 1
+            else -> messages.size
+        }
+        messages.add(insertionIndex, item)
+        knownIds += item.id
     }
     return incoming.copy(messages = messages)
 }
