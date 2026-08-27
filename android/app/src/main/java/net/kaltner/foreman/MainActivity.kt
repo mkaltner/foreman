@@ -662,19 +662,53 @@ internal fun UiState.withProviderRoute(session: SessionSummary?): UiState =
             .withAccessLevelsAndSessionAccess(accessLevels, session)
     }
 
+internal fun reconcileSelectedSession(
+    previous: SessionSummary?,
+    incoming: SessionSummary?,
+): SessionSummary? {
+    if (incoming == null || previous?.providerKey() != incoming.providerKey()) return incoming
+    val messages = incoming.messages.toMutableList()
+    val knownIds = messages.mapTo(mutableSetOf()) { it.id }
+    previous.messages.forEachIndexed { previousIndex, item ->
+        if (item.id in knownIds || item.kind !in setOf("command", "tool")) return@forEachIndexed
+        val followingId =
+            previous.messages.asSequence().drop(previousIndex + 1)
+                .firstOrNull { it.id in knownIds }?.id
+        val followingIndex = followingId?.let { id -> messages.indexOfFirst { it.id == id } } ?: -1
+        val sameTurnAssistantIndex =
+            messages.indexOfFirst { candidate ->
+                item.turnId != null && candidate.turnId == item.turnId && candidate.kind == "assistant"
+            }
+        val precedingId =
+            previous.messages.asSequence().take(previousIndex).toList().asReversed()
+                .firstOrNull { it.id in knownIds }?.id
+        val precedingIndex = precedingId?.let { id -> messages.indexOfFirst { it.id == id } } ?: -1
+        val insertionIndex = when {
+            followingIndex >= 0 -> followingIndex
+            sameTurnAssistantIndex >= 0 -> sameTurnAssistantIndex
+            precedingIndex >= 0 -> precedingIndex + 1
+            else -> messages.size
+        }
+        messages.add(insertionIndex, item)
+        knownIds += item.id
+    }
+    return incoming.copy(messages = messages)
+}
+
 internal fun UiState.withSynchronizedSessions(
     sessions: List<SessionSummary>,
     repositories: List<RepositoryInfo>,
     selectedSessionId: String?,
     selectedSession: SessionSummary?,
     selectedProvider: String = PROVIDER_CODEX,
-): UiState =
-    copy(
+): UiState {
+    val reconciledSelected = reconcileSelectedSession(selected, selectedSession)
+    return copy(
         sessions = sessions,
         repositories = repositories,
-        selected = selectedSession,
+        selected = reconciledSelected,
         screen =
-            if (selectedSessionId != null && selectedSession?.matches(selectedProvider, selectedSessionId) == true) {
+            if (selectedSessionId != null && reconciledSelected?.matches(selectedProvider, selectedSessionId) == true) {
                 Screen.Detail
             } else if (screen == Screen.Detail) {
                 Screen.Sessions
@@ -684,6 +718,7 @@ internal fun UiState.withSynchronizedSessions(
         loading = false,
         error = null,
     )
+}
 
 internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): UiState {
     val known = sessions.mapTo(mutableSetOf()) { it.providerKey() }
@@ -4629,7 +4664,6 @@ private fun SessionDetailScreen(
             state.highlightedItemId?.let(::add)
             selectedApprovals.mapNotNullTo(this) { it.itemId }
             selectedInputs.mapNotNullTo(this) { it.itemId }
-            selected?.let { addAll(activeTurnActivityItemIds(it)) }
         }
     val displayBlocks =
         conversationBlocks(messages, state.activityDetail, protectedItemIds)

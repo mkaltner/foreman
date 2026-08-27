@@ -57,29 +57,21 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun focusedActivityKeepsCompletedItemsFromActiveTurnVisible() {
-        val session =
-            SessionSummary(
-                id = "active",
-                repository = "/repo",
-                title = "Active turn",
-                status = "working",
-                activeTurnId = "turn-current",
-                messages =
-                    listOf(
-                        ConversationItem("old", "command", status = "completed", turnId = "turn-old"),
-                        ConversationItem("read", "tool", status = "completed", turnId = "turn-current"),
-                        ConversationItem("bash", "command", status = "completed", turnId = "turn-current"),
-                    ),
+    fun focusedActivityProgressivelyGroupsCompletedItemsFromActiveTurn() {
+        val messages =
+            listOf(
+                ConversationItem("read", "tool", status = "completed", turnId = "turn-current"),
+                ConversationItem("bash", "command", status = "completed", exitCode = 0, turnId = "turn-current"),
+                ConversationItem("failed", "command", status = "failed", exitCode = 1, turnId = "turn-current"),
             )
 
-        val protected = activeTurnActivityItemIds(session)
-        val blocks = conversationBlocks(session.messages, ActivityDetail.Focused, protected)
+        val blocks = conversationBlocks(messages, ActivityDetail.Focused)
 
-        assertEquals(setOf("read", "bash"), protected)
+        assertEquals(2, blocks.size)
         assertTrue(blocks.first().collapsedActivity)
-        assertEquals(listOf("read", "bash"), blocks.drop(1).map { it.items.single().id })
-        assertTrue(blocks.drop(1).none { it.collapsedActivity })
+        assertEquals(listOf("read", "bash"), blocks.first().items.map { it.id })
+        assertFalse(blocks.last().collapsedActivity)
+        assertEquals("failed", blocks.last().items.single().id)
     }
 
     @Test
@@ -1011,6 +1003,68 @@ class ForemanConnectionTest {
         assertEquals("turn-live", synchronized.selected?.activeTurnId)
         assertEquals(Screen.Detail, synchronized.screen)
         assertFalse(synchronized.loading)
+    }
+
+    @Test
+    fun foregroundSynchronizationPreservesLiveActivityMissingFromCanonicalHistory() {
+        val live =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+                messages =
+                    listOf(
+                        ConversationItem("user", "user", text = "Run checks"),
+                        ConversationItem("read", "tool", status = "completed"),
+                        ConversationItem("failed", "command", status = "failed", exitCode = 1),
+                        ConversationItem("assistant", "assistant", text = "Working"),
+                    ),
+            )
+        val canonical =
+            live.copy(
+                status = "completed",
+                messages =
+                    listOf(
+                        ConversationItem("user", "user", text = "Run checks"),
+                        ConversationItem("assistant", "assistant", text = "Done"),
+                    ),
+            )
+
+        val synchronized =
+            UiState(screen = Screen.Detail, selected = live).withSynchronizedSessions(
+                sessions = listOf(canonical.copy(messages = emptyList())),
+                repositories = emptyList(),
+                selectedSessionId = canonical.id,
+                selectedSession = canonical,
+            )
+
+        assertEquals(listOf("user", "read", "failed", "assistant"), synchronized.selected?.messages?.map { it.id })
+        assertEquals("Done", synchronized.selected?.messages?.last()?.text)
+        val blocks = conversationBlocks(requireNotNull(synchronized.selected).messages, ActivityDetail.Focused)
+        assertTrue(blocks.any { it.collapsedActivity && it.items.single().id == "read" })
+        assertTrue(blocks.any { !it.collapsedActivity && it.items.single().id == "failed" })
+    }
+
+    @Test
+    fun foregroundSynchronizationKeepsRecoveredCanonicalMessagesBeforeNewerLiveActivity() {
+        val live =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+                messages = listOf(ConversationItem("new-command", "command", status = "completed", turnId = "new-turn")),
+            )
+        val canonical =
+            live.copy(
+                status = "completed",
+                messages = listOf(ConversationItem("older-user", "user", text = "Earlier prompt", turnId = "old-turn")),
+            )
+
+        val reconciled = reconcileSelectedSession(live, canonical)
+
+        assertEquals(listOf("older-user", "new-command"), reconciled?.messages?.map { it.id })
     }
 
     @Test
