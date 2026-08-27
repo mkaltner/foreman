@@ -372,6 +372,19 @@ export function liveActivityMessage(session: SessionSummary): string | null {
   return session.activityText?.trim().split("\n").filter(Boolean).at(-1) ?? null;
 }
 
+function isTerminalSession(session: SessionSummary): boolean {
+  return ["completed", "failed", "interrupted"].includes(session.status);
+}
+
+function isStaleTurnEvent(session: SessionSummary, event: SessionEvent): boolean {
+  if (isTerminalSession(session)) return true;
+  return Boolean(
+    session.activeTurnId &&
+    event.turnId &&
+    session.activeTurnId !== event.turnId,
+  );
+}
+
 export function applySessionEvent(
   session: SessionSummary,
   event: SessionEvent,
@@ -407,6 +420,7 @@ export function applySessionEvent(
   }
 
   if (event.kind === "assistant.delta") {
+    const stale = isStaleTurnEvent(session, event);
     const itemId = event.itemId || `assistant-${event.turnId || "active"}`;
     const messages = [...(session.messages ?? [])];
     const index = messages.findIndex((item) => item.id === itemId);
@@ -423,6 +437,9 @@ export function applySessionEvent(
         turnId: event.turnId,
       });
     }
+    // Keep late text in the full transcript, but do not let a buffered delta
+    // revive a terminal session or replace a newer turn's live projection.
+    if (stale) return { ...session, messages };
     return {
       ...session,
       status: "working",
@@ -461,6 +478,7 @@ export function applySessionEvent(
   }
 
   if (event.kind === "activity") {
+    if (isStaleTurnEvent(session, event)) return session;
     const text = event.text ?? "";
     const label = event.label ?? session.activityLabel ?? "Working";
     return {
@@ -488,6 +506,10 @@ export function applySessionSummaryEvent(
   session: SessionSummary,
   event: SessionEvent,
 ): SessionSummary {
+  if (
+    (event.kind === "assistant.delta" || event.kind === "activity") &&
+    isStaleTurnEvent(session, event)
+  ) return session;
   if (event.kind === "assistant.delta") {
     return {
       ...session,

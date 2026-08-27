@@ -115,6 +115,53 @@ describe("session mapping and live events", () => {
     expect(current.model).toBe("gpt-test");
   });
 
+  it("requires an explicit status event to reactivate a terminal session", () => {
+    const completed = applySessionEvent(session, {
+      kind: "status",
+      status: "completed",
+      turnId: "turn-1",
+      completedAt: 200,
+    });
+    const delayed = applySessionEvent(completed, {
+      kind: "assistant.delta",
+      turnId: "turn-1",
+      itemId: "assistant-1",
+      text: "delayed text",
+      observedAt: 199,
+    });
+
+    expect(delayed).toEqual(expect.objectContaining({
+      status: "completed",
+      activeTurnId: null,
+      messages: [expect.objectContaining({ id: "assistant-1", text: "delayed text" })],
+    }));
+    const reactivated = applySessionEvent(delayed, {
+      kind: "status",
+      status: "working",
+      turnId: "turn-2",
+      observedAt: 201,
+    });
+    const staleOldTurn = applySessionEvent(reactivated, {
+      kind: "assistant.delta",
+      turnId: "turn-1",
+      itemId: "assistant-1",
+      text: " still old",
+      observedAt: 201,
+    });
+    expect(staleOldTurn).toEqual(expect.objectContaining({
+      status: "working",
+      activeTurnId: "turn-2",
+      messages: [expect.objectContaining({ id: "assistant-1", text: "delayed text still old" })],
+    }));
+    expect(applySessionEvent(staleOldTurn, {
+      kind: "assistant.delta",
+      turnId: "turn-2",
+      itemId: "assistant-2",
+      text: "new turn",
+      observedAt: 202,
+    })).toEqual(expect.objectContaining({ status: "working" }));
+  });
+
   it("selects only dynamic model, effort, and access data", () => {
     const models: ModelInfo[] = [
       { id: "hidden", displayName: "Hidden", visible: false, isDefault: false, reasoningEfforts: ["low"] },
