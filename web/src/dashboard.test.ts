@@ -182,6 +182,41 @@ describe("dashboard projections", () => {
     }));
   });
 
+  it("does not let buffered events from a completed turn overwrite a new turn", () => {
+    const reactivated: SessionSummary = {
+      ...base,
+      status: "working",
+      activeTurnId: "new-turn",
+      activityLabel: "Starting new turn",
+      lastActivity: now / 1000 + 2,
+    };
+    const updated = applySessionSummaryEventBatch([reactivated], new Map([
+      [reactivated.id, [
+        {
+          kind: "assistant.delta",
+          turnId: "completed-turn",
+          itemId: "assistant-1",
+          text: "late buffered text",
+          observedAt: now / 1000,
+        },
+        {
+          kind: "activity",
+          turnId: "completed-turn",
+          label: "Finishing old turn",
+          observedAt: now / 1000 + 1,
+        },
+      ]],
+    ]));
+
+    expect(updated[0]).toBe(reactivated);
+    expect(updated[0]).toEqual(expect.objectContaining({
+      status: "working",
+      activeTurnId: "new-turn",
+      activityLabel: "Starting new turn",
+      lastActivity: now / 1000 + 2,
+    }));
+  });
+
   it("classifies waiting, failure, disconnect, and conservative stale attention", () => {
     const service = {
       foremanVersion: "test", connected: true, uptimeSeconds: 1,
