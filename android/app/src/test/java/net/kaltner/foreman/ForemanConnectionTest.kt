@@ -1006,6 +1006,47 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun foregroundSynchronizationPreservesLiveActivityMissingFromCanonicalHistory() {
+        val live =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "working",
+                messages =
+                    listOf(
+                        ConversationItem("user", "user", text = "Run checks"),
+                        ConversationItem("read", "tool", status = "completed"),
+                        ConversationItem("failed", "command", status = "failed", exitCode = 1),
+                        ConversationItem("assistant", "assistant", text = "Working"),
+                    ),
+            )
+        val canonical =
+            live.copy(
+                status = "completed",
+                messages =
+                    listOf(
+                        ConversationItem("user", "user", text = "Run checks"),
+                        ConversationItem("assistant", "assistant", text = "Done"),
+                    ),
+            )
+
+        val synchronized =
+            UiState(screen = Screen.Detail, selected = live).withSynchronizedSessions(
+                sessions = listOf(canonical.copy(messages = emptyList())),
+                repositories = emptyList(),
+                selectedSessionId = canonical.id,
+                selectedSession = canonical,
+            )
+
+        assertEquals(listOf("user", "read", "failed", "assistant"), synchronized.selected?.messages?.map { it.id })
+        assertEquals("Done", synchronized.selected?.messages?.last()?.text)
+        val blocks = conversationBlocks(requireNotNull(synchronized.selected).messages, ActivityDetail.Focused)
+        assertTrue(blocks.any { it.collapsedActivity && it.items.single().id == "read" })
+        assertTrue(blocks.any { !it.collapsedActivity && it.items.single().id == "failed" })
+    }
+
+    @Test
     fun unknownStatusDiscoversSessionsWithoutReplacingLiveRows() {
         val live =
             SessionSummary(

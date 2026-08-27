@@ -662,19 +662,33 @@ internal fun UiState.withProviderRoute(session: SessionSummary?): UiState =
             .withAccessLevelsAndSessionAccess(accessLevels, session)
     }
 
+internal fun reconcileSelectedSession(
+    previous: SessionSummary?,
+    incoming: SessionSummary?,
+): SessionSummary? {
+    if (incoming == null || previous?.providerKey() != incoming.providerKey()) return incoming
+    val incomingById = incoming.messages.associateByTo(linkedMapOf()) { it.id }
+    val messages = buildList {
+        previous.messages.forEach { item -> add(incomingById.remove(item.id) ?: item) }
+        addAll(incomingById.values)
+    }
+    return incoming.copy(messages = messages)
+}
+
 internal fun UiState.withSynchronizedSessions(
     sessions: List<SessionSummary>,
     repositories: List<RepositoryInfo>,
     selectedSessionId: String?,
     selectedSession: SessionSummary?,
     selectedProvider: String = PROVIDER_CODEX,
-): UiState =
-    copy(
+): UiState {
+    val reconciledSelected = reconcileSelectedSession(selected, selectedSession)
+    return copy(
         sessions = sessions,
         repositories = repositories,
-        selected = selectedSession,
+        selected = reconciledSelected,
         screen =
-            if (selectedSessionId != null && selectedSession?.matches(selectedProvider, selectedSessionId) == true) {
+            if (selectedSessionId != null && reconciledSelected?.matches(selectedProvider, selectedSessionId) == true) {
                 Screen.Detail
             } else if (screen == Screen.Detail) {
                 Screen.Sessions
@@ -684,6 +698,7 @@ internal fun UiState.withSynchronizedSessions(
         loading = false,
         error = null,
     )
+}
 
 internal fun UiState.withDiscoveredSessions(discovered: List<SessionSummary>): UiState {
     val known = sessions.mapTo(mutableSetOf()) { it.providerKey() }
