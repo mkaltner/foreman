@@ -157,6 +157,31 @@ describe("dashboard projections", () => {
     expect(updated.every((session) => session.messages === undefined)).toBe(true);
   });
 
+  it("does not let a buffered assistant delta revive a terminal session", () => {
+    const completed: SessionSummary = {
+      ...base,
+      status: "completed",
+      terminalAt: now / 1000,
+      turnDurationMs: 5000,
+    };
+    const updated = applySessionSummaryEventBatch([completed], new Map([
+      [completed.id, [{
+        kind: "assistant.delta",
+        turnId: "completed-turn",
+        itemId: "assistant-1",
+        text: "late buffered text",
+        observedAt: now / 1000 - 1,
+      }]],
+    ]));
+
+    expect(updated[0]).toBe(completed);
+    expect(updated[0]).toEqual(expect.objectContaining({
+      status: "completed",
+      terminalAt: now / 1000,
+      turnDurationMs: 5000,
+    }));
+  });
+
   it("classifies waiting, failure, disconnect, and conservative stale attention", () => {
     const service = {
       foremanVersion: "test", connected: true, uptimeSeconds: 1,

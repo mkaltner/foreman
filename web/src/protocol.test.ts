@@ -115,6 +115,37 @@ describe("session mapping and live events", () => {
     expect(current.model).toBe("gpt-test");
   });
 
+  it("requires an explicit status event to reactivate a terminal session", () => {
+    const completed = applySessionEvent(session, {
+      kind: "status",
+      status: "completed",
+      turnId: "turn-1",
+      completedAt: 200,
+    });
+    const delayed = applySessionEvent(completed, {
+      kind: "assistant.delta",
+      turnId: "turn-1",
+      itemId: "assistant-1",
+      text: "delayed text",
+      observedAt: 199,
+    });
+
+    expect(delayed).toBe(completed);
+    const reactivated = applySessionEvent(delayed, {
+      kind: "status",
+      status: "working",
+      turnId: "turn-2",
+      observedAt: 201,
+    });
+    expect(applySessionEvent(reactivated, {
+      kind: "assistant.delta",
+      turnId: "turn-2",
+      itemId: "assistant-2",
+      text: "new turn",
+      observedAt: 202,
+    })).toEqual(expect.objectContaining({ status: "working" }));
+  });
+
   it("selects only dynamic model, effort, and access data", () => {
     const models: ModelInfo[] = [
       { id: "hidden", displayName: "Hidden", visible: false, isDefault: false, reasoningEfforts: ["low"] },

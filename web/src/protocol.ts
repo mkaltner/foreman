@@ -372,6 +372,10 @@ export function liveActivityMessage(session: SessionSummary): string | null {
   return session.activityText?.trim().split("\n").filter(Boolean).at(-1) ?? null;
 }
 
+function isTerminalSession(session: SessionSummary): boolean {
+  return ["completed", "failed", "interrupted"].includes(session.status);
+}
+
 export function applySessionEvent(
   session: SessionSummary,
   event: SessionEvent,
@@ -407,6 +411,10 @@ export function applySessionEvent(
   }
 
   if (event.kind === "assistant.delta") {
+    // A delta can still be waiting in the dashboard's animation-frame buffer
+    // when the authoritative terminal status arrives. Only a later status event
+    // may start a new turn; never let the delayed delta revive this session.
+    if (isTerminalSession(session)) return session;
     const itemId = event.itemId || `assistant-${event.turnId || "active"}`;
     const messages = [...(session.messages ?? [])];
     const index = messages.findIndex((item) => item.id === itemId);
@@ -489,6 +497,7 @@ export function applySessionSummaryEvent(
   event: SessionEvent,
 ): SessionSummary {
   if (event.kind === "assistant.delta") {
+    if (isTerminalSession(session)) return session;
     return {
       ...session,
       status: "working",
