@@ -2044,11 +2044,11 @@ export function ConversationView({
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
         <div className="conversation-title"><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
+        <StatusPill status={session.status} />
         {contextUsage && <span className="session-context-control" ref={sessionInfoRef}>
           <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
           {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
         </span>}
-        <StatusPill status={session.status} />
       </header>
       <div
         className="transcript"

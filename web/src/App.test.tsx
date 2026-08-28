@@ -265,7 +265,10 @@ describe("session context usage", () => {
     />);
 
     const trigger = screen.getByRole("button", { name: "Context usage, 80% left" });
-    expect(trigger.closest("header")).toHaveClass("conversation-header");
+    const header = trigger.closest("header");
+    expect(header).toHaveClass("conversation-header");
+    const status = within(header as HTMLElement).getByText("Idle");
+    expect(status.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(trigger);
 
     const panel = screen.getByRole("complementary", { name: "Session info" });

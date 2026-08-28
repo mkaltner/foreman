@@ -451,7 +451,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .conversation-header{gap:10px;padding:11px 14px}
 .conversation-header h1{font-size:15px}
 .context-usage-button{padding-right:5px}.context-usage-button>span:last-child{display:none}
-.session-info-panel{width:min(280px,calc(100vw - 24px));right:-34px}.account-usage-anchor{padding-inline:9px}.account-usage-panel{width:min(320px,calc(100vw - 24px));left:9px}
+.session-info-panel{width:min(280px,calc(100vw - 24px));right:0}.account-usage-anchor{padding-inline:9px}.account-usage-panel{width:min(320px,calc(100vw - 24px));left:9px}
 .transcript{padding:20px 14px 28px}
 .approval-card{border-radius:11px;margin-bottom:18px;padding:13px}.approval-card>header{display:grid}.approval-card h2{font-size:15px}.approval-details p{grid-template-columns:1fr;gap:3px}.approval-actions{display:grid;grid-template-columns:1fr}.scope-choice{align-items:stretch!important;display:grid!important}.scope-choice select{width:100%}
 .message{margin-bottom:20px}
