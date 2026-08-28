@@ -16,9 +16,19 @@ class ProviderSupportTest {
             """{"id":"claude-code","displayName":"Claude Code","available":false,"cliVersion":"2.1.220","sdkVersion":"0.3.220","nodeVersion":"20.19.0","capabilities":[],"limitations":["no-images"],"unavailableReason":"node-missing"}""",
         )
 
+        assertTrue(provider.enabled)
         assertFalse(provider.available)
         assertEquals("2.1.220", provider.cliVersion)
         assertEquals("Node.js 20 or newer is not installed.", providerUnavailableDescription(provider.unavailableReason))
+    }
+
+    @Test
+    fun providerCatalogDecodesHostEnablement() {
+        val provider = json.decodeFromString<ProviderInfo>(
+            """{"id":"codex","displayName":"Codex","enabled":false,"available":false}""",
+        )
+
+        assertFalse(provider.enabled)
     }
 
     @Test

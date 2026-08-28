@@ -55,7 +55,7 @@ Implemented types:
 The following authenticated, additive provider operations also use protocol
 version 1:
 
-- `provider.list`;
+- `provider.list`, `provider.configure`;
 - `provider.session.list`, `provider.session.read`, `provider.session.start`,
   `provider.session.resume`, `provider.session.subscribe`,
   `provider.session.unsubscribe`, `provider.session.delete`;
@@ -69,13 +69,21 @@ error envelope with code `capabilityUnavailable`. Older protocol-v1 clients can
 ignore the new catalog, operations, provider fields, and events.
 
 `provider.list` reports the adapters actually available on the authenticated
-host. Each bounded entry contains an ID, display name, availability, safe
+host. Each bounded entry contains an ID, display name, separate `enabled` and
+`available` states, safe
 version fields, supported capabilities, and explicit limitations. Claude Code
 unavailability is non-fatal and is reduced to one safe reason such as
 `cli-missing`, `node-missing`, `sdk-missing`,
 `authentication-unavailable`, or `adapter-unavailable`; no paths, environment,
 logs, or traces are returned. Pairing is unchanged: one host device token grants
 access to every provider available on that host.
+
+`provider.configure` accepts an exact provider ID and boolean `enabled` value.
+The host persists this preference, starts or stops the corresponding adapter,
+and publishes refreshed `provider.event` and `usage.event` projections. At least
+one provider must remain enabled. A provider with active or waiting work cannot
+be disabled. Disabled providers remain in the catalog but expose no capabilities;
+their sessions and account usage are omitted without deleting provider data.
 
 Every provider-aware session projection and event contains `provider` and
 `sessionId`. Client identity is `hostId + provider + sessionId`; durable web
@@ -168,8 +176,8 @@ message, or transcript content is stored with it.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
 
-Authenticated clients use `usage.status` for the current bounded Codex account
-rate-limit snapshot plus the latest bounded Claude snapshot, and receive
+Authenticated clients use `usage.status` for the current bounded account
+rate-limit snapshots of enabled providers, and receive
 `usage.event` updates. Provider usage is separate from per-session context: it
 exposes only quota percentages, window durations, reset timestamps, and bounded
 limit labels. Account identity, token activity history, credits, and raw

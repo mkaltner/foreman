@@ -5,6 +5,7 @@ export type ProviderId = "codex" | "claude-code";
 export interface ProviderInfo {
   id: ProviderId;
   displayName: string;
+  enabled?: boolean;
   available: boolean;
   version?: string | null;
   cliVersion?: string | null;
@@ -13,6 +14,10 @@ export interface ProviderInfo {
   capabilities: string[];
   limitations: string[];
   unavailableReason?: "cli-missing" | "node-missing" | "sdk-missing" | "authentication-unavailable" | "adapter-unavailable" | null;
+}
+
+export function providerEnabled(provider: Pick<ProviderInfo, "enabled">): boolean {
+  return provider.enabled !== false;
 }
 
 export interface WireMessage<T = Record<string, unknown>> {

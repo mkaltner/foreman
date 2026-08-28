@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
+import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, ProviderSettings, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
@@ -336,6 +336,22 @@ describe("session context usage", () => {
     expect(within(panel).getByText("Experimental")).toBeInTheDocument();
     fireEvent.focusIn(document.body);
     expect(screen.queryByRole("complementary", { name: "Account usage" })).not.toBeInTheDocument();
+  });
+
+  it("omits disabled providers from account usage status", () => {
+    render(<AccountUsageDock
+      usage={{ providers: {
+        codex: { available: true, rateLimits: { primary: { usedPercent: 12 } } },
+        "claude-code": { available: true, rateLimits: { primary: { usedPercent: 34 } } },
+      } }}
+      providers={[
+        { id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: false, available: false, capabilities: [], limitations: [] },
+      ]}
+    />);
+
+    expect(screen.getByRole("button", { name: "Account usage, Codex 88% left" })).toBeInTheDocument();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
   });
 });
 
@@ -862,6 +878,26 @@ describe("NewSessionDialog", () => {
     accessLevels: [{ id: "ask", displayName: "Ask for approval" }, { id: "full", displayName: "Full access" }],
   };
 
+  it("offers only enabled providers and defaults to the remaining provider", () => {
+    render(<NewSessionDialog
+      repositories={[]}
+      repositoryRoot="/projects"
+      {...routeProps}
+      providers={[
+        { id: "codex", displayName: "Codex", enabled: false, available: false, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: true, available: true, capabilities: [], limitations: [] },
+      ]}
+      claudeModels={[{ id: "sonnet", displayName: "Sonnet", reasoningEfforts: [], visible: true, isDefault: true }]}
+      claudePermissionModes={[{ id: "default", displayName: "Default" }]}
+      onClose={vi.fn()}
+      onCreate={vi.fn()}
+    />);
+
+    expect(screen.getByLabelText("Provider")).toHaveValue("claude-code");
+    expect(within(screen.getByLabelText("Provider")).queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Initial prompt")).toBeInTheDocument();
+  });
+
   it("starts in the configured workspace when no repositories exist", () => {
     const create = vi.fn().mockResolvedValue(undefined);
     render(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
@@ -972,5 +1008,27 @@ describe("NewSessionDialog", () => {
     expect(screen.getByText("Claude Code is unavailable on this host.")).toBeInTheDocument();
     expect(screen.getByText("Node.js 20 or newer is missing.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start Claude session" })).toBeDisabled();
+  });
+});
+
+describe("ProviderSettings", () => {
+  it("updates providers and protects the last enabled provider", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const providers = [
+      { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
+      { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: true, capabilities: [], limitations: [] },
+    ];
+    const view = render(<ProviderSettings providers={providers} onProviderEnabled={update} />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Claude Code/ }));
+    expect(update).toHaveBeenCalledWith("claude-code", false);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeEnabled());
+
+    view.rerender(<ProviderSettings
+      providers={providers.map((provider) => ({ ...provider, enabled: provider.id === "claude-code" }))}
+      onProviderEnabled={update}
+    />);
+    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeDisabled();
+    expect(screen.getByText(/at least one required/)).toBeInTheDocument();
   });
 });

@@ -11,6 +11,7 @@ const val PROVIDER_CLAUDE_CODE = "claude-code"
 data class ProviderInfo(
     val id: String,
     val displayName: String,
+    val enabled: Boolean = true,
     val available: Boolean,
     val version: String? = null,
     val cliVersion: String? = null,
@@ -20,6 +21,8 @@ data class ProviderInfo(
     val limitations: List<String> = emptyList(),
     val unavailableReason: String? = null,
 )
+
+internal fun providerEnabled(provider: ProviderInfo): Boolean = provider.enabled
 
 @Serializable
 data class PermissionModeInfo(

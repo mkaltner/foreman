@@ -127,12 +127,15 @@ class FakeCodex:
                 },
             },
         }
+        self.started = False
+        self.stopped = False
 
     async def start(self) -> None:
-        pass
+        self.started = True
+        self.stopped = False
 
     async def stop(self) -> None:
-        pass
+        self.stopped = True
 
     def supports(self, method: str) -> bool:
         return method in {
@@ -619,6 +622,15 @@ class StateTests(unittest.TestCase):
             self.assertEqual(state.provider_account_usage("claude-code"), usage)
             self.assertIsNone(state.provider_account_usage("unknown"))
 
+    def test_provider_enablement_defaults_on_and_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            self.assertTrue(state.provider_enabled("codex"))
+            self.assertTrue(state.provider_enabled("claude-code"))
+            state.set_provider_enabled("claude-code", False)
+            self.assertFalse(State(directory).provider_enabled("claude-code"))
+            self.assertFalse(state.provider_enabled("unsupported"))
+
 
 class PairingLimiterTests(unittest.TestCase):
     def test_limits_each_peer_without_revoking_codes(self) -> None:
@@ -742,6 +754,107 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await app.stop()
             self.assertTrue(claude.stopped)
+
+    async def test_provider_enablement_is_persisted_guarded_and_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            client = Client(None, "test")
+            client.authenticated = True
+            await app.start()
+            try:
+                disabled_claude = await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "claude-code", "enabled": False},
+                    },
+                )
+                self.assertFalse(disabled_claude["providers"][1]["enabled"])
+                self.assertNotIn("claude-code", app.account_usage_projection()["providers"])
+                with self.assertRaisesRegex(ValueError, "at least one"):
+                    await app.dispatch(
+                        client,
+                        {
+                            "type": "provider.configure",
+                            "payload": {"provider": "codex", "enabled": False},
+                        },
+                    )
+
+                await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "claude-code", "enabled": True},
+                    },
+                )
+                app.session_overlays["thread-1"] = {"status": "working"}
+                with self.assertRaisesRegex(ValueError, "active or waiting"):
+                    await app.dispatch(
+                        client,
+                        {
+                            "type": "provider.configure",
+                            "payload": {"provider": "codex", "enabled": False},
+                        },
+                    )
+                app.session_overlays["thread-1"] = {"status": "idle"}
+                disabled_codex = await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "codex", "enabled": False},
+                    },
+                )
+                self.assertFalse(disabled_codex["providers"][0]["enabled"])
+                self.assertTrue(app.codex.stopped)
+                self.assertEqual(
+                    set(app.account_usage_projection()["providers"]),
+                    {"claude-code"},
+                )
+                with self.assertRaisesRegex(CapabilityError, "disabled in Settings"):
+                    await app.dispatch(
+                        client,
+                        {"type": "session.list", "payload": {}},
+                    )
+                self.assertFalse(State(root / "state").provider_enabled("codex"))
+                self.assertTrue(State(root / "state").provider_enabled("claude-code"))
+            finally:
+                await app.stop()
+
+    async def test_service_start_skips_disabled_provider_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            state.set_provider_enabled("codex", False)
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+
+            await app.start()
+            try:
+                self.assertFalse(app.codex.started)
+                self.assertTrue(FakeClaude.instances[-1].started)
+                statuses = await app.provider_status()
+                self.assertFalse(statuses[0]["enabled"])
+                self.assertFalse(statuses[0]["available"])
+                self.assertTrue(statuses[1]["enabled"])
+            finally:
+                await app.stop()
 
     async def test_authenticated_provider_catalog_and_claude_vertical_slice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

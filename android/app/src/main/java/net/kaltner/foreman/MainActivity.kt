@@ -1078,6 +1078,38 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
     fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
 
+    fun setProviderEnabled(provider: String, enabled: Boolean) {
+        if (state.value.submitting) return
+        viewModelScope.launch {
+            state.update { it.copy(submitting = true, error = null) }
+            runCatching {
+                val response = client.request(
+                    "provider.configure",
+                    buildJsonObject {
+                        put("provider", provider)
+                        put("enabled", enabled)
+                    },
+                )
+                val providers = response.payload.getValue("providers").jsonArray
+                    .map { json.decodeFromJsonElement<ProviderInfo>(it) }
+                val selected = state.value.selected?.takeIf { session ->
+                    providers.any {
+                        it.id == sessionProvider(session) && it.enabled && it.available
+                    }
+                }
+                state.update {
+                    it.copy(
+                        providers = providers,
+                        selected = selected,
+                        screen = if (it.selected != null && selected == null) Screen.Sessions else it.screen,
+                    )
+                }
+                synchronizeSessions(selected?.id, selected?.let(::sessionProvider) ?: PROVIDER_CODEX)
+                state.update { it.copy(submitting = false) }
+            }.onFailure(::fail)
+        }
+    }
+
     fun setComposerDraft(
         hostId: String,
         sessionId: String,
@@ -2043,14 +2075,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             try {
                 val snapshot = runCatching {
                     overviewClient.authenticate(host.tcpEndpoint(), host.deviceToken)
-                    val codexSessions = overviewClient.request("session.list").payload.getValue("sessions").jsonArray
-                        .map { json.decodeFromJsonElement<SessionSummary>(it) }
                     val providers = runCatching {
                         overviewClient.request("provider.list").payload.getValue("providers").jsonArray
                             .map { json.decodeFromJsonElement<ProviderInfo>(it) }
                     }.getOrElse { defaultProviders() }
+                    val codexAvailable = providers.any {
+                        it.id == PROVIDER_CODEX && it.enabled && it.available
+                    }
+                    val codexSessions = if (codexAvailable) {
+                        overviewClient.request("session.list").payload.getValue("sessions").jsonArray
+                            .map { json.decodeFromJsonElement<SessionSummary>(it) }
+                    } else emptyList()
                     val claudeSessions =
-                        if (providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }) {
+                        if (providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }) {
                             runCatching {
                                 overviewClient.request(
                                     "provider.session.list",
@@ -2060,11 +2097,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             }.getOrElse { emptyList() }
                         } else emptyList()
                     val sessions = codexSessions + claudeSessions
-                    val approvals = if ("approvals" in overviewClient.capabilities) {
+                    val approvals = if (codexAvailable) {
                         overviewClient.request("approval.list").payload.getValue("approvals").jsonArray
                             .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
                     } else emptyList()
-                    val inputs = if ("structuredInput" in overviewClient.capabilities) {
+                    val inputs = if (codexAvailable) {
                         overviewClient.request("input.list").payload.getValue("inputs").jsonArray
                             .map { json.decodeFromJsonElement<InputRequest>(it) }
                     } else emptyList()
@@ -2088,7 +2125,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         inputs = inputs,
                     ).copy(
                         claudeUnavailable = providers.any {
-                            it.id == PROVIDER_CLAUDE_CODE && !it.available
+                            it.id == PROVIDER_CLAUDE_CODE && it.enabled && !it.available
                         },
                     )
                 }.getOrElse {
@@ -2136,7 +2173,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 inputs = current.inputs,
             ).copy(
                 claudeUnavailable = current.providers.any {
-                    it.id == PROVIDER_CLAUDE_CODE && !it.available
+                    it.id == PROVIDER_CLAUDE_CODE && it.enabled && !it.available
                 },
             )
         } else {
@@ -2235,25 +2272,34 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         selectedProvider: String = PROVIDER_CODEX,
     ) {
         state.update { it.copy(loading = true, error = null) }
+        val providers = runCatching {
+            client.request("provider.list").payload.getValue("providers").jsonArray
+                .map { json.decodeFromJsonElement<ProviderInfo>(it) }
+        }.getOrElse { defaultProviders() }
+        val codexAvailable = providers.any {
+            it.id == PROVIDER_CODEX && it.enabled && it.available
+        }
+        val claudeAvailable = providers.any {
+            it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available
+        }
         val snapshot =
             coroutineScope {
-                val providersRequest = async {
-                    runCatching { client.request("provider.list") }.getOrNull()
-                }
-                val codexSessionsRequest = async { listSessions(PROVIDER_CODEX) }
                 val approvalsRequest =
                     async {
-                        if ("approvals" in client.capabilities) client.request("approval.list") else null
+                        if (codexAvailable) client.request("approval.list") else null
                     }
                 val inputsRequest =
                     async {
-                        if ("structuredInput" in client.capabilities) client.request("input.list") else null
+                        if (codexAvailable) client.request("input.list") else null
                     }
+                val codexSessionsRequest = async {
+                    if (codexAvailable) listSessions(PROVIDER_CODEX) else emptyList()
+                }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val serviceStatusRequest = async { client.request("service.status") }
                 val modelsRequest =
                     async {
-                        if ("models" in client.capabilities) {
+                        if (codexAvailable) {
                             client.request("model.list")
                         } else {
                             null
@@ -2261,18 +2307,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     }
                 val accessRequest =
                     async {
-                        if ("access" in client.capabilities) {
+                        if (codexAvailable) {
                             client.request("access.list")
                         } else {
                             null
                         }
                     }
-                val providers =
-                    providersRequest.await()?.payload?.get("providers")?.jsonArray
-                        ?.map { json.decodeFromJsonElement<ProviderInfo>(it) }
-                        ?: defaultProviders()
-                val claudeAvailable =
-                    providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }
                 val claudeSessions =
                     if (claudeAvailable) {
                         runCatching { listSessions(PROVIDER_CLAUDE_CODE) }.getOrElse { emptyList() }
@@ -2343,7 +2383,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val sessions = snapshot.sessions
         var selectedReadError: String? = null
         val selected = selectedSessionId?.let {
-            if (selectedProvider == PROVIDER_CLAUDE_CODE) {
+            val selectedProviderAvailable = providers.any { provider ->
+                provider.id == selectedProvider && provider.enabled && provider.available
+            }
+            if (!selectedProviderAvailable) {
+                null
+            } else if (selectedProvider == PROVIDER_CLAUDE_CODE) {
                 runCatching { readSession(selectedProvider, it) }.getOrElse { error ->
                     selectedReadError =
                         "Claude Code session history is unavailable: ${error.message ?: "provider unavailable"}"
@@ -2992,16 +3037,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runCatching { json.decodeFromJsonElement<ProviderInfo>(it) }.getOrNull()
             } ?: return
             val claudeAvailable =
-                providers.any { it.id == PROVIDER_CLAUDE_CODE && it.available }
+                providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }
+            val enabledProviders = providers.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
             state.update { current ->
                 fun availability(session: SessionSummary): SessionSummary =
                     if (sessionProvider(session) == PROVIDER_CLAUDE_CODE && !claudeAvailable &&
                         session.status !in setOf("working", "waiting")
                     ) session.copy(status = "unavailable") else session
+                val selected = current.selected?.takeIf {
+                    sessionProvider(it) in enabledProviders
+                }?.let(::availability)
                 current.copy(
                     providers = providers,
-                    sessions = current.sessions.map(::availability),
-                    selected = current.selected?.let(::availability),
+                    sessions = current.sessions.filter {
+                        sessionProvider(it) in enabledProviders
+                    }.map(::availability),
+                    selected = selected,
+                    screen = if (current.selected != null && selected == null) Screen.Sessions else current.screen,
                 )
             }
             return
@@ -5788,6 +5840,7 @@ private fun UiSettingsMenu(
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
     var showingActivityDetail by remember { mutableStateOf(false) }
+    var showingProviders by remember { mutableStateOf(false) }
     var showingNotifications by remember { mutableStateOf(false) }
     var notificationRepositoryId by remember { mutableStateOf<String?>(null) }
     var quietStartText by remember(state.notificationPreferences.quietStart) { mutableStateOf(state.notificationPreferences.quietStart) }
@@ -5799,6 +5852,7 @@ private fun UiSettingsMenu(
             onClick = {
                 showingAccentColors = false
                 showingActivityDetail = false
+                showingProviders = false
                 showingNotifications = false
                 notificationRepositoryId = null
                 expanded = true
@@ -5812,6 +5866,7 @@ private fun UiSettingsMenu(
                 expanded = false
                 showingAccentColors = false
                 showingActivityDetail = false
+                showingProviders = false
                 showingNotifications = false
                 notificationRepositoryId = null
             },
@@ -5883,6 +5938,46 @@ private fun UiSettingsMenu(
                             expanded = false
                             showingActivityDetail = false
                         },
+                    )
+                }
+            } else if (showingProviders) {
+                DropdownMenuItem(
+                    text = { Text("Providers", style = MaterialTheme.typography.labelLarge) },
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to settings")
+                    },
+                    onClick = { showingProviders = false },
+                )
+                HorizontalDivider()
+                Text(
+                    "Choose which installed CLIs Foreman uses on this host. At least one provider must remain enabled.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                val enabledCount = state.providers.count { it.enabled }
+                state.providers.forEach { provider ->
+                    val lastEnabled = provider.enabled && enabledCount == 1
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(provider.displayName)
+                                Text(
+                                    when {
+                                        !provider.enabled -> "Disabled"
+                                        provider.available -> "Available"
+                                        else -> "Unavailable"
+                                    } + if (lastEnabled) " · at least one required" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        leadingIcon = {
+                            Checkbox(checked = provider.enabled, onCheckedChange = null, enabled = !lastEnabled && !state.submitting)
+                        },
+                        enabled = !lastEnabled && !state.submitting,
+                        onClick = { viewModel.setProviderEnabled(provider.id, !provider.enabled) },
                     )
                 }
             } else if (showingNotifications) {
@@ -6144,6 +6239,16 @@ private fun UiSettingsMenu(
                     onClick = {
                         showingNotifications = true
                     },
+                )
+                DropdownMenuItem(
+                    text = { Text("Providers") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                    },
+                    trailingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+                    },
+                    onClick = { showingProviders = true },
                 )
                 if (state.hasSavedConnection) {
                     DropdownMenuItem(
@@ -6456,10 +6561,12 @@ private fun NewSessionDialog(
     onDismiss: () -> Unit,
     onStart: (String, String, String, String?, String?, String?) -> Unit,
 ) {
+    val enabledProviders = providers.filter { it.enabled }
     var repositoryId by remember(repositories) { mutableStateOf(".") }
-    var provider by remember(providers, initialProvider) {
+    var provider by remember(enabledProviders, initialProvider) {
         mutableStateOf(
-            providers.firstOrNull { it.id == initialProvider }?.id ?: PROVIDER_CODEX,
+            enabledProviders.firstOrNull { it.id == initialProvider }?.id
+                ?: enabledProviders.firstOrNull()?.id ?: PROVIDER_CODEX,
         )
     }
     var initialPrompt by remember(provider) { mutableStateOf("") }
@@ -6486,7 +6593,7 @@ private fun NewSessionDialog(
     }
     var pendingHighRiskMode by remember { mutableStateOf<String?>(null) }
     val rootRepository = repositories.firstOrNull { it.id == "." }
-    val providerInfo = providers.firstOrNull { it.id == provider }
+    val providerInfo = enabledProviders.firstOrNull { it.id == provider }
     val providerUnavailable = providerInfo?.available != true
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -6496,7 +6603,7 @@ private fun NewSessionDialog(
                 NewSessionOptionMenu(
                     "Provider",
                     providerInfo?.displayName ?: providerDisplayName(provider),
-                    providers.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
+                    enabledProviders.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
                 ) { provider = it }
                 if (providerUnavailable) {
                     Surface(

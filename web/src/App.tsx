@@ -52,6 +52,7 @@ import {
   applySessionSummaryEvent,
   liveActivityLabel,
   liveActivityMessage,
+  providerEnabled,
   routeForSession,
   providerSessionKey,
   reconcileSessionSummaries,
@@ -577,7 +578,17 @@ function App() {
     }
     if (message.type === "provider.event") {
       const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
-      if (Array.isArray(nextProviders)) setProviders(nextProviders);
+      if (Array.isArray(nextProviders)) {
+        const enabled = new Set(nextProviders.filter(providerEnabled).map(({ id }) => id));
+        setProviders(nextProviders);
+        setSessions((previous) => {
+          const next = previous.filter((session) => enabled.has(sessionProvider(session)));
+          sessionsRef.current = next;
+          return next;
+        });
+        setSearchResults((previous) => previous.filter(({ session }) => enabled.has(sessionProvider(session))));
+        setCurrent((previous) => previous && enabled.has(sessionProvider(previous)) ? previous : null);
+      }
       return;
     }
     if (message.type === "usage.event") {
@@ -780,23 +791,35 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
-      const [approvalResult, inputResult, providerResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
-        client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
-        client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
-          .catch(() => ({ inputs: [] })),
-        client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list"),
-        client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" }),
-        client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
-        client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
+      const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
+      const codexAvailable = providerResult.providers.some(
+        (provider) => provider.id === "codex" && providerEnabled(provider) && provider.available,
+      );
+      const claudeAvailable = providerResult.providers.some(
+        (provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available,
+      );
+      const [approvalResult, inputResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
+        codexAvailable
+          ? client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list")
+          : Promise.resolve({ approvals: [] as ApprovalRequest[] }),
+        codexAvailable
+          ? client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list").catch(() => ({ inputs: [] as InputRequest[] }))
+          : Promise.resolve({ inputs: [] as InputRequest[] }),
+        codexAvailable
+          ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })
+          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+        codexAvailable
+          ? client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list")
+          : Promise.resolve({ models: [] as ModelInfo[] }),
+        codexAvailable
+          ? client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list")
+          : Promise.resolve({ levels: [] as AccessLevelInfo[] }),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
         client.request<AccountUsage & Record<string, unknown>>("usage.status")
           .catch(() => ({ providers: {} })),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
-      const claudeAvailable = providerResult.providers.some(
-        (provider) => provider.id === "claude-code" && provider.available,
-      );
       const [claudeSessionResult, claudeModelResult, claudePermissionResult] = claudeAvailable
         ? await Promise.all([
           client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" }),
@@ -1293,7 +1316,7 @@ function App() {
         </nav>
       </header>
 
-      {hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" && (
+      {providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" && (
         <div className="runtime-banner" role="status">
           Fallback Codex runtime active. Live Desktop co-presence is unavailable.
         </div>
@@ -1311,6 +1334,7 @@ function App() {
           hosts={hostRegistry.hosts}
           appearance={appearance}
           hello={hello}
+          providers={providers}
           onAppearance={updateAppearance}
           notificationPreferences={notificationPreferences}
           notificationState={notificationState}
@@ -1323,6 +1347,16 @@ function App() {
             const next = browserNotificationState();
             setNotificationState(next);
             if (!granted) setError(notificationStateDescription(next, false));
+          }}
+          onProviderEnabled={async (provider, enabled) => {
+            try {
+              const result = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.configure", { provider, enabled });
+              setProviders(result.providers);
+              await refreshState(activeHost.id);
+            } catch (caught) {
+              setError(caught instanceof Error ? caught.message : "Provider setting could not be updated");
+              throw caught;
+            }
           }}
           onAdd={() => setHostSetupOpen(true)}
           onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
@@ -1356,6 +1390,7 @@ function App() {
             repositories={repositories}
             recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(providerSessionKey("codex", entry.sessionId)))}
             pairedClients={pairedClients}
+            providers={providers}
             connection={connection}
             disabled={!connected}
             onOpen={dashboardOpen}
@@ -1385,6 +1420,7 @@ function App() {
           <SessionList
             results={visibleSessions}
             accountUsage={accountUsage}
+            providers={providers}
             filters={searchFilters}
             repositoryOptions={repositoryOptions}
             searchLoading={searchLoading}
@@ -1475,7 +1511,7 @@ function App() {
               <div className="empty-detail">
                 <span className="brand-mark large">F</span>
                 <h2>{busy ? "Loading session…" : "Select a session"}</h2>
-                <p>Open an existing Codex session or start a new one.</p>
+                <p>Open an existing session or start a new one.</p>
               </div>
             )}
           </section>
@@ -1631,6 +1667,7 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 export function SessionList({
   results,
   accountUsage = null,
+  providers = [],
   filters,
   repositoryOptions,
   searchLoading,
@@ -1649,6 +1686,7 @@ export function SessionList({
 }: {
   results: VisibleSession[];
   accountUsage?: AccountUsage | null;
+  providers?: ProviderInfo[];
   filters: SessionFilters;
   repositoryOptions: RepositoryFilterOption[];
   searchLoading: boolean;
@@ -1717,18 +1755,22 @@ export function SessionList({
         )}
         </>}
       </div>
-      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} />}
+      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} providers={providers} />}
     </aside>
   );
 }
 
-function AccountUsageDock({ usage }: { usage: AccountUsage }) {
+export function AccountUsageDock({ usage, providers: providerInfo }: { usage: AccountUsage; providers: ProviderInfo[] }) {
   const [open, setOpen] = useState(false);
   const rootRef = usePopoverDismiss<HTMLDivElement>(open, setOpen);
   const providers = ([
     { id: "codex", label: "Codex" },
     { id: "claude-code", label: "Claude" },
-  ] as const).map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
+  ] as const)
+    .filter((provider) => providerInfo.length === 0
+      ? usage.providers[provider.id] !== undefined
+      : providerInfo.some((entry) => entry.id === provider.id && providerEnabled(entry)))
+    .map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
   const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
   if (!availableWindows.length && !providers.some(({ usage: providerUsage }) => providerUsage)) return null;
   const usedPercent = availableWindows.length
@@ -2531,7 +2573,10 @@ export interface NewSessionSettings {
 
 export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState(".");
-  const [provider, setProvider] = useState<ProviderId>("codex");
+  const enabledProviders = providers.filter(providerEnabled);
+  const [provider, setProvider] = useState<ProviderId>(() =>
+    enabledProviders.find(({ id }) => id === "codex")?.id ?? enabledProviders[0]?.id ?? "codex"
+  );
   const [prompt, setPrompt] = useState("");
   const defaultRoute = routeForSession(null, models, accessLevels);
   const [model, setModel] = useState(defaultRoute.model);
@@ -2545,10 +2590,15 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
   const selectionAvailable = selected === "." || repositories.some((repository) => repository.id === selected);
   const location = selectionAvailable ? selected : ".";
   const selectedModel = models.find((entry) => entry.id === model);
-  const selectedProviderInfo = providers.find((entry) => entry.id === provider);
+  const selectedProviderInfo = enabledProviders.find((entry) => entry.id === provider);
   useEffect(() => {
     if (!selectionAvailable) setSelected(".");
   }, [selectionAvailable]);
+  useEffect(() => {
+    if (!enabledProviders.some(({ id }) => id === provider) && enabledProviders[0]) {
+      setProvider(enabledProviders[0].id);
+    }
+  }, [enabledProviders, provider]);
   const submit = () => onCreate({
     provider,
     repositoryId: location,
@@ -2562,11 +2612,11 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
       ...(access ? { accessLevel: access } : {}),
     }),
   });
-  const unavailable = provider === "claude-code" && selectedProviderInfo?.available !== true;
+  const unavailable = selectedProviderInfo?.available !== true;
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location && !unavailable && (provider === "codex" || prompt.trim())) void submit(); }}>
     <div className="modal-heading"><div><span className="eyebrow">{provider === "claude-code" ? "Claude Code" : "Codex"}</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
-    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{providers.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
-    {unavailable && <div className="new-session-empty" role="status"><strong>Claude Code is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason)}</p></div>}
+    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{enabledProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
+    {unavailable && <div className="new-session-empty" role="status"><strong>{selectedProviderInfo?.displayName ?? providerDisplayName(provider)} is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason, provider)}</p></div>}
     {hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}
     {provider === "claude-code" && !unavailable && <label>Initial prompt<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="What should Claude work on?" required /></label>}
     <div className="new-session-settings">{provider === "codex" ? <>
@@ -2581,7 +2631,11 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
   </form></div>;
 }
 
-function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"]): string {
+function providerDisplayName(provider: ProviderId): string {
+  return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"], provider: ProviderId = "claude-code"): string {
   const descriptions: Record<string, string> = {
     "cli-missing": "The Claude Code CLI is missing.",
     "node-missing": "Node.js 20 or newer is missing.",
@@ -2589,7 +2643,7 @@ function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason
     "authentication-unavailable": "Claude authentication is unavailable on the host.",
     "adapter-unavailable": "The Claude adapter is unavailable.",
   };
-  return descriptions[reason ?? "adapter-unavailable"];
+  return reason ? descriptions[reason] ?? `${providerDisplayName(provider)} is unavailable.` : `${providerDisplayName(provider)} is unavailable.`;
 }
 
 function SettingsView({
@@ -2597,6 +2651,7 @@ function SettingsView({
   hosts,
   appearance,
   hello,
+  providers,
   notificationPreferences,
   notificationState,
   hostNotificationOverride,
@@ -2605,6 +2660,7 @@ function SettingsView({
   onNotificationPreferences,
   onHostNotificationOverride,
   onNotificationPermission,
+  onProviderEnabled,
   onAdd,
   onSelect,
   onRename,
@@ -2614,6 +2670,7 @@ function SettingsView({
   hosts: StoredHost[];
   appearance: Appearance;
   hello: HelloPayload | null;
+  providers: ProviderInfo[];
   notificationPreferences: NotificationPreferences;
   notificationState: BrowserNotificationState;
   hostNotificationOverride: boolean;
@@ -2622,6 +2679,7 @@ function SettingsView({
   onNotificationPreferences: (preferences: NotificationPreferences) => void;
   onHostNotificationOverride: (enabled: boolean) => void;
   onNotificationPermission: () => Promise<void>;
+  onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
   onAdd: () => void;
   onSelect: (hostId: string) => void;
   onRename: (hostId: string, displayName: string) => void;
@@ -2647,6 +2705,7 @@ function SettingsView({
   return <main className="settings-page">
     <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
     <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
+    <ProviderSettings providers={providers} onProviderEnabled={onProviderEnabled} />
     <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
@@ -2659,8 +2718,39 @@ function SettingsView({
       <label className="check-row"><input type="checkbox" checked={notificationPreferences.criticalBypassQuietHours} onChange={(event) => update("criticalBypassQuietHours", event.target.checked)} /><span><strong>Allow critical alerts during quiet hours</strong><small>Only approval/input and failure alerts bypass quiet hours.</small></span></label>
       <div className="repository-overrides"><h3>Repository and workspace overrides</h3><p className="muted">Each event inherits the settings above until explicitly set to on or off. Identities are canonical workspace paths and stay in this browser.</p>{repositoryOptions.length === 0 && <p className="muted">No known repositories or workspaces yet.</p>}{repositoryOptions.map((repository) => <details key={repository.id}><summary>{repository.label}</summary><small title={repository.id}>{repository.id}</small><div className="override-grid">{overrideKeys.map(([key, label]) => { const value = notificationPreferences.repositoryOverrides[repository.id]?.[key]; return <label key={key}>{label}<select value={value === undefined ? "inherit" : String(value)} onChange={(event) => onNotificationPreferences(setRepositoryOverride(notificationPreferences, repository.id, { [key]: event.target.value === "inherit" ? undefined : event.target.value === "true" }))}><option value="inherit">Inherit</option><option value="true">On</option><option value="false">Off</option></select></label>; })}</div></details>)}</div>
     </section>
-    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
+    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? "Available" : "Unavailable"}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Fallback runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
   </main>;
+}
+
+export function ProviderSettings({ providers, onProviderEnabled }: {
+  providers: ProviderInfo[];
+  onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
+}) {
+  const [pending, setPending] = useState<ProviderId | null>(null);
+  const enabledCount = providers.filter(providerEnabled).length;
+  return <section className="settings-card provider-settings">
+    <h2>Providers</h2>
+    <p className="muted">Choose which installed CLIs Foreman uses on this host. At least one provider must remain enabled.</p>
+    <div className="provider-setting-list">{providers.map((provider) => {
+      const enabled = providerEnabled(provider);
+      const lastEnabled = enabled && enabledCount === 1;
+      const version = provider.version ?? provider.cliVersion;
+      const state = !enabled ? "Disabled" : provider.available ? "Available" : "Unavailable";
+      return <label className="check-row" key={provider.id}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={pending !== null || lastEnabled}
+          onChange={(event) => {
+            const next = event.target.checked;
+            setPending(provider.id);
+            void onProviderEnabled(provider.id, next).finally(() => setPending(null));
+          }}
+        />
+        <span><strong>{provider.displayName}</strong><small>{state}{version ? ` · ${version}` : ""}{lastEnabled ? " · at least one required" : ""}</small></span>
+      </label>;
+    })}</div>
+  </section>;
 }
 
 function StatusPill({ status }: { status: string }) {

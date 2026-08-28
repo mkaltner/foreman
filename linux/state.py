@@ -159,6 +159,33 @@ class State:
 
         return self._locked(update)
 
+    def provider_enabled(self, provider: str) -> bool:
+        if provider not in {"codex", "claude-code"}:
+            return False
+
+        def update(data: dict[str, Any]) -> bool:
+            stored = data.get("providerEnabled")
+            if not isinstance(stored, dict):
+                data["providerEnabled"] = {}
+                return True
+            value = stored.get(provider)
+            return value if isinstance(value, bool) else True
+
+        return self._locked(update)
+
+    def set_provider_enabled(self, provider: str, enabled: bool) -> None:
+        if provider not in {"codex", "claude-code"}:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.setdefault("providerEnabled", {})
+            if not isinstance(stored, dict):
+                stored = {}
+                data["providerEnabled"] = stored
+            stored[provider] = enabled
+
+        self._locked(update)
+
     def remember_provider_account_usage(
         self, provider: str, usage: dict[str, Any]
     ) -> None:
