@@ -1600,6 +1600,12 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
             "description": "Viewing an image",
             "status": item.get("status", "inProgress"),
         }
+    if kind == "contextCompaction":
+        return {
+            **base,
+            "kind": "compaction",
+            "description": "Context compacted",
+        }
     return None
 
 

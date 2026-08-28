@@ -127,6 +127,9 @@ replay.
   installed app-server has no thread-usage read method, Foreman keeps up to 500
   last-known bounded numeric snapshots in its private state file and removes
   them when their sessions are archived or deleted.
+- `contextCompaction` items are projected as metadata-only conversation items
+  so the client can count compactions. Foreman never projects the compaction
+  summary itself.
 - Account rate-limit projections contain only bounded percentages, durations,
   reset times, and labels. They omit account identity, credits, and usage
   history. Rolling sparse updates merge into the authenticated snapshot.

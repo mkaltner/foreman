@@ -93,6 +93,19 @@ test("normalization bounds visible text and discards raw tool output", () => {
   }, "session-1")[0];
   assert.equal(tool.summary, "Tool completed");
   assert.equal(JSON.stringify(tool).includes("SECRET"), false);
+  const compaction = normalizedEvents({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "auto", pre_tokens: 180_000, post_tokens: 24_000, duration_ms: 1_250 },
+  }, "session-1")[0];
+  assert.deepEqual(compaction, {
+    kind: "compaction",
+    sessionId: "session-1",
+    trigger: "auto",
+    preTokens: 180_000,
+    postTokens: 24_000,
+    durationMs: 1_250,
+  });
 });
 
 test("history projection keeps visible messages and safe tool cards only", async () => {
@@ -101,6 +114,26 @@ test("history projection keeps visible messages and safe tool cards only", async
   assert.equal(history[2].status, "completed");
   assert.match(history[2].description, /output hidden/);
   assert.equal(JSON.stringify(history).includes("SECRET"), false);
+});
+
+test("history projection retains bounded compaction metadata", () => {
+  const history = normalizedHistory([{
+    uuid: "compact-1",
+    type: "system",
+    message: {
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "manual", pre_tokens: 190_000, post_tokens: 22_000, duration_ms: 900 },
+    },
+  }]);
+  assert.deepEqual(history, [{
+    id: "compaction-compact-1",
+    kind: "compaction",
+    description: "Context compacted",
+    compactionTrigger: "manual",
+    preTokens: 190_000,
+    postTokens: 22_000,
+    durationMs: 900,
+  }]);
 });
 
 test("history projection stays below the bridge response limit and keeps recent items", () => {
@@ -149,6 +182,12 @@ test("start, model, permission callback, discovery, interrupt, and minimal mappi
   await waitFor(() => messages.find((message) => message.event?.kind === "query.completed"));
   assert.equal(started.sessionId.startsWith("managed-session-"), true);
   assert.equal(messages.find((message) => message.event?.kind === "query.started").event.model, "sonnet");
+  const usage = messages.find((message) => message.event?.kind === "usage")?.event;
+  assert.equal(usage.tokenUsage.last.totalTokens, 48_000);
+  assert.equal(usage.tokenUsage.modelContextWindow, 200_000);
+  assert.equal(usage.accountUsage.rateLimits.primary.usedPercent, 15);
+  assert.equal(usage.accountUsage.rateLimits.secondary.usedPercent, 28);
+  assert.equal(usage.accountUsage.experimental, true);
   assert.equal(JSON.stringify(messages).includes("sensitive output"), false);
   const state = JSON.parse(await readFile(statePath, "utf8"));
   assert.deepEqual(Object.keys(state.sessions[0]), ["sessionId", "cwd"]);

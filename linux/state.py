@@ -148,6 +148,32 @@ class State:
 
         self._locked(update)
 
+    def provider_account_usage(self, provider: str) -> dict[str, Any] | None:
+        if provider not in {"codex", "claude-code"}:
+            return None
+
+        def update(data: dict[str, Any]) -> dict[str, Any] | None:
+            stored = data.get("providerAccountUsage")
+            value = stored.get(provider) if isinstance(stored, dict) else None
+            return value if isinstance(value, dict) else None
+
+        return self._locked(update)
+
+    def remember_provider_account_usage(
+        self, provider: str, usage: dict[str, Any]
+    ) -> None:
+        if provider not in {"codex", "claude-code"}:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.setdefault("providerAccountUsage", {})
+            if not isinstance(stored, dict):
+                stored = {}
+                data["providerAccountUsage"] = stored
+            stored[provider] = usage
+
+        self._locked(update)
+
     def active_pairing_count(self) -> int:
         def update(data: dict[str, Any]) -> int:
             now = int(time.time())

@@ -45,7 +45,7 @@ export interface ImagePayload {
 
 export interface ConversationItem {
   id: string;
-  kind: "user" | "assistant" | "command" | "tool";
+  kind: "user" | "assistant" | "command" | "tool" | "compaction";
   text?: string;
   description?: string;
   status?: string;
@@ -53,6 +53,10 @@ export interface ConversationItem {
   turnId?: string | null;
   images?: ImagePayload[];
   imageCount?: number;
+  compactionTrigger?: "auto" | "manual";
+  preTokens?: number;
+  postTokens?: number;
+  durationMs?: number;
 }
 
 export interface TokenUsageBreakdown {
@@ -85,9 +89,16 @@ export interface RateLimitSnapshot {
   rateLimitReachedType?: string;
 }
 
-export interface AccountUsage {
+export interface ProviderAccountUsage {
   available: boolean;
   rateLimits?: RateLimitSnapshot;
+  experimental?: boolean;
+  observedAt?: number;
+  availabilityReason?: string;
+}
+
+export interface AccountUsage {
+  providers: Partial<Record<ProviderId, ProviderAccountUsage>>;
 }
 
 export interface SessionSummary {

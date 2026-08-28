@@ -35,6 +35,7 @@ from codex import (
     search_matches,
     session,
     thread_token_usage,
+    token_count,
 )
 from claude_code import ClaudeCode, ClaudeCodeError, SUPPORTED_MODELS
 from diagnostics import DiagnosticBuffer, request_category
@@ -212,6 +213,28 @@ class Foreman:
             if usage := thread_token_usage(raw_usage):
                 self.session_overlays[thread_id] = {"tokenUsage": usage}
         self.account_usage: dict[str, Any] = {"available": False}
+        self.claude_account_usage: dict[str, Any] = {
+            "available": False,
+            "experimental": True,
+            "availabilityReason": "Updates after a Foreman-managed Claude run begins.",
+        }
+        cached_claude_usage = self.state.provider_account_usage("claude-code")
+        if isinstance(cached_claude_usage, dict):
+            cached_snapshot = rate_limit_snapshot(
+                cached_claude_usage.get("rateLimits")
+            )
+            cached_observed_at = token_count(cached_claude_usage.get("observedAt"))
+            if cached_snapshot:
+                self.claude_account_usage = {
+                    "available": True,
+                    "experimental": True,
+                    "rateLimits": cached_snapshot,
+                    **(
+                        {"observedAt": cached_observed_at}
+                        if cached_observed_at is not None
+                        else {}
+                    ),
+                }
         self.claude_session_overlays: dict[str, dict[str, Any]] = {}
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
@@ -357,6 +380,7 @@ class Foreman:
         overlay = self.claude_session_overlays.setdefault(session_id, {})
         run_id = message.get("runId")
         outgoing_event: dict[str, Any]
+        account_usage_changed = False
         if kind == "query.started":
             overlay.update(
                 {
@@ -440,6 +464,67 @@ class Foreman:
                 messages.append(safe_item)
             else:
                 existing.update(safe_item)
+        elif kind == "compaction":
+            item_id = f"claude-compaction-{run_id or observed_at}-{len(self.claude_session_messages.get(session_id, []))}"
+            pre_tokens = token_count(message.get("preTokens"))
+            post_tokens = token_count(message.get("postTokens"))
+            duration_ms = token_count(message.get("durationMs"))
+            safe_item = {
+                "id": item_id,
+                "kind": "compaction",
+                "description": "Context compacted",
+                "compactionTrigger": (
+                    "manual" if message.get("trigger") == "manual" else "auto"
+                ),
+                **({"preTokens": pre_tokens} if pre_tokens is not None else {}),
+                **({"postTokens": post_tokens} if post_tokens is not None else {}),
+                **({"durationMs": duration_ms} if duration_ms is not None else {}),
+            }
+            overlay.update(
+                {
+                    "activityLabel": "Context compacted",
+                    "activityText": "",
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "item",
+                "phase": "completed",
+                "turnId": run_id,
+                "item": safe_item,
+                "observedAt": observed_at,
+            }
+            self.claude_session_messages.setdefault(session_id, []).append(safe_item)
+        elif kind == "usage":
+            usage = thread_token_usage(message.get("tokenUsage"))
+            if usage:
+                overlay["tokenUsage"] = usage
+            raw_account_usage = message.get("accountUsage")
+            if isinstance(raw_account_usage, dict):
+                snapshot = rate_limit_snapshot(raw_account_usage.get("rateLimits"))
+                self.claude_account_usage = {
+                    "available": snapshot is not None,
+                    "experimental": True,
+                    "observedAt": observed_at,
+                    **({"rateLimits": snapshot} if snapshot else {}),
+                    **(
+                        {}
+                        if snapshot
+                        else {
+                            "availabilityReason": "Claude plan limits are unavailable for this account."
+                        }
+                    ),
+                }
+                self.state.remember_provider_account_usage(
+                    "claude-code", self.claude_account_usage
+                )
+                account_usage_changed = True
+            outgoing_event = {
+                "kind": "usage",
+                "turnId": run_id,
+                "tokenUsage": usage or {},
+                "observedAt": observed_at,
+            }
         elif kind == "permission.requested":
             item_id = f"claude-permission-{message.get('toolUseId') or run_id or 'active'}"
             name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
@@ -553,6 +638,8 @@ class Foreman:
             ),
             return_exceptions=True,
         )
+        if account_usage_changed:
+            await self.broadcast_account_usage()
 
     async def provider_status(self) -> list[dict[str, Any]]:
         """Bounded provider catalog backed by the current adapter status."""
@@ -1184,7 +1271,7 @@ class Foreman:
         outgoing = {
             "version": VERSION,
             "type": "usage.event",
-            "payload": self.account_usage,
+            "payload": self.account_usage_projection(),
         }
         await asyncio.gather(
             *(
@@ -1194,6 +1281,14 @@ class Foreman:
             ),
             return_exceptions=True,
         )
+
+    def account_usage_projection(self) -> dict[str, Any]:
+        return {
+            "providers": {
+                "codex": self.account_usage,
+                "claude-code": self.claude_account_usage,
+            }
+        }
 
     async def client_connected(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1904,7 +1999,7 @@ class Foreman:
             return self.service_status()
         if message_type == "usage.status":
             self.account_usage = await self.codex.account_rate_limits()
-            return self.account_usage
+            return self.account_usage_projection()
         if message_type == "diagnostics.list":
             return {"events": self.diagnostics.entries(), "limit": 100}
         if message_type == "service.restart":

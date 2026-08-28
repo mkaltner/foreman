@@ -234,6 +234,51 @@ function opaque(value, name) {
   return value;
 }
 
+function boundedCount(value, maximum = 1_000_000_000_000) {
+  return Number.isFinite(value) && value >= 0 ? Math.min(Math.trunc(value), maximum) : undefined;
+}
+
+function boundedPercent(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value * 10) / 10)) : undefined;
+}
+
+function resetTimestamp(value) {
+  if (typeof value !== "string") return undefined;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? Math.max(0, Math.trunc(milliseconds / 1000)) : undefined;
+}
+
+function claudeRateLimits(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const project = (window, duration) => {
+    const usedPercent = boundedPercent(window?.utilization);
+    if (usedPercent === undefined) return null;
+    const resetsAt = resetTimestamp(window?.resets_at);
+    return {
+      usedPercent,
+      windowDurationMins: duration,
+      ...(resetsAt !== undefined ? { resetsAt } : {}),
+    };
+  };
+  const primary = project(raw.five_hour, 300);
+  const secondary = project(raw.seven_day, 10_080);
+  return primary || secondary ? { primary, secondary } : null;
+}
+
+async function within(promise, milliseconds = 5_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Claude usage request timed out")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function checkedDirectory(value) {
   if (typeof value !== "string" || !value || Buffer.byteLength(value) > 4096) {
     throw new Error("cwd is invalid");
@@ -324,6 +369,16 @@ export function normalizedEvents(message, sessionId) {
       toolUseId: boundedText(message.tool_use_id, 160),
       reason: boundedText(message.decision_reason || message.message, 300) || "Permission denied",
     });
+  } else if (message?.type === "system" && message.subtype === "compact_boundary") {
+    const metadata = message.compact_metadata ?? {};
+    events.push({
+      kind: "compaction",
+      sessionId,
+      trigger: metadata.trigger === "manual" ? "manual" : "auto",
+      preTokens: Number.isFinite(metadata.pre_tokens) ? Math.max(0, metadata.pre_tokens) : undefined,
+      postTokens: Number.isFinite(metadata.post_tokens) ? Math.max(0, metadata.post_tokens) : undefined,
+      durationMs: Number.isFinite(metadata.duration_ms) ? Math.max(0, metadata.duration_ms) : undefined,
+    });
   }
   return events;
 }
@@ -398,6 +453,19 @@ export function normalizedHistory(messages) {
         append(item);
         tools.set(toolUseId, item);
       }
+      continue;
+    }
+    if (entry.type === "system" && (body.subtype === "compact_boundary" || entry.subtype === "compact_boundary")) {
+      const metadata = body.compact_metadata ?? entry.compact_metadata ?? {};
+      append({
+        id: `compaction-${uuid}`,
+        kind: "compaction",
+        description: "Context compacted",
+        compactionTrigger: metadata.trigger === "manual" ? "manual" : "auto",
+        preTokens: Number.isFinite(metadata.pre_tokens) ? Math.max(0, metadata.pre_tokens) : undefined,
+        postTokens: Number.isFinite(metadata.post_tokens) ? Math.max(0, metadata.post_tokens) : undefined,
+        durationMs: Number.isFinite(metadata.duration_ms) ? Math.max(0, metadata.duration_ms) : undefined,
+      });
       continue;
     }
     if (entry.type === "system" && (body.subtype === "permission_denied" || body.type === "permission_denied")) {
@@ -581,6 +649,7 @@ export class ClaudeBridge {
       query: null,
       terminal: false,
       terminalEvent: null,
+      accountUsageObserved: false,
       clientRequestId: params?.clientRequestId,
     };
     this.runs.set(runId, run);
@@ -626,10 +695,12 @@ export class ClaudeBridge {
           };
           this.emit(started);
           run.ready.resolve({ runId: run.runId, sessionId });
+          await this.emitUsage(run);
           continue;
         }
         for (const event of normalizedEvents(message, run.sessionId)) this.emit({ runId: run.runId, ...event });
         if (message?.type === "result") {
+          await this.emitUsage(run);
           input.finish();
           run.terminal = true;
           if (run.interruptRequested) {
@@ -680,6 +751,42 @@ export class ClaudeBridge {
       if (run.terminalEvent) this.emit(run.terminalEvent);
       run.done.resolve();
     }
+  }
+
+  async emitUsage(run) {
+    if (!run.query || !run.sessionId) return;
+    const contextRequest = typeof run.query.getContextUsage === "function"
+      ? within(Promise.resolve().then(() => run.query.getContextUsage()))
+      : Promise.reject(new Error("Claude context usage is unavailable"));
+    const accountRequest = !run.accountUsageObserved && typeof run.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET === "function"
+      ? within(Promise.resolve().then(() => run.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()))
+      : Promise.reject(new Error("Claude account usage is unavailable"));
+    const [contextResult, accountResult] = await Promise.allSettled([contextRequest, accountRequest]);
+    const event = { kind: "usage", runId: run.runId, sessionId: run.sessionId };
+    if (contextResult.status === "fulfilled") {
+      const totalTokens = boundedCount(contextResult.value?.totalTokens);
+      const modelContextWindow = boundedCount(contextResult.value?.maxTokens);
+      if (totalTokens !== undefined && modelContextWindow) {
+        event.tokenUsage = {
+          last: { totalTokens },
+          modelContextWindow,
+        };
+      }
+    }
+    if (accountResult.status === "fulfilled") {
+      run.accountUsageObserved = true;
+      const rateLimits = accountResult.value?.rate_limits_available
+        ? claudeRateLimits(accountResult.value.rate_limits)
+        : null;
+      event.accountUsage = {
+        available: Boolean(rateLimits),
+        ...(rateLimits ? { rateLimits } : {}),
+        experimental: true,
+        observedAt: Math.trunc(Date.now() / 1000),
+        ...(!rateLimits ? { availabilityReason: "Claude plan limits are unavailable for this account." } : {}),
+      };
+    }
+    if (event.tokenUsage || event.accountUsage) this.emit(event);
   }
 
   requestApproval(run, name, input, context) {

@@ -602,6 +602,23 @@ class StateTests(unittest.TestCase):
             state.forget_session_token_usage("thread-1")
             self.assertEqual(state.session_token_usage(), {})
 
+    def test_provider_account_usage_can_restore_a_bounded_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            usage = {
+                "available": True,
+                "experimental": True,
+                "observedAt": 1_800_000_000,
+                "rateLimits": {
+                    "primary": {"usedPercent": 15, "windowDurationMins": 300}
+                },
+            }
+            state.remember_provider_account_usage("claude-code", usage)
+            state.remember_provider_account_usage("unknown", {"secret": "ignored"})
+
+            self.assertEqual(state.provider_account_usage("claude-code"), usage)
+            self.assertIsNone(state.provider_account_usage("unknown"))
+
 
 class PairingLimiterTests(unittest.TestCase):
     def test_limits_each_peer_without_revoking_codes(self) -> None:
@@ -878,6 +895,70 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.claude_session_overlays["external-session"]["state"],
                 "interrupted",
             )
+
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "usage",
+                    "sessionId": "external-session",
+                    "runId": "run-resume",
+                    "tokenUsage": {
+                        "last": {"totalTokens": 48_000},
+                        "modelContextWindow": 200_000,
+                    },
+                    "accountUsage": {
+                        "available": True,
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 15,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1_800_000_000,
+                            },
+                            "secondary": {
+                                "usedPercent": 28,
+                                "windowDurationMins": 10_080,
+                                "resetsAt": 1_800_086_400,
+                            },
+                        },
+                    },
+                }
+            )
+            self.assertEqual(
+                app.claude_session_overlays["external-session"]["tokenUsage"]["last"]["totalTokens"],
+                48_000,
+            )
+            self.assertEqual(
+                app.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["secondary"]["usedPercent"],
+                28,
+            )
+            restored = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+            )
+            self.assertEqual(
+                restored.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["primary"]["usedPercent"],
+                15,
+            )
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "compaction",
+                    "sessionId": "external-session",
+                    "runId": "run-resume",
+                    "trigger": "auto",
+                    "preTokens": 180_000,
+                    "postTokens": 24_000,
+                    "durationMs": 1_250,
+                }
+            )
+            compaction = app.claude_session_messages["external-session"][-1]
+            self.assertEqual(compaction["kind"], "compaction")
+            self.assertEqual(compaction["preTokens"], 180_000)
+            self.assertEqual(compaction["postTokens"], 24_000)
 
             with self.assertRaisesRegex(ValueError, "confirm=true"):
                 await app.dispatch(
@@ -1521,6 +1602,15 @@ Tighten up this layout, please.
                 }
             )["exitCode"],
             0,
+        )
+        self.assertEqual(
+            normalize_item({"id": "compact", "type": "contextCompaction"}),
+            {
+                "id": "compact",
+                "rawType": "contextCompaction",
+                "kind": "compaction",
+                "description": "Context compacted",
+            },
         )
         self.assertEqual(
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
@@ -2390,14 +2480,15 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deviceToken", str(service_status))
         self.assertNotIn(self.pairing_key, str(service_status))
         account_usage = await self.request("usage.status")
-        self.assertTrue(account_usage["available"])
+        self.assertTrue(account_usage["providers"]["codex"]["available"])
         self.assertEqual(
-            account_usage["rateLimits"]["primary"]["usedPercent"], 2
+            account_usage["providers"]["codex"]["rateLimits"]["primary"]["usedPercent"], 2
         )
         self.assertEqual(
-            account_usage["rateLimits"]["secondary"]["windowDurationMins"],
+            account_usage["providers"]["codex"]["rateLimits"]["secondary"]["windowDurationMins"],
             10_080,
         )
+        self.assertFalse(account_usage["providers"]["claude-code"]["available"])
         owned = type("OwnedProcess", (), {"pid": 321, "returncode": None})()
         self.app.codex.process = owned
         owned_status = await self.request("service.status")

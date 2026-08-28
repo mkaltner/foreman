@@ -241,6 +241,7 @@ describe("session context usage", () => {
         reasoningEffort: "high",
         accessLevel: "auto",
         messages: [
+          { id: "compact-1", kind: "compaction", description: "Context compacted", compactionTrigger: "auto", preTokens: 900_000, postTokens: 120_000, durationMs: 2_000 },
           { id: "user-1", kind: "user", text: "Hello", turnId: "turn-1" },
           { id: "assistant-1", kind: "assistant", text: "Hi", turnId: "turn-1" },
         ],
@@ -271,19 +272,36 @@ describe("session context usage", () => {
     expect(within(panel).getByText("200k / 1m tokens")).toBeInTheDocument();
     expect(within(panel).getByText(/Codex normally compacts the conversation automatically/)).toBeInTheDocument();
     expect(within(panel).getByRole("meter", { name: "Context used" })).toHaveAttribute("aria-valuenow", "20");
-    expect(within(panel).getByText("2 items · 1 turn")).toBeInTheDocument();
+    expect(within(panel).getByText("3 items · 1 turn")).toBeInTheDocument();
+    expect(within(panel).getByText("Compactions").nextSibling).toHaveTextContent("1");
+    expect(within(panel).getByText("Automatic · 900k → 120k")).toBeInTheDocument();
     expect(within(panel).getByText("2.5m total")).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("complementary", { name: "Session info" })).not.toBeInTheDocument();
   });
 
   it("shows account-wide limits beneath the session list", () => {
     render(<SessionList
       results={[]}
       accountUsage={{
-        available: true,
-        rateLimits: {
-          limitId: "codex",
-          primary: { usedPercent: 2, windowDurationMins: 300, resetsAt: 1_800_000_000 },
-          secondary: { usedPercent: 11, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+        providers: {
+          codex: {
+            available: true,
+            rateLimits: {
+              limitId: "codex",
+              primary: { usedPercent: 2, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+              secondary: { usedPercent: 11, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+            },
+          },
+          "claude-code": {
+            available: true,
+            experimental: true,
+            observedAt: 1_800_000_000,
+            rateLimits: {
+              primary: { usedPercent: 15, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+              secondary: { usedPercent: 28, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+            },
+          },
         },
       }}
       filters={DEFAULT_SESSION_FILTERS}
@@ -303,13 +321,18 @@ describe("session context usage", () => {
       onHide={vi.fn()}
     />);
 
-    const trigger = screen.getByRole("button", { name: "Codex account usage, 89% left" });
+    const trigger = screen.getByRole("button", { name: "Account usage, Codex 89% left, Claude 72% left" });
     expect(trigger.closest(".session-pane")).toBeInTheDocument();
     fireEvent.click(trigger);
-    const panel = screen.getByRole("complementary", { name: "Codex account usage" });
-    expect(within(panel).getByText("Across all sessions")).toBeInTheDocument();
-    expect(within(panel).getByRole("meter", { name: "5-hour limit used" })).toHaveAttribute("aria-valuenow", "2");
-    expect(within(panel).getByRole("meter", { name: "Weekly limit used" })).toHaveAttribute("aria-valuenow", "11");
+    const panel = screen.getByRole("complementary", { name: "Account usage" });
+    expect(within(panel).getByText("Across providers")).toBeInTheDocument();
+    expect(within(panel).getByRole("meter", { name: "Codex 5-hour limit used" })).toHaveAttribute("aria-valuenow", "2");
+    expect(within(panel).getByRole("meter", { name: "Codex Weekly limit used" })).toHaveAttribute("aria-valuenow", "11");
+    expect(within(panel).getByRole("meter", { name: "Claude 5-hour limit used" })).toHaveAttribute("aria-valuenow", "15");
+    expect(within(panel).getByRole("meter", { name: "Claude Weekly limit used" })).toHaveAttribute("aria-valuenow", "28");
+    expect(within(panel).getByText("Experimental")).toBeInTheDocument();
+    fireEvent.focusIn(document.body);
+    expect(screen.queryByRole("complementary", { name: "Account usage" })).not.toBeInTheDocument();
   });
 });
 

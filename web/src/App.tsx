@@ -24,7 +24,7 @@ import { UnifiedHostConnections } from "./unified-client";
 import { forgetHostSnapshot, loadHostSnapshots, saveHostSnapshots } from "./unified-storage";
 import { mergeHostSnapshot, projectHostSnapshot, sessionIdentityKey, type HostOverviewSnapshot, type UnifiedAttentionItem } from "./unified";
 import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery";
-import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
+import { formatDuration, recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
   ForemanWebClient,
   inferPagePort,
@@ -790,7 +790,7 @@ function App() {
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
         client.request<AccountUsage & Record<string, unknown>>("usage.status")
-          .catch(() => ({ available: false })),
+          .catch(() => ({ providers: {} })),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
@@ -1717,36 +1717,60 @@ export function SessionList({
         )}
         </>}
       </div>
-      {accountUsage?.available && accountUsage.rateLimits && <AccountUsageDock usage={accountUsage} />}
+      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} />}
     </aside>
   );
 }
 
 function AccountUsageDock({ usage }: { usage: AccountUsage }) {
   const [open, setOpen] = useState(false);
-  const windows = [usage.rateLimits?.primary, usage.rateLimits?.secondary].filter(
-    (window): window is NonNullable<typeof window> => !!window && Number.isFinite(window.usedPercent),
-  );
-  if (!windows.length) return null;
-  const usedPercent = Math.max(...windows.map((window) => Math.max(0, Math.min(100, window.usedPercent))));
-  const percentRemaining = Math.max(0, Math.round(100 - usedPercent));
-  return <div className="account-usage-anchor">
-    <button className="account-usage-dock" type="button" aria-label={`Codex account usage, ${percentRemaining}% left`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+  const rootRef = usePopoverDismiss<HTMLDivElement>(open, setOpen);
+  const providers = ([
+    { id: "codex", label: "Codex" },
+    { id: "claude-code", label: "Claude" },
+  ] as const).map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
+  const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
+  if (!availableWindows.length && !providers.some(({ usage: providerUsage }) => providerUsage)) return null;
+  const usedPercent = availableWindows.length
+    ? Math.max(...availableWindows.map((window) => Math.max(0, Math.min(100, window.usedPercent))))
+    : 0;
+  const summary = providers.map(({ label, usage: providerUsage }) => `${label} ${accountUsageRemaining(providerUsage)}`).join(", ");
+  return <div className="account-usage-anchor" ref={rootRef}>
+    <button className="account-usage-dock" type="button" aria-label={`Account usage, ${summary}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       <UsageRing percentUsed={usedPercent} />
-      <span><strong>{percentRemaining}% left</strong><small>Account usage</small></span>
+      <span className="account-provider-summary">{providers.map(({ id, label, usage: providerUsage }) => <span key={id}><b>{label}</b><strong>{accountUsageRemaining(providerUsage)}</strong></span>)}<small>Account usage</small></span>
     </button>
-    {open && <aside className="account-usage-panel" aria-label="Codex account usage">
-      <header><div><span className="eyebrow">Across all sessions</span><strong>Codex account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
-      <div className="account-limit-list">{windows.map((window, index) => {
-        const remaining = Math.max(0, Math.round(100 - window.usedPercent));
-        return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
-          <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
-          <div className="context-meter" role="meter" aria-label={`${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
-          <small>{rateLimitResetLabel(window.resetsAt)}</small>
+    {open && <aside className="account-usage-panel" aria-label="Account usage">
+      <header><div><span className="eyebrow">Across providers</span><strong>Account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
+      <div className="account-provider-list">{providers.map(({ id, label, usage: providerUsage }) => {
+        const windows = accountUsageWindows(providerUsage);
+        return <section className="account-provider-usage" key={id}>
+          <div className="account-provider-heading"><strong>{label}</strong>{providerUsage?.experimental && <span>Experimental</span>}</div>
+          {windows.length ? <div className="account-limit-list">{windows.map((window, index) => {
+            const remaining = Math.max(0, Math.round(100 - window.usedPercent));
+            return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
+              <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
+              <div className="context-meter" role="meter" aria-label={`${label} ${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
+              <small>{rateLimitResetLabel(window.resetsAt)}</small>
+            </section>;
+          })}</div> : <p>{providerUsage?.availabilityReason || `${label} usage is unavailable.`}</p>}
+          {providerUsage?.observedAt && <small className="usage-observed">Last observed {new Date(providerUsage.observedAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small>}
         </section>;
       })}</div>
     </aside>}
   </div>;
+}
+
+function accountUsageWindows(usage: AccountUsage["providers"][ProviderId]) {
+  return [usage?.rateLimits?.primary, usage?.rateLimits?.secondary].filter(
+    (window): window is NonNullable<typeof window> => !!window && Number.isFinite(window.usedPercent),
+  );
+}
+
+function accountUsageRemaining(usage: AccountUsage["providers"][ProviderId]): string {
+  const windows = accountUsageWindows(usage);
+  if (!windows.length) return "unavailable";
+  return `${Math.max(0, Math.round(100 - Math.max(...windows.map((window) => window.usedPercent))))}% left`;
 }
 
 function rateLimitLabel(durationMins: number | undefined, index: number): string {
@@ -1819,6 +1843,7 @@ export function ConversationView({
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFile | null>(null);
   const [openingWorkspaceFile, setOpeningWorkspaceFile] = useState<string | null>(null);
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+  const sessionInfoRef = usePopoverDismiss<HTMLSpanElement>(sessionInfoOpen, setSessionInfoOpen);
   const workspaceFileRequest = useRef(0);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
@@ -2019,7 +2044,7 @@ export function ConversationView({
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
         <div className="conversation-title"><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
-        {contextUsage && <span className="session-context-control">
+        {contextUsage && <span className="session-context-control" ref={sessionInfoRef}>
           <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
           {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
         </span>}
@@ -2120,6 +2145,28 @@ function UsageRing({ percentUsed }: { percentUsed: number }) {
   </span>;
 }
 
+function usePopoverDismiss<T extends HTMLElement>(open: boolean, setOpen: (open: boolean) => void) {
+  const rootRef = useRef<T>(null);
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: MouseEvent | FocusEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", dismissOutside);
+    document.addEventListener("focusin", dismissOutside);
+    document.addEventListener("keydown", dismissEscape);
+    return () => {
+      document.removeEventListener("mousedown", dismissOutside);
+      document.removeEventListener("focusin", dismissOutside);
+      document.removeEventListener("keydown", dismissEscape);
+    };
+  }, [open, setOpen]);
+  return rootRef;
+}
+
 function ContextUsageButton({ usage, open, onClick }: { usage: ContextUsageView; open: boolean; onClick: () => void }) {
   return <button className="context-usage-button" type="button" aria-label={`Context usage, ${usage.percentRemaining}% left`} aria-expanded={open} onClick={onClick} title={`${formatTokenCount(usage.remainingTokens)} tokens left`}>
     <UsageRing percentUsed={usage.percentUsed} /><span>{usage.percentRemaining}%</span>
@@ -2130,21 +2177,34 @@ function SessionInfoPanel({ session, usage, model, effort, access, onClose }: { 
   const total = session.tokenUsage?.total;
   const last = session.tokenUsage?.last;
   const turnCount = new Set((session.messages ?? []).map(({ turnId }) => turnId).filter(Boolean)).size;
+  const compactions = (session.messages ?? []).filter(({ kind }) => kind === "compaction");
+  const latestCompaction = compactions.at(-1);
+  const provider = sessionProvider(session);
   return <aside className="session-info-panel" aria-label="Session info">
     <header><div><span className="eyebrow">Session info</span><strong>Context window</strong></div><button type="button" onClick={onClose} aria-label="Close session info">×</button></header>
     <div className="context-usage-summary"><span>{formatTokenCount(usage.usedTokens)} / {formatTokenCount(usage.contextWindow)} tokens</span><strong>{usage.percentRemaining}% left</strong></div>
     <div className="context-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.percentUsed}><i style={{ width: `${usage.percentUsed}%` }} /></div>
-    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. Codex normally compacts the conversation automatically before the window is exhausted.</p>
+    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. {provider === "claude-code" ? "Claude" : "Codex"} normally compacts the conversation automatically before the window is exhausted.</p>
     <dl>
       <div><dt>Model</dt><dd>{model || session.model || "—"}</dd></div>
       {effort && <div><dt>Reasoning</dt><dd>{reasoningLabel(effort)}</dd></div>}
       {access && <div><dt>Access</dt><dd>{access}</dd></div>}
       <div><dt>Transcript</dt><dd>{session.messages?.length ?? 0} items{turnCount ? ` · ${turnCount} ${turnCount === 1 ? "turn" : "turns"}` : ""}</dd></div>
+      <div><dt>Compactions</dt><dd>{compactions.length}</dd></div>
+      {latestCompaction && (latestCompaction.preTokens !== undefined || latestCompaction.compactionTrigger) && <div><dt>Last compaction</dt><dd>{compactionDetail(latestCompaction)}</dd></div>}
       {total && <div><dt>Session tokens</dt><dd>{formatTokenCount(total.totalTokens)} total</dd></div>}
       {last?.cachedInputTokens !== undefined && <div><dt>Cached input</dt><dd>{formatTokenCount(last.cachedInputTokens)}</dd></div>}
       {last?.outputTokens !== undefined && <div><dt>Last output</dt><dd>{formatTokenCount(last.outputTokens)}</dd></div>}
     </dl>
   </aside>;
+}
+
+function compactionDetail(item: NonNullable<SessionSummary["messages"]>[number]): string {
+  const trigger = item.compactionTrigger === "manual" ? "Manual" : item.compactionTrigger === "auto" ? "Automatic" : "Completed";
+  if (item.preTokens !== undefined && item.postTokens !== undefined) {
+    return `${trigger} · ${formatTokenCount(item.preTokens)} → ${formatTokenCount(item.postTokens)}`;
+  }
+  return trigger;
 }
 
 interface RouteOption {
@@ -2257,6 +2317,9 @@ export function RouteSelect({
 }
 
 function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+  if (item.kind === "compaction") {
+    return <article id={`message-${item.id}`} className={`tool-card compaction-card ${highlighted ? "search-highlight" : ""}`}><span>↻</span><div><strong>Context compacted</strong><p>{compactionDetail(item)}</p></div>{item.durationMs !== undefined && <small>{formatDuration(item.durationMs)}</small>}</article>;
+  }
   if (item.kind === "command" || item.kind === "tool") {
     return <article id={`message-${item.id}`} className={`tool-card ${highlighted ? "search-highlight" : ""}`}><span>{item.kind === "command" ? "›_" : "◇"}</span><div><strong>{item.kind === "command" ? "Command" : "Tool"}</strong><p>{item.description || "Working"}</p></div><small>{item.status || "in progress"}{item.exitCode != null ? ` · exit ${item.exitCode}` : ""}</small></article>;
   }

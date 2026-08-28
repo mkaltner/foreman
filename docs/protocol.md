@@ -42,6 +42,7 @@ Implemented types:
 - `model.list`;
 - `access.list`;
 - `service.status`;
+- `usage.status`;
 - `diagnostics.list`, `service.restart`;
 - `client.list`, `client.revoke`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
@@ -168,12 +169,22 @@ Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
 
 Authenticated clients use `usage.status` for the current bounded Codex account
-rate-limit snapshot and receive `usage.event` when app-server publishes a
-rolling update. This account-wide usage is separate from per-session context:
-it exposes only quota percentages, window durations, reset timestamps, and
-bounded limit labels. Account identity, token activity history, credits, and
-raw provider payloads are not projected. Sparse rolling updates merge into the
-last complete snapshot without clearing an unmentioned quota window.
+rate-limit snapshot plus the latest bounded Claude snapshot, and receive
+`usage.event` updates. Provider usage is separate from per-session context: it
+exposes only quota percentages, window durations, reset timestamps, and bounded
+limit labels. Account identity, token activity history, credits, and raw
+provider payloads are not projected. Codex sparse rolling updates merge into
+the last complete snapshot without clearing an unmentioned quota window.
+Claude account limits come from an explicitly experimental Agent SDK method
+available only during a Foreman-managed Claude query, so the projection is
+labeled experimental and last-observed. The last bounded Claude percentages
+and reset times survive a Foreman restart; an unavailable reason is returned
+until the first usable snapshot exists.
+
+Conversation items may include bounded `compaction` entries. Codex identifies
+that compaction occurred; Claude may additionally provide automatic/manual
+trigger, before/after token counts, and duration. Clients can count these items
+without reading or projecting the generated summary.
 
 Approval support keeps protocol version 1. Authenticated clients use:
 
