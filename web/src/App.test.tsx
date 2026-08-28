@@ -230,7 +230,7 @@ describe("user message links", () => {
 });
 
 describe("session context usage", () => {
-  it("shows remaining context in the header and lower-left session info panel", () => {
+  it("keeps per-session context in the conversation header", () => {
     render(<ConversationView
       session={{
         id: "usage-session",
@@ -263,15 +263,53 @@ describe("session context usage", () => {
       onError={vi.fn()}
     />);
 
-    expect(screen.getByRole("button", { name: "Context usage, 80% left" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /800k left/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /800k left/i }));
+    const trigger = screen.getByRole("button", { name: "Context usage, 80% left" });
+    expect(trigger.closest("header")).toHaveClass("conversation-header");
+    fireEvent.click(trigger);
 
     const panel = screen.getByRole("complementary", { name: "Session info" });
     expect(within(panel).getByText("200k / 1m tokens")).toBeInTheDocument();
+    expect(within(panel).getByText(/Codex normally compacts the conversation automatically/)).toBeInTheDocument();
     expect(within(panel).getByRole("meter", { name: "Context used" })).toHaveAttribute("aria-valuenow", "20");
     expect(within(panel).getByText("2 items · 1 turn")).toBeInTheDocument();
     expect(within(panel).getByText("2.5m total")).toBeInTheDocument();
+  });
+
+  it("shows account-wide limits beneath the session list", () => {
+    render(<SessionList
+      results={[]}
+      accountUsage={{
+        available: true,
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 2, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+          secondary: { usedPercent: 11, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+        },
+      }}
+      filters={DEFAULT_SESSION_FILTERS}
+      repositoryOptions={[]}
+      searchLoading={false}
+      searchError=""
+      selectedId={null}
+      selectedProvider="codex"
+      disabled={false}
+      onOpen={vi.fn()}
+      onRefresh={vi.fn()}
+      onNew={vi.fn()}
+      onAction={vi.fn()}
+      onFilters={vi.fn()}
+      onSearchNow={vi.fn()}
+      onPin={vi.fn()}
+      onHide={vi.fn()}
+    />);
+
+    const trigger = screen.getByRole("button", { name: "Codex account usage, 89% left" });
+    expect(trigger.closest(".session-pane")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    const panel = screen.getByRole("complementary", { name: "Codex account usage" });
+    expect(within(panel).getByText("Across all sessions")).toBeInTheDocument();
+    expect(within(panel).getByRole("meter", { name: "5-hour limit used" })).toHaveAttribute("aria-valuenow", "2");
+    expect(within(panel).getByRole("meter", { name: "Weekly limit used" })).toHaveAttribute("aria-valuenow", "11");
   });
 });
 

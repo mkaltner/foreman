@@ -969,6 +969,19 @@ class Codex:
         self._subscribed.add(thread_id)
         await self.ensure_resumed(thread_id)
 
+    async def account_rate_limits(self) -> dict[str, Any]:
+        if not self.supports("account/rateLimits/read"):
+            return {"available": False}
+        try:
+            result = await self.request("account/rateLimits/read")
+        except CodexError:
+            return {"available": False}
+        snapshot = rate_limit_snapshot(result.get("rateLimits"))
+        return {
+            "available": snapshot is not None,
+            **({"rateLimits": snapshot} if snapshot else {}),
+        }
+
     async def list_models(self, refresh: bool = False) -> list[dict[str, Any]]:
         now = time.monotonic()
         if (
@@ -1252,6 +1265,56 @@ def token_usage_breakdown(raw: Any) -> dict[str, int] | None:
         if (count := token_count(raw.get(field))) is not None
     }
     return result if "totalTokens" in result else None
+
+
+def thread_token_usage(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    total = token_usage_breakdown(raw.get("total"))
+    last = token_usage_breakdown(raw.get("last"))
+    context_window = token_count(raw.get("modelContextWindow"))
+    if not last or not context_window:
+        return None
+    return {
+        **({"total": total} if total else {}),
+        "last": last,
+        "modelContextWindow": context_window,
+    }
+
+
+def rate_limit_window(raw: Any) -> dict[str, int | float] | None:
+    if not isinstance(raw, dict):
+        return None
+    used = raw.get("usedPercent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
+        return None
+    if used != used or used in (float("inf"), float("-inf")):
+        return None
+    result: dict[str, int | float] = {
+        "usedPercent": round(max(0, min(100, used)), 1),
+    }
+    duration = token_count(raw.get("windowDurationMins"))
+    resets_at = token_count(raw.get("resetsAt"))
+    if duration is not None:
+        result["windowDurationMins"] = min(duration, 525_600)
+    if resets_at is not None:
+        result["resetsAt"] = resets_at
+    return result
+
+
+def rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    primary = rate_limit_window(raw.get("primary"))
+    secondary = rate_limit_window(raw.get("secondary"))
+    if not primary and not secondary:
+        return None
+    result: dict[str, Any] = {"primary": primary, "secondary": secondary}
+    for key in ("limitId", "limitName", "planType", "rateLimitReachedType"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            result[key] = value[:100]
+    return result
 
 
 def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str, Any]:
@@ -1684,31 +1747,12 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         if isinstance(settings.get("effort"), str):
             event["reasoningEffort"] = settings["effort"]
     elif method == "thread/tokenUsage/updated":
-        usage = params.get("tokenUsage")
-        total = (
-            token_usage_breakdown(usage.get("total"))
-            if isinstance(usage, dict)
-            else None
-        )
-        last = (
-            token_usage_breakdown(usage.get("last"))
-            if isinstance(usage, dict)
-            else None
-        )
-        context_window = (
-            token_count(usage.get("modelContextWindow"))
-            if isinstance(usage, dict)
-            else None
-        )
+        usage = thread_token_usage(params.get("tokenUsage"))
         event.update(
             {
                 "kind": "usage",
                 "turnId": params.get("turnId"),
-                "tokenUsage": {
-                    **({"total": total} if total else {}),
-                    **({"last": last} if last else {}),
-                    **({"modelContextWindow": context_window} if context_window else {}),
-                },
+                "tokenUsage": usage or {},
             }
         )
     elif method in (

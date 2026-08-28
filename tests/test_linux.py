@@ -30,6 +30,7 @@ from codex import (  # noqa: E402
     model,
     normalize_event,
     normalize_item,
+    rate_limit_snapshot,
     search_matches,
     safe_failure_summary,
     session,
@@ -110,6 +111,22 @@ class FakeCodex:
         self.approval_responses: list[tuple[str, dict[str, Any]]] = []
         self.inputs: list[dict[str, Any]] = []
         self.input_responses: list[tuple[str, dict[str, Any]]] = []
+        self.rate_limits = {
+            "available": True,
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 2,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000,
+                },
+                "secondary": {
+                    "usedPercent": 11,
+                    "windowDurationMins": 10_080,
+                    "resetsAt": 1_800_086_400,
+                },
+            },
+        }
 
     async def start(self) -> None:
         pass
@@ -126,7 +143,11 @@ class FakeCodex:
             "thread/settings/update",
             "item/tool/requestUserInput",
             "mcpServer/elicitation/request",
+            "account/rateLimits/read",
         }
+
+    async def account_rate_limits(self) -> dict[str, Any]:
+        return self.rate_limits
 
     async def list_threads(self) -> list[dict[str, Any]]:
         return [{**THREAD, "turns": []}]
@@ -564,6 +585,22 @@ class StateTests(unittest.TestCase):
             with patch("state.time.time", return_value=1_010):
                 self.assertEqual(state.active_pairing_count(), 0)
                 self.assertIsNone(state.pair(key, "Late phone"))
+
+    def test_session_token_usage_is_bounded_and_removable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            usage = {
+                "last": {"totalTokens": 121_800},
+                "modelContextWindow": 1_000_000,
+            }
+            state.remember_session_token_usage("thread-1", usage)
+            state.remember_session_token_usage("x" * 101, usage)
+
+            self.assertEqual(state.session_token_usage(), {"thread-1": usage})
+            raw = Path(directory, "state.json").read_text(encoding="utf-8")
+            self.assertNotIn("prompt", raw)
+            state.forget_session_token_usage("thread-1")
+            self.assertEqual(state.session_token_usage(), {})
 
 
 class PairingLimiterTests(unittest.TestCase):
@@ -1167,6 +1204,38 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
 
+    async def test_session_context_snapshot_survives_service_recreation(self) -> None:
+        await self.app.codex_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "last": {"totalTokens": 121_800},
+                        "modelContextWindow": 1_000_000,
+                    },
+                },
+            }
+        )
+
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        self.assertEqual(
+            restored.session_overlays["thread-1"]["tokenUsage"]["last"]["totalTokens"],
+            121_800,
+        )
+        self.assertEqual(
+            restored.session_overlays["thread-1"]["tokenUsage"]["modelContextWindow"],
+            1_000_000,
+        )
+
     async def test_remote_restart_gate_defaults_off_and_parses_explicit_opt_in(self) -> None:
         default = Foreman(
             "127.0.0.1",
@@ -1367,6 +1436,75 @@ Tighten up this layout, please.
         self.assertEqual(malformed["tokenUsage"], {})
         self.assertNotIn("ignored", str(malformed))
 
+    def test_maps_bounded_account_rate_limits(self) -> None:
+        snapshot = rate_limit_snapshot(
+            {
+                "limitId": "codex",
+                "limitName": "Codex" * 40,
+                "primary": {
+                    "usedPercent": 102.45,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000,
+                },
+                "secondary": {
+                    "usedPercent": -5,
+                    "windowDurationMins": 10_080,
+                    "resetsAt": 1_800_086_400,
+                },
+                "credits": {"balance": "private"},
+                "account": {"email": "private@example.com"},
+            }
+        )
+
+        assert snapshot is not None
+        self.assertEqual(snapshot["primary"]["usedPercent"], 100)
+        self.assertEqual(snapshot["secondary"]["usedPercent"], 0)
+        self.assertEqual(snapshot["secondary"]["windowDurationMins"], 10_080)
+        self.assertLessEqual(len(snapshot["limitName"]), 100)
+        self.assertNotIn("private", str(snapshot))
+
+    def test_sparse_account_usage_event_preserves_other_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            foreman = Foreman(
+                "127.0.0.1",
+                8765,
+                Path(directory),
+                State(Path(directory) / "state"),
+                "codex",
+                FakeCodex,
+            )
+            foreman.account_usage = {
+                "available": True,
+                "rateLimits": {
+                    "primary": {"usedPercent": 2, "windowDurationMins": 300},
+                    "secondary": {"usedPercent": 11, "windowDurationMins": 10_080},
+                },
+            }
+            asyncio.run(
+                foreman.codex_event(
+                    {
+                        "method": "account/rateLimits/updated",
+                        "params": {
+                            "rateLimits": {
+                                "limitId": "codex",
+                                "primary": {
+                                    "usedPercent": 3,
+                                    "windowDurationMins": 300,
+                                },
+                                "secondary": None,
+                            }
+                        },
+                    }
+                )
+            )
+
+        self.assertEqual(
+            foreman.account_usage["rateLimits"]["primary"]["usedPercent"], 3
+        )
+        self.assertEqual(
+            foreman.account_usage["rateLimits"]["secondary"]["usedPercent"], 11
+        )
+
     def test_session_and_conversation_mapping(self) -> None:
         mapped = session(THREAD, include_messages=True)
         self.assertEqual(mapped["status"], "completed")
@@ -1564,6 +1702,33 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_account_rate_limits_without_account_identity(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._supported_methods = {"account/rateLimits/read"}
+        adapter.request = AsyncMock(
+            return_value={
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {
+                        "usedPercent": 24,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_800_000_000,
+                    },
+                    "secondary": None,
+                    "planType": "plus",
+                    "accountEmail": "do-not-project@example.com",
+                }
+            }
+        )
+
+        result = await adapter.account_rate_limits()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["rateLimits"]["primary"]["usedPercent"], 24)
+        self.assertEqual(result["rateLimits"]["planType"], "plus")
+        self.assertNotIn("accountEmail", str(result))
+        adapter.request.assert_awaited_once_with("account/rateLimits/read")
+
     async def test_reads_paginated_turns_with_full_command_items(self) -> None:
         adapter = Codex("unused", AsyncMock())
         adapter._supported_methods = {"thread/turns/list"}
@@ -2224,6 +2389,15 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service_status["repositoryRoot"], str(self.repository_root.resolve()))
         self.assertNotIn("deviceToken", str(service_status))
         self.assertNotIn(self.pairing_key, str(service_status))
+        account_usage = await self.request("usage.status")
+        self.assertTrue(account_usage["available"])
+        self.assertEqual(
+            account_usage["rateLimits"]["primary"]["usedPercent"], 2
+        )
+        self.assertEqual(
+            account_usage["rateLimits"]["secondary"]["windowDurationMins"],
+            10_080,
+        )
         owned = type("OwnedProcess", (), {"pid": 321, "returncode": None})()
         self.app.codex.process = owned
         owned_status = await self.request("service.status")

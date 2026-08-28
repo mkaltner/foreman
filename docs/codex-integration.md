@@ -34,6 +34,8 @@ uses:
 - `permissionProfile/list`;
 - `thread/status/changed`, `thread/tokenUsage/updated`, `turn/started`, and
   `turn/completed`;
+- `account/rateLimits/read` and `account/rateLimits/updated` for account-wide
+  quota windows shown separately from thread context;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
 
@@ -121,7 +123,13 @@ replay.
 - `thread/tokenUsage/updated` carries a cumulative `total`, a latest-context
   `last`, and `modelContextWindow`. Foreman's context meter uses
   `last.totalTokens / modelContextWindow`; cumulative totals are shown only as
-  session activity and are never treated as context occupancy.
+  session activity and are never treated as context occupancy. Because the
+  installed app-server has no thread-usage read method, Foreman keeps up to 500
+  last-known bounded numeric snapshots in its private state file and removes
+  them when their sessions are archived or deleted.
+- Account rate-limit projections contain only bounded percentages, durations,
+  reset times, and labels. They omit account identity, credits, and usage
+  history. Rolling sparse updates merge into the authenticated snapshot.
 - Access presets use allowed `:workspace` and `:danger-full-access` permission
   profiles. Standard approval routes to the user, automatic approval uses
   `auto_review`, and full access disables approval prompts.

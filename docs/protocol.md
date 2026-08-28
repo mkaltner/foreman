@@ -160,9 +160,20 @@ activity, command/tool item events, and bounded `thread/tokenUsage/updated`
 snapshots. Token usage exposes only numeric `total`, `last`, and
 `modelContextWindow` fields. Clients calculate current context occupancy from
 `last.totalTokens`, never the cumulative `total.totalTokens`; usage events do
-not change session recency.
+not change session recency. Foreman retains at most 500 last-known numeric
+session usage snapshots in its mode-0600 state file so context meters survive a
+service restart; archive/delete removes the associated snapshot. No prompt,
+message, or transcript content is stored with it.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
+
+Authenticated clients use `usage.status` for the current bounded Codex account
+rate-limit snapshot and receive `usage.event` when app-server publishes a
+rolling update. This account-wide usage is separate from per-session context:
+it exposes only quota percentages, window durations, reset timestamps, and
+bounded limit labels. Account identity, token activity history, credits, and
+raw provider payloads are not projected. Sparse rolling updates merge into the
+last complete snapshot without clearing an unmentioned quota window.
 
 Approval support keeps protocol version 1. Authenticated clients use:
 

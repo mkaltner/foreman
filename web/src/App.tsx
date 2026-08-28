@@ -56,6 +56,7 @@ import {
   providerSessionKey,
   reconcileSessionSummaries,
   sessionProvider,
+  type AccountUsage,
   type AccessLevelInfo,
   type ApprovalEventPayload,
   type ApprovalRequest,
@@ -194,6 +195,7 @@ function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
+  const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
@@ -578,6 +580,10 @@ function App() {
       if (Array.isArray(nextProviders)) setProviders(nextProviders);
       return;
     }
+    if (message.type === "usage.event") {
+      setAccountUsage(message.payload as unknown as AccountUsage);
+      return;
+    }
     if (message.type !== "session.event") return;
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
@@ -733,6 +739,7 @@ function App() {
     setClaudePermissionModes([]);
     setRepositories([]);
     setServiceStatus(null);
+    setAccountUsage(null);
     setPairedClients([]);
     setRecentActivity([]);
     setSearchResults([]);
@@ -773,7 +780,7 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
-      const [approvalResult, inputResult, providerResult, codexSessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
+      const [approvalResult, inputResult, providerResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
         client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
         client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
           .catch(() => ({ inputs: [] })),
@@ -782,6 +789,8 @@ function App() {
         client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
         client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
+        client.request<AccountUsage & Record<string, unknown>>("usage.status")
+          .catch(() => ({ available: false })),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
@@ -841,6 +850,7 @@ function App() {
       })));
       setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
+      setAccountUsage(usageResult);
       setRepositories(repositoryResult.repositories);
       setPairedClients(clientResult.clients);
       if (reconnected) dashboardSubscriptions.current.clear();
@@ -1374,6 +1384,7 @@ function App() {
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
             results={visibleSessions}
+            accountUsage={accountUsage}
             filters={searchFilters}
             repositoryOptions={repositoryOptions}
             searchLoading={searchLoading}
@@ -1619,6 +1630,7 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 
 export function SessionList({
   results,
+  accountUsage = null,
   filters,
   repositoryOptions,
   searchLoading,
@@ -1636,6 +1648,7 @@ export function SessionList({
   onHide,
 }: {
   results: VisibleSession[];
+  accountUsage?: AccountUsage | null;
   filters: SessionFilters;
   repositoryOptions: RepositoryFilterOption[];
   searchLoading: boolean;
@@ -1704,8 +1717,48 @@ export function SessionList({
         )}
         </>}
       </div>
+      {accountUsage?.available && accountUsage.rateLimits && <AccountUsageDock usage={accountUsage} />}
     </aside>
   );
+}
+
+function AccountUsageDock({ usage }: { usage: AccountUsage }) {
+  const [open, setOpen] = useState(false);
+  const windows = [usage.rateLimits?.primary, usage.rateLimits?.secondary].filter(
+    (window): window is NonNullable<typeof window> => !!window && Number.isFinite(window.usedPercent),
+  );
+  if (!windows.length) return null;
+  const usedPercent = Math.max(...windows.map((window) => Math.max(0, Math.min(100, window.usedPercent))));
+  const percentRemaining = Math.max(0, Math.round(100 - usedPercent));
+  return <div className="account-usage-anchor">
+    <button className="account-usage-dock" type="button" aria-label={`Codex account usage, ${percentRemaining}% left`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <UsageRing percentUsed={usedPercent} />
+      <span><strong>{percentRemaining}% left</strong><small>Account usage</small></span>
+    </button>
+    {open && <aside className="account-usage-panel" aria-label="Codex account usage">
+      <header><div><span className="eyebrow">Across all sessions</span><strong>Codex account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
+      <div className="account-limit-list">{windows.map((window, index) => {
+        const remaining = Math.max(0, Math.round(100 - window.usedPercent));
+        return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
+          <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
+          <div className="context-meter" role="meter" aria-label={`${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
+          <small>{rateLimitResetLabel(window.resetsAt)}</small>
+        </section>;
+      })}</div>
+    </aside>}
+  </div>;
+}
+
+function rateLimitLabel(durationMins: number | undefined, index: number): string {
+  if (durationMins === 10_080) return "Weekly limit";
+  if (durationMins && durationMins % 60 === 0) return `${durationMins / 60}-hour limit`;
+  if (durationMins) return `${durationMins}-minute limit`;
+  return index === 0 ? "Primary limit" : "Secondary limit";
+}
+
+function rateLimitResetLabel(resetsAt: number | undefined): string {
+  if (!resetsAt) return "Reset time unavailable";
+  return `Resets ${new Date(resetsAt * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
 export function ConversationView({
@@ -1965,8 +2018,11 @@ export function ConversationView({
     <div className="conversation">
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
-        <div><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
-        {contextUsage && <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />}
+        <div className="conversation-title"><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
+        {contextUsage && <span className="session-context-control">
+          <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
+          {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
+        </span>}
         <StatusPill status={session.status} />
       </header>
       <div
@@ -2000,13 +2056,6 @@ export function ConversationView({
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
-      {contextUsage && <div className="session-info-anchor">
-        <button className="session-info-dock" type="button" aria-expanded={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)}>
-          <ContextRing usage={contextUsage} />
-          <span><strong>{formatTokenCount(contextUsage.remainingTokens)} left</strong><small>Context</small></span>
-        </button>
-        {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
-      </div>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
           <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} onChange={(value) => void updateAccess(value)} />
@@ -2065,15 +2114,15 @@ export function formatTokenCount(value: number): string {
   return String(Math.round(value));
 }
 
-function ContextRing({ usage }: { usage: ContextUsageView }) {
+function UsageRing({ percentUsed }: { percentUsed: number }) {
   return <span className="context-ring" aria-hidden="true">
-    <svg viewBox="0 0 36 36"><circle className="context-ring-track" cx="18" cy="18" r="15.5" /><circle className="context-ring-value" cx="18" cy="18" r="15.5" pathLength="100" strokeDasharray={`${usage.percentUsed} 100`} /></svg>
+    <svg viewBox="0 0 36 36"><circle className="context-ring-track" cx="18" cy="18" r="15.5" /><circle className="context-ring-value" cx="18" cy="18" r="15.5" pathLength="100" strokeDasharray={`${percentUsed} 100`} /></svg>
   </span>;
 }
 
 function ContextUsageButton({ usage, open, onClick }: { usage: ContextUsageView; open: boolean; onClick: () => void }) {
   return <button className="context-usage-button" type="button" aria-label={`Context usage, ${usage.percentRemaining}% left`} aria-expanded={open} onClick={onClick} title={`${formatTokenCount(usage.remainingTokens)} tokens left`}>
-    <ContextRing usage={usage} /><span>{usage.percentRemaining}%</span>
+    <UsageRing percentUsed={usage.percentUsed} /><span>{usage.percentRemaining}%</span>
   </button>;
 }
 
@@ -2085,7 +2134,7 @@ function SessionInfoPanel({ session, usage, model, effort, access, onClose }: { 
     <header><div><span className="eyebrow">Session info</span><strong>Context window</strong></div><button type="button" onClick={onClose} aria-label="Close session info">×</button></header>
     <div className="context-usage-summary"><span>{formatTokenCount(usage.usedTokens)} / {formatTokenCount(usage.contextWindow)} tokens</span><strong>{usage.percentRemaining}% left</strong></div>
     <div className="context-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.percentUsed}><i style={{ width: `${usage.percentUsed}%` }} /></div>
-    <p>{formatTokenCount(usage.remainingTokens)} tokens remain before the model context limit.</p>
+    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. Codex normally compacts the conversation automatically before the window is exhausted.</p>
     <dl>
       <div><dt>Model</dt><dd>{model || session.model || "—"}</dd></div>
       {effort && <div><dt>Reasoning</dt><dd>{reasoningLabel(effort)}</dd></div>}

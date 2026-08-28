@@ -70,6 +70,26 @@ export interface ThreadTokenUsage {
   modelContextWindow?: number;
 }
 
+export interface RateLimitWindow {
+  usedPercent: number;
+  windowDurationMins?: number;
+  resetsAt?: number;
+}
+
+export interface RateLimitSnapshot {
+  limitId?: string;
+  limitName?: string;
+  primary?: RateLimitWindow | null;
+  secondary?: RateLimitWindow | null;
+  planType?: string;
+  rateLimitReachedType?: string;
+}
+
+export interface AccountUsage {
+  available: boolean;
+  rateLimits?: RateLimitSnapshot;
+}
+
 export interface SessionSummary {
   provider?: ProviderId;
   id: string;

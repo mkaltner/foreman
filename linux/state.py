@@ -1,4 +1,4 @@
-"""Minimal file-backed pairing and device-token state."""
+"""Minimal file-backed pairing, device-token, and bounded usage state."""
 
 from __future__ import annotations
 
@@ -71,6 +71,82 @@ class State:
 
         key = self._locked(update)
         return key, expires_at
+
+    def session_token_usage(self) -> dict[str, dict[str, Any]]:
+        def update(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            stored = data.get("sessionTokenUsage")
+            if not isinstance(stored, dict):
+                data["sessionTokenUsage"] = {}
+                return {}
+            valid = [
+                (thread_id, item)
+                for thread_id, item in stored.items()
+                if isinstance(thread_id, str)
+                and len(thread_id) <= 100
+                and isinstance(item, dict)
+                and isinstance(item.get("usage"), dict)
+            ]
+
+            def updated_at(pair: tuple[str, dict[str, Any]]) -> float:
+                value = pair[1].get("updatedAt", 0)
+                return (
+                    value
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    else 0
+                )
+
+            valid.sort(key=updated_at, reverse=True)
+            bounded = dict(valid[:500])
+            data["sessionTokenUsage"] = bounded
+            return {
+                thread_id: item["usage"] for thread_id, item in bounded.items()
+            }
+
+        return self._locked(update)
+
+    def remember_session_token_usage(
+        self, thread_id: str, usage: dict[str, Any]
+    ) -> None:
+        if not thread_id or len(thread_id) > 100:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.setdefault("sessionTokenUsage", {})
+            if not isinstance(stored, dict):
+                stored = {}
+                data["sessionTokenUsage"] = stored
+            stored[thread_id] = {"usage": usage, "updatedAt": int(time.time())}
+            if len(stored) > 500:
+                def updated_at(key: str) -> float:
+                    item = stored.get(key)
+                    value = item.get("updatedAt", 0) if isinstance(item, dict) else 0
+                    return (
+                        value
+                        if isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        else 0
+                    )
+
+                oldest = sorted(
+                    stored,
+                    key=updated_at,
+                )[: len(stored) - 500]
+                for key in oldest:
+                    stored.pop(key, None)
+
+        self._locked(update)
+
+    def forget_session_token_usage(self, thread_id: str) -> None:
+        if not thread_id or len(thread_id) > 100:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.get("sessionTokenUsage")
+            if isinstance(stored, dict):
+                stored.pop(thread_id, None)
+
+        self._locked(update)
 
     def active_pairing_count(self) -> int:
         def update(data: dict[str, Any]) -> int:

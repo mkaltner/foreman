@@ -31,8 +31,10 @@ from codex import (
     CodexError,
     matching_snippet,
     normalize_event,
+    rate_limit_snapshot,
     search_matches,
     session,
+    thread_token_usage,
 )
 from claude_code import ClaudeCode, ClaudeCodeError, SUPPORTED_MODELS
 from diagnostics import DiagnosticBuffer, request_category
@@ -206,6 +208,10 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        for thread_id, raw_usage in self.state.session_token_usage().items():
+            if usage := thread_token_usage(raw_usage):
+                self.session_overlays[thread_id] = {"tokenUsage": usage}
+        self.account_usage: dict[str, Any] = {"available": False}
         self.claude_session_overlays: dict[str, dict[str, Any]] = {}
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
@@ -862,6 +868,21 @@ class Foreman:
         if method == "foreman/runtime/reconnected":
             self.diagnostics.record("runtime.reconnected")
             return
+        if method == "account/rateLimits/updated":
+            snapshot = rate_limit_snapshot(
+                (message.get("params") or {}).get("rateLimits")
+            )
+            if snapshot:
+                previous = self.account_usage.get("rateLimits")
+                merged = dict(previous) if isinstance(previous, dict) else {}
+                merged.update(
+                    (key, value)
+                    for key, value in snapshot.items()
+                    if value is not None
+                )
+                self.account_usage = {"available": True, "rateLimits": merged}
+                await self.broadcast_account_usage()
+            return
         if method in (
             "foreman/approval/requested",
             "foreman/approval/updated",
@@ -1127,6 +1148,7 @@ class Foreman:
                 and usage["modelContextWindow"] > 0
             ):
                 overlay["tokenUsage"] = usage
+                self.state.remember_session_token_usage(thread_id, usage)
 
     def projected_session(
         self, thread: dict[str, Any], include_messages: bool = False
@@ -1148,6 +1170,21 @@ class Foreman:
             "version": VERSION,
             "type": "session.event",
             "payload": {"sessionId": thread_id, "event": event},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
+        )
+
+    async def broadcast_account_usage(self) -> None:
+        outgoing = {
+            "version": VERSION,
+            "type": "usage.event",
+            "payload": self.account_usage,
         }
         await asyncio.gather(
             *(
@@ -1865,6 +1902,9 @@ class Foreman:
             return {"accepted": True, "provider": provider, "sessionId": session_id}
         if message_type == "service.status":
             return self.service_status()
+        if message_type == "usage.status":
+            self.account_usage = await self.codex.account_rate_limits()
+            return self.account_usage
         if message_type == "diagnostics.list":
             return {"events": self.diagnostics.entries(), "limit": 100}
         if message_type == "service.restart":
@@ -1974,6 +2014,7 @@ class Foreman:
                 await self.codex.archive_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.state.forget_session_token_usage(thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
@@ -1985,6 +2026,7 @@ class Foreman:
                 await self.codex.delete_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.state.forget_session_token_usage(thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "session.settings":
