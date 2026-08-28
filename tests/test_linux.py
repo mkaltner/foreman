@@ -1317,6 +1317,56 @@ Tighten up this layout, please.
         self.assertEqual(event["model"], "gpt-test")
         self.assertEqual(event["reasoningEffort"], "high")
 
+    def test_maps_bounded_thread_context_usage(self) -> None:
+        thread_id, event = normalize_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "total": {
+                            "totalTokens": 2_500_000,
+                            "inputTokens": 2_400_000,
+                            "cachedInputTokens": 2_000_000,
+                            "outputTokens": 100_000,
+                            "reasoningOutputTokens": 50_000,
+                        },
+                        "last": {
+                            "totalTokens": 121_800,
+                            "inputTokens": 121_000,
+                            "cachedInputTokens": 100_000,
+                            "outputTokens": 800,
+                            "reasoningOutputTokens": 300,
+                        },
+                        "modelContextWindow": 1_000_000,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(event["kind"], "usage")
+        self.assertEqual(event["turnId"], "turn-1")
+        self.assertEqual(event["tokenUsage"]["last"]["totalTokens"], 121_800)
+        self.assertEqual(event["tokenUsage"]["modelContextWindow"], 1_000_000)
+
+        _, malformed = normalize_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "tokenUsage": {
+                        "last": {"totalTokens": -1, "inputTokens": "secret"},
+                        "modelContextWindow": float("inf"),
+                        "ignored": "do not project",
+                    },
+                },
+            }
+        )
+        self.assertEqual(malformed["tokenUsage"], {})
+        self.assertNotIn("ignored", str(malformed))
+
     def test_session_and_conversation_mapping(self) -> None:
         mapped = session(THREAD, include_messages=True)
         self.assertEqual(mapped["status"], "completed")

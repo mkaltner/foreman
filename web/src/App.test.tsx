@@ -229,6 +229,52 @@ describe("user message links", () => {
   });
 });
 
+describe("session context usage", () => {
+  it("shows remaining context in the header and lower-left session info panel", () => {
+    render(<ConversationView
+      session={{
+        id: "usage-session",
+        repository: "/projects/foreman",
+        title: "Usage session",
+        status: "idle",
+        model: "gpt-test",
+        reasoningEffort: "high",
+        accessLevel: "auto",
+        messages: [
+          { id: "user-1", kind: "user", text: "Hello", turnId: "turn-1" },
+          { id: "assistant-1", kind: "assistant", text: "Hi", turnId: "turn-1" },
+        ],
+        tokenUsage: {
+          total: { totalTokens: 2_500_000 },
+          last: { totalTokens: 200_000, cachedInputTokens: 150_000, outputTokens: 800 },
+          modelContextWindow: 1_000_000,
+        },
+      }}
+      approvals={[]}
+      models={[{ id: "gpt-test", displayName: "GPT Test", visible: true, isDefault: true, reasoningEfforts: ["high"] }]}
+      accessLevels={[{ id: "auto", displayName: "Approve for me" }]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={vi.fn()}
+      onError={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Context usage, 80% left" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /800k left/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /800k left/i }));
+
+    const panel = screen.getByRole("complementary", { name: "Session info" });
+    expect(within(panel).getByText("200k / 1m tokens")).toBeInTheDocument();
+    expect(within(panel).getByRole("meter", { name: "Context used" })).toHaveAttribute("aria-valuenow", "20");
+    expect(within(panel).getByText("2 items · 1 turn")).toBeInTheDocument();
+    expect(within(panel).getByText("2.5m total")).toBeInTheDocument();
+  });
+});
+
 describe("assistant workspace file links", () => {
   it("parses absolute paths with encoded spaces and optional source locations", () => {
     expect(workspaceFileTarget("/projects/My%20App/readme.md:28")).toEqual({

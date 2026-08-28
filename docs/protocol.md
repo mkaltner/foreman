@@ -156,7 +156,11 @@ Conversation reads use the installed `thread/turns/list` contract with bounded
 pagination and `itemsView:"full"`, preserving historical command and tool cards
 after refresh; older Codex versions fall back to `thread/read(includeTurns:true)`.
 `session.event` carries normalized status, lifecycle, assistant delta, public
-activity, and command/tool item events.
+activity, command/tool item events, and bounded `thread/tokenUsage/updated`
+snapshots. Token usage exposes only numeric `total`, `last`, and
+`modelContextWindow` fields. Clients calculate current context occupancy from
+`last.totalTokens`, never the cumulative `total.totalTokens`; usage events do
+not change session recency.
 Reconnect is intentionally a fresh list/read/subscribe sequence; there are no
 cursors, replay logs, or persistent dashboard history.
 

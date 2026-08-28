@@ -32,7 +32,8 @@ uses:
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
 - `model/list`;
 - `permissionProfile/list`;
-- `thread/status/changed`, `turn/started`, and `turn/completed`;
+- `thread/status/changed`, `thread/tokenUsage/updated`, `turn/started`, and
+  `turn/completed`;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
   output deltas.
 
@@ -117,6 +118,10 @@ replay.
 - `turn/start` supports per-turn permissions, approval policy/reviewer, model,
   and effort; `turn/steer` supports image input but not route overrides in the
   verified schema.
+- `thread/tokenUsage/updated` carries a cumulative `total`, a latest-context
+  `last`, and `modelContextWindow`. Foreman's context meter uses
+  `last.totalTokens / modelContextWindow`; cumulative totals are shown only as
+  session activity and are never treated as context occupancy.
 - Access presets use allowed `:workspace` and `:danger-full-access` permission
   profiles. Standard approval routes to the user, automatic approval uses
   `auto_review`, and full access disables approval prompts.

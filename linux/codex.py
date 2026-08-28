@@ -1226,6 +1226,34 @@ def status(raw: Any, last_turn: str | None = None) -> str:
     return last_turn or "idle"
 
 
+def token_count(value: Any) -> int | None:
+    """Return a bounded public token count from an app-server notification."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or value != value or value in (float("inf"), float("-inf")):
+        return None
+    return min(int(value), 1_000_000_000_000)
+
+
+def token_usage_breakdown(raw: Any) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    fields = (
+        "totalTokens",
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheWriteInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+    )
+    result = {
+        field: count
+        for field in fields
+        if (count := token_count(raw.get(field))) is not None
+    }
+    return result if "totalTokens" in result else None
+
+
 def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str, Any]:
     turns = thread.get("turns", [])
     last_turn = turns[-1].get("status") if turns else None
@@ -1655,6 +1683,34 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
             event["model"] = settings["model"]
         if isinstance(settings.get("effort"), str):
             event["reasoningEffort"] = settings["effort"]
+    elif method == "thread/tokenUsage/updated":
+        usage = params.get("tokenUsage")
+        total = (
+            token_usage_breakdown(usage.get("total"))
+            if isinstance(usage, dict)
+            else None
+        )
+        last = (
+            token_usage_breakdown(usage.get("last"))
+            if isinstance(usage, dict)
+            else None
+        )
+        context_window = (
+            token_count(usage.get("modelContextWindow"))
+            if isinstance(usage, dict)
+            else None
+        )
+        event.update(
+            {
+                "kind": "usage",
+                "turnId": params.get("turnId"),
+                "tokenUsage": {
+                    **({"total": total} if total else {}),
+                    **({"last": last} if last else {}),
+                    **({"modelContextWindow": context_window} if context_window else {}),
+                },
+            }
+        )
     elif method in (
         "item/commandExecution/requestApproval",
         "item/fileChange/requestApproval",

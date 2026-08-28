@@ -115,6 +115,24 @@ describe("session mapping and live events", () => {
     expect(current.model).toBe("gpt-test");
   });
 
+  it("applies context usage without treating it as conversation activity", () => {
+    const current = applySessionEvent({ ...session, lastActivity: 123 }, {
+      kind: "usage",
+      observedAt: 999,
+      tokenUsage: {
+        total: { totalTokens: 2_500_000 },
+        last: { totalTokens: 121_800, cachedInputTokens: 100_000, outputTokens: 800 },
+        modelContextWindow: 1_000_000,
+      },
+    });
+
+    expect(current.lastActivity).toBe(123);
+    expect(current.tokenUsage).toEqual(expect.objectContaining({
+      last: expect.objectContaining({ totalTokens: 121_800 }),
+      modelContextWindow: 1_000_000,
+    }));
+  });
+
   it("requires an explicit status event to reactivate a terminal session", () => {
     const completed = applySessionEvent(session, {
       kind: "status",

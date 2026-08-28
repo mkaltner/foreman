@@ -1765,6 +1765,7 @@ export function ConversationView({
   const [jumpVisible, setJumpVisible] = useState(false);
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFile | null>(null);
   const [openingWorkspaceFile, setOpeningWorkspaceFile] = useState<string | null>(null);
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
   const workspaceFileRequest = useRef(0);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
@@ -1815,6 +1816,7 @@ export function ConversationView({
   const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
+  const contextUsage = contextUsageView(session.tokenUsage);
 
   const openWorkspaceFile = async ({ path, line }: WorkspaceFileTarget) => {
     const request = ++workspaceFileRequest.current;
@@ -1964,6 +1966,7 @@ export function ConversationView({
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
         <div><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
+        {contextUsage && <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />}
         <StatusPill status={session.status} />
       </header>
       <div
@@ -1997,6 +2000,13 @@ export function ConversationView({
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
+      {contextUsage && <div className="session-info-anchor">
+        <button className="session-info-dock" type="button" aria-expanded={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)}>
+          <ContextRing usage={contextUsage} />
+          <span><strong>{formatTokenCount(contextUsage.remainingTokens)} left</strong><small>Context</small></span>
+        </button>
+        {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
+      </div>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
           <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} onChange={(value) => void updateAccess(value)} />
@@ -2016,6 +2026,76 @@ export function ConversationView({
       {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onOpenWorkspaceFile={openWorkspaceFile} onClose={() => setWorkspaceFile(null)} />}
     </div>
   );
+}
+
+export interface ContextUsageView {
+  usedTokens: number;
+  remainingTokens: number;
+  contextWindow: number;
+  percentUsed: number;
+  percentRemaining: number;
+}
+
+export function contextUsageView(tokenUsage: SessionSummary["tokenUsage"]): ContextUsageView | null {
+  const usedTokens = tokenUsage?.last?.totalTokens;
+  const contextWindow = tokenUsage?.modelContextWindow;
+  if (!Number.isFinite(usedTokens) || !Number.isFinite(contextWindow) || (usedTokens ?? -1) < 0 || (contextWindow ?? 0) <= 0) return null;
+  const safeUsed = Math.max(0, usedTokens!);
+  const safeWindow = contextWindow!;
+  const remainingTokens = Math.max(0, safeWindow - safeUsed);
+  const percentUsed = Math.min(100, Math.round((safeUsed / safeWindow) * 100));
+  return {
+    usedTokens: safeUsed,
+    remainingTokens,
+    contextWindow: safeWindow,
+    percentUsed,
+    percentRemaining: Math.max(0, 100 - percentUsed),
+  };
+}
+
+export function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${millions >= 10 ? Math.round(millions) : millions.toFixed(1).replace(/\.0$/, "")}m`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${thousands >= 100 ? Math.round(thousands) : thousands.toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(Math.round(value));
+}
+
+function ContextRing({ usage }: { usage: ContextUsageView }) {
+  return <span className="context-ring" aria-hidden="true">
+    <svg viewBox="0 0 36 36"><circle className="context-ring-track" cx="18" cy="18" r="15.5" /><circle className="context-ring-value" cx="18" cy="18" r="15.5" pathLength="100" strokeDasharray={`${usage.percentUsed} 100`} /></svg>
+  </span>;
+}
+
+function ContextUsageButton({ usage, open, onClick }: { usage: ContextUsageView; open: boolean; onClick: () => void }) {
+  return <button className="context-usage-button" type="button" aria-label={`Context usage, ${usage.percentRemaining}% left`} aria-expanded={open} onClick={onClick} title={`${formatTokenCount(usage.remainingTokens)} tokens left`}>
+    <ContextRing usage={usage} /><span>{usage.percentRemaining}%</span>
+  </button>;
+}
+
+function SessionInfoPanel({ session, usage, model, effort, access, onClose }: { session: SessionSummary; usage: ContextUsageView; model: string; effort: string; access: string; onClose: () => void }) {
+  const total = session.tokenUsage?.total;
+  const last = session.tokenUsage?.last;
+  const turnCount = new Set((session.messages ?? []).map(({ turnId }) => turnId).filter(Boolean)).size;
+  return <aside className="session-info-panel" aria-label="Session info">
+    <header><div><span className="eyebrow">Session info</span><strong>Context window</strong></div><button type="button" onClick={onClose} aria-label="Close session info">×</button></header>
+    <div className="context-usage-summary"><span>{formatTokenCount(usage.usedTokens)} / {formatTokenCount(usage.contextWindow)} tokens</span><strong>{usage.percentRemaining}% left</strong></div>
+    <div className="context-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.percentUsed}><i style={{ width: `${usage.percentUsed}%` }} /></div>
+    <p>{formatTokenCount(usage.remainingTokens)} tokens remain before the model context limit.</p>
+    <dl>
+      <div><dt>Model</dt><dd>{model || session.model || "—"}</dd></div>
+      {effort && <div><dt>Reasoning</dt><dd>{reasoningLabel(effort)}</dd></div>}
+      {access && <div><dt>Access</dt><dd>{access}</dd></div>}
+      <div><dt>Transcript</dt><dd>{session.messages?.length ?? 0} items{turnCount ? ` · ${turnCount} ${turnCount === 1 ? "turn" : "turns"}` : ""}</dd></div>
+      {total && <div><dt>Session tokens</dt><dd>{formatTokenCount(total.totalTokens)} total</dd></div>}
+      {last?.cachedInputTokens !== undefined && <div><dt>Cached input</dt><dd>{formatTokenCount(last.cachedInputTokens)}</dd></div>}
+      {last?.outputTokens !== undefined && <div><dt>Last output</dt><dd>{formatTokenCount(last.outputTokens)}</dd></div>}
+    </dl>
+  </aside>;
 }
 
 interface RouteOption {

@@ -1049,7 +1049,7 @@ class Foreman:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
         observed_at = event.get("observedAt")
-        if kind != "route" and isinstance(observed_at, (int, float)):
+        if kind not in ("route", "usage") and isinstance(observed_at, (int, float)):
             overlay["lastActivity"] = observed_at
         if kind == "status":
             projected_status = event.get("status")
@@ -1117,6 +1117,16 @@ class Foreman:
             for key in ("model", "reasoningEffort", "accessLevel"):
                 if isinstance(event.get(key), str):
                     overlay[key] = event[key]
+        elif kind == "usage" and isinstance(event.get("tokenUsage"), dict):
+            usage = event["tokenUsage"]
+            last = usage.get("last")
+            if (
+                isinstance(last, dict)
+                and isinstance(last.get("totalTokens"), int)
+                and isinstance(usage.get("modelContextWindow"), int)
+                and usage["modelContextWindow"] > 0
+            ):
+                overlay["tokenUsage"] = usage
 
     def projected_session(
         self, thread: dict[str, Any], include_messages: bool = False

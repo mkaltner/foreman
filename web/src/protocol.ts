@@ -55,6 +55,21 @@ export interface ConversationItem {
   imageCount?: number;
 }
 
+export interface TokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+}
+
+export interface ThreadTokenUsage {
+  total?: TokenUsageBreakdown;
+  last?: TokenUsageBreakdown;
+  modelContextWindow?: number;
+}
+
 export interface SessionSummary {
   provider?: ProviderId;
   id: string;
@@ -86,6 +101,7 @@ export interface SessionSummary {
   waitType?: "approval" | "input" | null;
   waitDescription?: string | null;
   statusChangedAt?: number | null;
+  tokenUsage?: ThreadTokenUsage;
 }
 
 export interface SessionSearchMatch {
@@ -294,6 +310,7 @@ export interface SessionEvent {
   waitType?: "approval" | "input";
   waitDescription?: string | null;
   observedAt?: number;
+  tokenUsage?: ThreadTokenUsage;
 }
 
 export interface SessionEventPayload {
@@ -498,6 +515,15 @@ export function applySessionEvent(
       reasoningEffort: event.reasoningEffort ?? session.reasoningEffort,
       accessLevel: event.accessLevel ?? session.accessLevel,
     };
+  }
+  if (
+    event.kind === "usage" &&
+    Number.isFinite(event.tokenUsage?.last?.totalTokens) &&
+    Number.isFinite(event.tokenUsage?.modelContextWindow) &&
+    (event.tokenUsage?.last?.totalTokens ?? -1) >= 0 &&
+    (event.tokenUsage?.modelContextWindow ?? 0) > 0
+  ) {
+    return { ...session, tokenUsage: event.tokenUsage };
   }
   return session;
 }
