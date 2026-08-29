@@ -130,6 +130,26 @@ describe("monitoring dashboard", () => {
     expect(screen.getByText("Runtime needs attention")).toBeInTheDocument();
   });
 
+  it("shows enabled non-Codex providers without reporting a Codex outage", () => {
+    render(<Dashboard
+      sessions={[]}
+      providers={[
+        { id: "codex", displayName: "Codex", enabled: false, available: false, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: true, available: true, cliVersion: "2.1.220", capabilities: [], limitations: [] },
+      ]}
+      serviceStatus={{ ...status, codex: { ...status.codex, connected: false } }}
+      connection="connected"
+      disabled={false}
+      onOpen={vi.fn()}
+      onInterrupt={vi.fn()}
+      onRefresh={vi.fn()}
+    />);
+
+    expect(screen.getByText("Claude Code available")).toBeInTheDocument();
+    expect(screen.queryByText("Codex unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Runtime details")).not.toBeInTheDocument();
+  });
+
   it("shows freshness, client counts, route details, and runtime disclosure", () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);

@@ -5,6 +5,7 @@ export type ProviderId = "codex" | "claude-code";
 export interface ProviderInfo {
   id: ProviderId;
   displayName: string;
+  enabled?: boolean;
   available: boolean;
   version?: string | null;
   cliVersion?: string | null;
@@ -13,6 +14,10 @@ export interface ProviderInfo {
   capabilities: string[];
   limitations: string[];
   unavailableReason?: "cli-missing" | "node-missing" | "sdk-missing" | "authentication-unavailable" | "adapter-unavailable" | null;
+}
+
+export function providerEnabled(provider: Pick<ProviderInfo, "enabled">): boolean {
+  return provider.enabled !== false;
 }
 
 export interface WireMessage<T = Record<string, unknown>> {
@@ -45,7 +50,7 @@ export interface ImagePayload {
 
 export interface ConversationItem {
   id: string;
-  kind: "user" | "assistant" | "command" | "tool";
+  kind: "user" | "assistant" | "command" | "tool" | "compaction";
   text?: string;
   description?: string;
   status?: string;
@@ -53,6 +58,52 @@ export interface ConversationItem {
   turnId?: string | null;
   images?: ImagePayload[];
   imageCount?: number;
+  compactionTrigger?: "auto" | "manual";
+  preTokens?: number;
+  postTokens?: number;
+  durationMs?: number;
+}
+
+export interface TokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+}
+
+export interface ThreadTokenUsage {
+  total?: TokenUsageBreakdown;
+  last?: TokenUsageBreakdown;
+  modelContextWindow?: number;
+}
+
+export interface RateLimitWindow {
+  usedPercent: number;
+  windowDurationMins?: number;
+  resetsAt?: number;
+}
+
+export interface RateLimitSnapshot {
+  limitId?: string;
+  limitName?: string;
+  primary?: RateLimitWindow | null;
+  secondary?: RateLimitWindow | null;
+  planType?: string;
+  rateLimitReachedType?: string;
+}
+
+export interface ProviderAccountUsage {
+  available: boolean;
+  rateLimits?: RateLimitSnapshot;
+  experimental?: boolean;
+  observedAt?: number;
+  availabilityReason?: string;
+}
+
+export interface AccountUsage {
+  providers: Partial<Record<ProviderId, ProviderAccountUsage>>;
 }
 
 export interface SessionSummary {
@@ -86,6 +137,7 @@ export interface SessionSummary {
   waitType?: "approval" | "input" | null;
   waitDescription?: string | null;
   statusChangedAt?: number | null;
+  tokenUsage?: ThreadTokenUsage;
 }
 
 export interface SessionSearchMatch {
@@ -294,6 +346,7 @@ export interface SessionEvent {
   waitType?: "approval" | "input";
   waitDescription?: string | null;
   observedAt?: number;
+  tokenUsage?: ThreadTokenUsage;
 }
 
 export interface SessionEventPayload {
@@ -498,6 +551,15 @@ export function applySessionEvent(
       reasoningEffort: event.reasoningEffort ?? session.reasoningEffort,
       accessLevel: event.accessLevel ?? session.accessLevel,
     };
+  }
+  if (
+    event.kind === "usage" &&
+    Number.isFinite(event.tokenUsage?.last?.totalTokens) &&
+    Number.isFinite(event.tokenUsage?.modelContextWindow) &&
+    (event.tokenUsage?.last?.totalTokens ?? -1) >= 0 &&
+    (event.tokenUsage?.modelContextWindow ?? 0) > 0
+  ) {
+    return { ...session, tokenUsage: event.tokenUsage };
   }
   return session;
 }

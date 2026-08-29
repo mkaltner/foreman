@@ -30,6 +30,7 @@ from codex import (  # noqa: E402
     model,
     normalize_event,
     normalize_item,
+    rate_limit_snapshot,
     search_matches,
     safe_failure_summary,
     session,
@@ -110,12 +111,31 @@ class FakeCodex:
         self.approval_responses: list[tuple[str, dict[str, Any]]] = []
         self.inputs: list[dict[str, Any]] = []
         self.input_responses: list[tuple[str, dict[str, Any]]] = []
+        self.rate_limits = {
+            "available": True,
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 2,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000,
+                },
+                "secondary": {
+                    "usedPercent": 11,
+                    "windowDurationMins": 10_080,
+                    "resetsAt": 1_800_086_400,
+                },
+            },
+        }
+        self.started = False
+        self.stopped = False
 
     async def start(self) -> None:
-        pass
+        self.started = True
+        self.stopped = False
 
     async def stop(self) -> None:
-        pass
+        self.stopped = True
 
     def supports(self, method: str) -> bool:
         return method in {
@@ -126,7 +146,11 @@ class FakeCodex:
             "thread/settings/update",
             "item/tool/requestUserInput",
             "mcpServer/elicitation/request",
+            "account/rateLimits/read",
         }
+
+    async def account_rate_limits(self) -> dict[str, Any]:
+        return self.rate_limits
 
     async def list_threads(self) -> list[dict[str, Any]]:
         return [{**THREAD, "turns": []}]
@@ -565,6 +589,48 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(state.active_pairing_count(), 0)
                 self.assertIsNone(state.pair(key, "Late phone"))
 
+    def test_session_token_usage_is_bounded_and_removable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            usage = {
+                "last": {"totalTokens": 121_800},
+                "modelContextWindow": 1_000_000,
+            }
+            state.remember_session_token_usage("thread-1", usage)
+            state.remember_session_token_usage("x" * 101, usage)
+
+            self.assertEqual(state.session_token_usage(), {"thread-1": usage})
+            raw = Path(directory, "state.json").read_text(encoding="utf-8")
+            self.assertNotIn("prompt", raw)
+            state.forget_session_token_usage("thread-1")
+            self.assertEqual(state.session_token_usage(), {})
+
+    def test_provider_account_usage_can_restore_a_bounded_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            usage = {
+                "available": True,
+                "experimental": True,
+                "observedAt": 1_800_000_000,
+                "rateLimits": {
+                    "primary": {"usedPercent": 15, "windowDurationMins": 300}
+                },
+            }
+            state.remember_provider_account_usage("claude-code", usage)
+            state.remember_provider_account_usage("unknown", {"secret": "ignored"})
+
+            self.assertEqual(state.provider_account_usage("claude-code"), usage)
+            self.assertIsNone(state.provider_account_usage("unknown"))
+
+    def test_provider_enablement_defaults_on_and_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            self.assertTrue(state.provider_enabled("codex"))
+            self.assertTrue(state.provider_enabled("claude-code"))
+            state.set_provider_enabled("claude-code", False)
+            self.assertFalse(State(directory).provider_enabled("claude-code"))
+            self.assertFalse(state.provider_enabled("unsupported"))
+
 
 class PairingLimiterTests(unittest.TestCase):
     def test_limits_each_peer_without_revoking_codes(self) -> None:
@@ -688,6 +754,107 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await app.stop()
             self.assertTrue(claude.stopped)
+
+    async def test_provider_enablement_is_persisted_guarded_and_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            client = Client(None, "test")
+            client.authenticated = True
+            await app.start()
+            try:
+                disabled_claude = await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "claude-code", "enabled": False},
+                    },
+                )
+                self.assertFalse(disabled_claude["providers"][1]["enabled"])
+                self.assertNotIn("claude-code", app.account_usage_projection()["providers"])
+                with self.assertRaisesRegex(ValueError, "at least one"):
+                    await app.dispatch(
+                        client,
+                        {
+                            "type": "provider.configure",
+                            "payload": {"provider": "codex", "enabled": False},
+                        },
+                    )
+
+                await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "claude-code", "enabled": True},
+                    },
+                )
+                app.session_overlays["thread-1"] = {"status": "working"}
+                with self.assertRaisesRegex(ValueError, "active or waiting"):
+                    await app.dispatch(
+                        client,
+                        {
+                            "type": "provider.configure",
+                            "payload": {"provider": "codex", "enabled": False},
+                        },
+                    )
+                app.session_overlays["thread-1"] = {"status": "idle"}
+                disabled_codex = await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.configure",
+                        "payload": {"provider": "codex", "enabled": False},
+                    },
+                )
+                self.assertFalse(disabled_codex["providers"][0]["enabled"])
+                self.assertTrue(app.codex.stopped)
+                self.assertEqual(
+                    set(app.account_usage_projection()["providers"]),
+                    {"claude-code"},
+                )
+                with self.assertRaisesRegex(CapabilityError, "disabled in Settings"):
+                    await app.dispatch(
+                        client,
+                        {"type": "session.list", "payload": {}},
+                    )
+                self.assertFalse(State(root / "state").provider_enabled("codex"))
+                self.assertTrue(State(root / "state").provider_enabled("claude-code"))
+            finally:
+                await app.stop()
+
+    async def test_service_start_skips_disabled_provider_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            state.set_provider_enabled("codex", False)
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+
+            await app.start()
+            try:
+                self.assertFalse(app.codex.started)
+                self.assertTrue(FakeClaude.instances[-1].started)
+                statuses = await app.provider_status()
+                self.assertFalse(statuses[0]["enabled"])
+                self.assertFalse(statuses[0]["available"])
+                self.assertTrue(statuses[1]["enabled"])
+            finally:
+                await app.stop()
 
     async def test_authenticated_provider_catalog_and_claude_vertical_slice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -841,6 +1008,70 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.claude_session_overlays["external-session"]["state"],
                 "interrupted",
             )
+
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "usage",
+                    "sessionId": "external-session",
+                    "runId": "run-resume",
+                    "tokenUsage": {
+                        "last": {"totalTokens": 48_000},
+                        "modelContextWindow": 200_000,
+                    },
+                    "accountUsage": {
+                        "available": True,
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 15,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1_800_000_000,
+                            },
+                            "secondary": {
+                                "usedPercent": 28,
+                                "windowDurationMins": 10_080,
+                                "resetsAt": 1_800_086_400,
+                            },
+                        },
+                    },
+                }
+            )
+            self.assertEqual(
+                app.claude_session_overlays["external-session"]["tokenUsage"]["last"]["totalTokens"],
+                48_000,
+            )
+            self.assertEqual(
+                app.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["secondary"]["usedPercent"],
+                28,
+            )
+            restored = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+            )
+            self.assertEqual(
+                restored.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["primary"]["usedPercent"],
+                15,
+            )
+            await app.claude_event(
+                {
+                    "provider": "claude-code",
+                    "kind": "compaction",
+                    "sessionId": "external-session",
+                    "runId": "run-resume",
+                    "trigger": "auto",
+                    "preTokens": 180_000,
+                    "postTokens": 24_000,
+                    "durationMs": 1_250,
+                }
+            )
+            compaction = app.claude_session_messages["external-session"][-1]
+            self.assertEqual(compaction["kind"], "compaction")
+            self.assertEqual(compaction["preTokens"], 180_000)
+            self.assertEqual(compaction["postTokens"], 24_000)
 
             with self.assertRaisesRegex(ValueError, "confirm=true"):
                 await app.dispatch(
@@ -1167,6 +1398,38 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
 
+    async def test_session_context_snapshot_survives_service_recreation(self) -> None:
+        await self.app.codex_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "last": {"totalTokens": 121_800},
+                        "modelContextWindow": 1_000_000,
+                    },
+                },
+            }
+        )
+
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        self.assertEqual(
+            restored.session_overlays["thread-1"]["tokenUsage"]["last"]["totalTokens"],
+            121_800,
+        )
+        self.assertEqual(
+            restored.session_overlays["thread-1"]["tokenUsage"]["modelContextWindow"],
+            1_000_000,
+        )
+
     async def test_remote_restart_gate_defaults_off_and_parses_explicit_opt_in(self) -> None:
         default = Foreman(
             "127.0.0.1",
@@ -1317,6 +1580,125 @@ Tighten up this layout, please.
         self.assertEqual(event["model"], "gpt-test")
         self.assertEqual(event["reasoningEffort"], "high")
 
+    def test_maps_bounded_thread_context_usage(self) -> None:
+        thread_id, event = normalize_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "total": {
+                            "totalTokens": 2_500_000,
+                            "inputTokens": 2_400_000,
+                            "cachedInputTokens": 2_000_000,
+                            "outputTokens": 100_000,
+                            "reasoningOutputTokens": 50_000,
+                        },
+                        "last": {
+                            "totalTokens": 121_800,
+                            "inputTokens": 121_000,
+                            "cachedInputTokens": 100_000,
+                            "outputTokens": 800,
+                            "reasoningOutputTokens": 300,
+                        },
+                        "modelContextWindow": 1_000_000,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(event["kind"], "usage")
+        self.assertEqual(event["turnId"], "turn-1")
+        self.assertEqual(event["tokenUsage"]["last"]["totalTokens"], 121_800)
+        self.assertEqual(event["tokenUsage"]["modelContextWindow"], 1_000_000)
+
+        _, malformed = normalize_event(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "tokenUsage": {
+                        "last": {"totalTokens": -1, "inputTokens": "secret"},
+                        "modelContextWindow": float("inf"),
+                        "ignored": "do not project",
+                    },
+                },
+            }
+        )
+        self.assertEqual(malformed["tokenUsage"], {})
+        self.assertNotIn("ignored", str(malformed))
+
+    def test_maps_bounded_account_rate_limits(self) -> None:
+        snapshot = rate_limit_snapshot(
+            {
+                "limitId": "codex",
+                "limitName": "Codex" * 40,
+                "primary": {
+                    "usedPercent": 102.45,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000,
+                },
+                "secondary": {
+                    "usedPercent": -5,
+                    "windowDurationMins": 10_080,
+                    "resetsAt": 1_800_086_400,
+                },
+                "credits": {"balance": "private"},
+                "account": {"email": "private@example.com"},
+            }
+        )
+
+        assert snapshot is not None
+        self.assertEqual(snapshot["primary"]["usedPercent"], 100)
+        self.assertEqual(snapshot["secondary"]["usedPercent"], 0)
+        self.assertEqual(snapshot["secondary"]["windowDurationMins"], 10_080)
+        self.assertLessEqual(len(snapshot["limitName"]), 100)
+        self.assertNotIn("private", str(snapshot))
+
+    def test_sparse_account_usage_event_preserves_other_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            foreman = Foreman(
+                "127.0.0.1",
+                8765,
+                Path(directory),
+                State(Path(directory) / "state"),
+                "codex",
+                FakeCodex,
+            )
+            foreman.account_usage = {
+                "available": True,
+                "rateLimits": {
+                    "primary": {"usedPercent": 2, "windowDurationMins": 300},
+                    "secondary": {"usedPercent": 11, "windowDurationMins": 10_080},
+                },
+            }
+            asyncio.run(
+                foreman.codex_event(
+                    {
+                        "method": "account/rateLimits/updated",
+                        "params": {
+                            "rateLimits": {
+                                "limitId": "codex",
+                                "primary": {
+                                    "usedPercent": 3,
+                                    "windowDurationMins": 300,
+                                },
+                                "secondary": None,
+                            }
+                        },
+                    }
+                )
+            )
+
+        self.assertEqual(
+            foreman.account_usage["rateLimits"]["primary"]["usedPercent"], 3
+        )
+        self.assertEqual(
+            foreman.account_usage["rateLimits"]["secondary"]["usedPercent"], 11
+        )
+
     def test_session_and_conversation_mapping(self) -> None:
         mapped = session(THREAD, include_messages=True)
         self.assertEqual(mapped["status"], "completed")
@@ -1333,6 +1715,15 @@ Tighten up this layout, please.
                 }
             )["exitCode"],
             0,
+        )
+        self.assertEqual(
+            normalize_item({"id": "compact", "type": "contextCompaction"}),
+            {
+                "id": "compact",
+                "rawType": "contextCompaction",
+                "kind": "compaction",
+                "description": "Context compacted",
+            },
         )
         self.assertEqual(
             status({"type": "active", "activeFlags": ["waitingOnUserInput"]}),
@@ -1514,6 +1905,33 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_account_rate_limits_without_account_identity(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._supported_methods = {"account/rateLimits/read"}
+        adapter.request = AsyncMock(
+            return_value={
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {
+                        "usedPercent": 24,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_800_000_000,
+                    },
+                    "secondary": None,
+                    "planType": "plus",
+                    "accountEmail": "do-not-project@example.com",
+                }
+            }
+        )
+
+        result = await adapter.account_rate_limits()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["rateLimits"]["primary"]["usedPercent"], 24)
+        self.assertEqual(result["rateLimits"]["planType"], "plus")
+        self.assertNotIn("accountEmail", str(result))
+        adapter.request.assert_awaited_once_with("account/rateLimits/read")
+
     async def test_reads_paginated_turns_with_full_command_items(self) -> None:
         adapter = Codex("unused", AsyncMock())
         adapter._supported_methods = {"thread/turns/list"}
@@ -2174,6 +2592,16 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service_status["repositoryRoot"], str(self.repository_root.resolve()))
         self.assertNotIn("deviceToken", str(service_status))
         self.assertNotIn(self.pairing_key, str(service_status))
+        account_usage = await self.request("usage.status")
+        self.assertTrue(account_usage["providers"]["codex"]["available"])
+        self.assertEqual(
+            account_usage["providers"]["codex"]["rateLimits"]["primary"]["usedPercent"], 2
+        )
+        self.assertEqual(
+            account_usage["providers"]["codex"]["rateLimits"]["secondary"]["windowDurationMins"],
+            10_080,
+        )
+        self.assertFalse(account_usage["providers"]["claude-code"]["available"])
         owned = type("OwnedProcess", (), {"pid": 321, "returncode": None})()
         self.app.codex.process = owned
         owned_status = await self.request("service.status")

@@ -17,8 +17,13 @@ class FakeOverviewClient implements OverviewClient {
     await onReady(false);
   }
   async request<T extends Record<string, unknown>>(type: string): Promise<T> {
-    const payload = type === "session.list" ? { sessions: [] }
+    const payload = type === "provider.list" ? { providers: [
+      { id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
+      { id: "claude-code", displayName: "Claude Code", enabled: false, available: false, capabilities: [], limitations: [] },
+    ] }
+      : type === "provider.session.list" ? { sessions: [] }
       : type === "approval.list" ? { approvals: [] }
+        : type === "input.list" ? { inputs: [] }
         : { foremanVersion: "1", connected: true, uptimeSeconds: 1, codex: { connected: true, mode: "shared", runtimeStatus: "ready" }, listeners: { tcpPort: 8765 }, repositoryRoot: "/" };
     return payload as unknown as T;
   }

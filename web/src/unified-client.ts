@@ -1,11 +1,15 @@
 import { ForemanWebClient, parseEndpoint, type ClientHooks, type ConnectionState, type Endpoint } from "./client";
 import {
   applySessionSummaryEvent,
+  providerEnabled,
+  providerSessionKey,
   reconcileSessionSummaries,
+  sessionProvider,
   type ApprovalEventPayload,
   type ApprovalRequest,
   type InputEventPayload,
   type InputRequest,
+  type ProviderInfo,
   type ServiceStatus,
   type SessionEventPayload,
   type SessionSummary,
@@ -101,17 +105,31 @@ export class UnifiedHostConnections {
     });
     this.clients.set(host.id, client);
     void client.start(parseEndpoint(host.host, host.webPort), host.deviceToken, async () => {
-      const [sessionResult, approvalResult, inputResult, statusResult] = await Promise.all([
-        client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("session.list"),
-        client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
-        client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
-          .catch(() => ({ inputs: [] } as { inputs: InputRequest[] } & Record<string, unknown>)),
+      const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
+      const codexAvailable = providerResult.providers.some((provider) => provider.id === "codex" && providerEnabled(provider) && provider.available);
+      const claudeAvailable = providerResult.providers.some((provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available);
+      const [codexSessionResult, claudeSessionResult, approvalResult, inputResult, statusResult] = await Promise.all([
+        codexAvailable
+          ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })
+          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+        claudeAvailable
+          ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" })
+          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+        codexAvailable
+          ? client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list")
+          : Promise.resolve({ approvals: [] as ApprovalRequest[] }),
+        codexAvailable
+          ? client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list").catch(() => ({ inputs: [] as InputRequest[] }))
+          : Promise.resolve({ inputs: [] as InputRequest[] }),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
       ]);
       if (this.clients.get(host.id) !== client) return;
       this.projections.set(host.id, {
         connection: "connected",
-        sessions: sessionResult.sessions,
+        sessions: [
+          ...codexSessionResult.sessions.map((session) => ({ ...session, provider: "codex" as const })),
+          ...claudeSessionResult.sessions.map((session) => ({ ...session, provider: "claude-code" as const })),
+        ],
         approvals: approvalResult.approvals,
         inputs: inputResult.inputs ?? [],
         status: statusResult,
@@ -128,12 +146,14 @@ export class UnifiedHostConnections {
     } else if (message.type === "session.event") {
       const payload = message.payload as unknown as SessionEventPayload;
       if (!payload.sessionId || !payload.event) return;
+      const provider = payload.provider ?? "codex";
+      const identity = providerSessionKey(provider, payload.sessionId);
       if (payload.event.kind === "lifecycle" && payload.event.action === "removed") {
-        projection.sessions = projection.sessions.filter(({ id }) => id !== payload.sessionId);
+        projection.sessions = projection.sessions.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identity);
       } else if (payload.event.session) {
-        projection.sessions = reconcileSessionSummaries(projection.sessions, [payload.event.session]);
+        projection.sessions = reconcileSessionSummaries(projection.sessions, [{ ...payload.event.session, provider }]);
       } else {
-        projection.sessions = projection.sessions.map((session) => session.id === payload.sessionId
+        projection.sessions = projection.sessions.map((session) => providerSessionKey(sessionProvider(session), session.id) === identity
           ? applySessionSummaryEvent(session, payload.event)
           : session);
       }

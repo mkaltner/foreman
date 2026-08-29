@@ -155,5 +155,17 @@ export function query({ prompt, options }) {
     return { still_queued: [] };
   };
   iterator.close = () => releaseSleep();
+  iterator.getContextUsage = async () => ({
+    totalTokens: 48_000,
+    maxTokens: 200_000,
+    percentage: 24,
+  });
+  iterator.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = async () => ({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 15, resets_at: "2027-01-15T12:00:00Z" },
+      seven_day: { utilization: 28, resets_at: "2027-01-20T12:00:00Z" },
+    },
+  });
   return iterator;
 }

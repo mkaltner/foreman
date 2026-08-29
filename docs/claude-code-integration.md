@@ -34,6 +34,18 @@ complete Bash output are not projected or persisted. Official history access is
 normalized only when a client opens one session; list discovery never fetches
 every transcript.
 
+During a Foreman-managed query, the bridge requests the Agent SDK's stable
+context-usage breakdown and projects only total active-context tokens and the
+model window. It also defensively calls the SDK method explicitly named
+`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` for claude.ai
+5-hour and 7-day utilization. Those account limits are labeled experimental,
+bounded to percentages and reset timestamps, and the last observed snapshot is
+kept in Foreman's private state so it survives restart. They remain unavailable
+until a managed query yields a snapshot. API-key and third-party-provider
+sessions may never expose plan limits. Compact-boundary history/events are projected without
+their summary text, allowing the UI to show count, trigger, before/after tokens,
+and duration when supplied.
+
 Claude support is optional on the Linux host and exposed through the Foreman web
 and Android clients. It requires an authenticated native `claude` executable, Node.js 20 or
 newer, and the pinned SDK dependency. Tagged Foreman Linux archives contain the

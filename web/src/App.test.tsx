@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
+import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, ProviderSettings, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
 import type { SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
@@ -226,6 +226,132 @@ describe("user message links", () => {
     expect(link).toHaveAttribute("href", "https://example.com/pr/11");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+});
+
+describe("session context usage", () => {
+  it("keeps per-session context in the conversation header", () => {
+    render(<ConversationView
+      session={{
+        id: "usage-session",
+        repository: "/projects/foreman",
+        title: "Usage session",
+        status: "idle",
+        model: "gpt-test",
+        reasoningEffort: "high",
+        accessLevel: "auto",
+        messages: [
+          { id: "compact-1", kind: "compaction", description: "Context compacted", compactionTrigger: "auto", preTokens: 900_000, postTokens: 120_000, durationMs: 2_000 },
+          { id: "user-1", kind: "user", text: "Hello", turnId: "turn-1" },
+          { id: "assistant-1", kind: "assistant", text: "Hi", turnId: "turn-1" },
+        ],
+        tokenUsage: {
+          total: { totalTokens: 2_500_000 },
+          last: { totalTokens: 200_000, cachedInputTokens: 150_000, outputTokens: 800 },
+          modelContextWindow: 1_000_000,
+        },
+      }}
+      approvals={[]}
+      models={[{ id: "gpt-test", displayName: "GPT Test", visible: true, isDefault: true, reasoningEfforts: ["high"] }]}
+      accessLevels={[{ id: "auto", displayName: "Approve for me" }]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft=""
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={vi.fn()}
+      onError={vi.fn()}
+    />);
+
+    const trigger = screen.getByRole("button", { name: "Context usage, 80% left" });
+    const header = trigger.closest("header");
+    expect(header).toHaveClass("conversation-header");
+    const status = within(header as HTMLElement).getByText("Idle");
+    expect(status.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(trigger);
+
+    const panel = screen.getByRole("complementary", { name: "Session info" });
+    expect(within(panel).getByText("200k / 1m tokens")).toBeInTheDocument();
+    expect(within(panel).getByText(/Codex normally compacts the conversation automatically/)).toBeInTheDocument();
+    expect(within(panel).getByRole("meter", { name: "Context used" })).toHaveAttribute("aria-valuenow", "20");
+    expect(within(panel).getByText("3 items · 1 turn")).toBeInTheDocument();
+    expect(within(panel).getByText("Compactions").nextSibling).toHaveTextContent("1");
+    expect(within(panel).getByText("Automatic · 900k → 120k")).toBeInTheDocument();
+    expect(within(panel).getByText("2.5m total")).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("complementary", { name: "Session info" })).not.toBeInTheDocument();
+  });
+
+  it("shows account-wide limits beneath the session list", () => {
+    render(<SessionList
+      results={[]}
+      accountUsage={{
+        providers: {
+          codex: {
+            available: true,
+            rateLimits: {
+              limitId: "codex",
+              primary: { usedPercent: 2, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+              secondary: { usedPercent: 11, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+            },
+          },
+          "claude-code": {
+            available: true,
+            experimental: true,
+            observedAt: 1_800_000_000,
+            rateLimits: {
+              primary: { usedPercent: 15, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+              secondary: { usedPercent: 28, windowDurationMins: 10_080, resetsAt: 1_800_086_400 },
+            },
+          },
+        },
+      }}
+      filters={DEFAULT_SESSION_FILTERS}
+      repositoryOptions={[]}
+      searchLoading={false}
+      searchError=""
+      selectedId={null}
+      selectedProvider="codex"
+      disabled={false}
+      onOpen={vi.fn()}
+      onRefresh={vi.fn()}
+      onNew={vi.fn()}
+      onAction={vi.fn()}
+      onFilters={vi.fn()}
+      onSearchNow={vi.fn()}
+      onPin={vi.fn()}
+      onHide={vi.fn()}
+    />);
+
+    const trigger = screen.getByRole("button", { name: "Account usage, Codex 89% left, Claude 72% left" });
+    expect(trigger.closest(".session-pane")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    const panel = screen.getByRole("complementary", { name: "Account usage" });
+    expect(within(panel).getByText("Across providers")).toBeInTheDocument();
+    expect(within(panel).getByRole("meter", { name: "Codex 5-hour limit used" })).toHaveAttribute("aria-valuenow", "2");
+    expect(within(panel).getByRole("meter", { name: "Codex Weekly limit used" })).toHaveAttribute("aria-valuenow", "11");
+    expect(within(panel).getByRole("meter", { name: "Claude 5-hour limit used" })).toHaveAttribute("aria-valuenow", "15");
+    expect(within(panel).getByRole("meter", { name: "Claude Weekly limit used" })).toHaveAttribute("aria-valuenow", "28");
+    expect(within(panel).getByText("Experimental")).toBeInTheDocument();
+    fireEvent.focusIn(document.body);
+    expect(screen.queryByRole("complementary", { name: "Account usage" })).not.toBeInTheDocument();
+  });
+
+  it("omits disabled providers from account usage status", () => {
+    render(<AccountUsageDock
+      usage={{ providers: {
+        codex: { available: true, rateLimits: { primary: { usedPercent: 12 } } },
+        "claude-code": { available: true, rateLimits: { primary: { usedPercent: 34 } } },
+      } }}
+      providers={[
+        { id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: false, available: false, capabilities: [], limitations: [] },
+      ]}
+    />);
+
+    expect(screen.getByRole("button", { name: "Account usage, Codex 88% left" })).toBeInTheDocument();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
   });
 });
 
@@ -752,6 +878,26 @@ describe("NewSessionDialog", () => {
     accessLevels: [{ id: "ask", displayName: "Ask for approval" }, { id: "full", displayName: "Full access" }],
   };
 
+  it("offers only enabled providers and defaults to the remaining provider", () => {
+    render(<NewSessionDialog
+      repositories={[]}
+      repositoryRoot="/projects"
+      {...routeProps}
+      providers={[
+        { id: "codex", displayName: "Codex", enabled: false, available: false, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: true, available: true, capabilities: [], limitations: [] },
+      ]}
+      claudeModels={[{ id: "sonnet", displayName: "Sonnet", reasoningEfforts: [], visible: true, isDefault: true }]}
+      claudePermissionModes={[{ id: "default", displayName: "Default" }]}
+      onClose={vi.fn()}
+      onCreate={vi.fn()}
+    />);
+
+    expect(screen.getByLabelText("Provider")).toHaveValue("claude-code");
+    expect(within(screen.getByLabelText("Provider")).queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Initial prompt")).toBeInTheDocument();
+  });
+
   it("starts in the configured workspace when no repositories exist", () => {
     const create = vi.fn().mockResolvedValue(undefined);
     render(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} onClose={vi.fn()} onCreate={create} />);
@@ -862,5 +1008,27 @@ describe("NewSessionDialog", () => {
     expect(screen.getByText("Claude Code is unavailable on this host.")).toBeInTheDocument();
     expect(screen.getByText("Node.js 20 or newer is missing.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start Claude session" })).toBeDisabled();
+  });
+});
+
+describe("ProviderSettings", () => {
+  it("updates providers and protects the last enabled provider", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const providers = [
+      { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
+      { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: true, capabilities: [], limitations: [] },
+    ];
+    const view = render(<ProviderSettings providers={providers} onProviderEnabled={update} />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Claude Code/ }));
+    expect(update).toHaveBeenCalledWith("claude-code", false);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeEnabled());
+
+    view.rerender(<ProviderSettings
+      providers={providers.map((provider) => ({ ...provider, enabled: provider.id === "claude-code" }))}
+      onProviderEnabled={update}
+    />);
+    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeDisabled();
+    expect(screen.getByText(/at least one required/)).toBeInTheDocument();
   });
 });

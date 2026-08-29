@@ -24,7 +24,7 @@ import { UnifiedHostConnections } from "./unified-client";
 import { forgetHostSnapshot, loadHostSnapshots, saveHostSnapshots } from "./unified-storage";
 import { mergeHostSnapshot, projectHostSnapshot, sessionIdentityKey, type HostOverviewSnapshot, type UnifiedAttentionItem } from "./unified";
 import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery";
-import { recordRecentActivity, type RecentActivityEntry } from "./dashboard";
+import { formatDuration, recordRecentActivity, type RecentActivityEntry } from "./dashboard";
 import {
   ForemanWebClient,
   inferPagePort,
@@ -52,10 +52,12 @@ import {
   applySessionSummaryEvent,
   liveActivityLabel,
   liveActivityMessage,
+  providerEnabled,
   routeForSession,
   providerSessionKey,
   reconcileSessionSummaries,
   sessionProvider,
+  type AccountUsage,
   type AccessLevelInfo,
   type ApprovalEventPayload,
   type ApprovalRequest,
@@ -194,6 +196,7 @@ function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
+  const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
@@ -575,7 +578,21 @@ function App() {
     }
     if (message.type === "provider.event") {
       const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
-      if (Array.isArray(nextProviders)) setProviders(nextProviders);
+      if (Array.isArray(nextProviders)) {
+        const enabled = new Set(nextProviders.filter(providerEnabled).map(({ id }) => id));
+        setProviders(nextProviders);
+        setSessions((previous) => {
+          const next = previous.filter((session) => enabled.has(sessionProvider(session)));
+          sessionsRef.current = next;
+          return next;
+        });
+        setSearchResults((previous) => previous.filter(({ session }) => enabled.has(sessionProvider(session))));
+        setCurrent((previous) => previous && enabled.has(sessionProvider(previous)) ? previous : null);
+      }
+      return;
+    }
+    if (message.type === "usage.event") {
+      setAccountUsage(message.payload as unknown as AccountUsage);
       return;
     }
     if (message.type !== "session.event") return;
@@ -733,6 +750,7 @@ function App() {
     setClaudePermissionModes([]);
     setRepositories([]);
     setServiceStatus(null);
+    setAccountUsage(null);
     setPairedClients([]);
     setRecentActivity([]);
     setSearchResults([]);
@@ -773,21 +791,35 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
-      const [approvalResult, inputResult, providerResult, codexSessionResult, modelResult, accessResult, statusResult, repositoryResult, clientResult] = await Promise.all([
-        client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
-        client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
-          .catch(() => ({ inputs: [] })),
-        client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list"),
-        client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" }),
-        client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list"),
-        client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list"),
+      const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
+      const codexAvailable = providerResult.providers.some(
+        (provider) => provider.id === "codex" && providerEnabled(provider) && provider.available,
+      );
+      const claudeAvailable = providerResult.providers.some(
+        (provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available,
+      );
+      const [approvalResult, inputResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
+        codexAvailable
+          ? client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list")
+          : Promise.resolve({ approvals: [] as ApprovalRequest[] }),
+        codexAvailable
+          ? client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list").catch(() => ({ inputs: [] as InputRequest[] }))
+          : Promise.resolve({ inputs: [] as InputRequest[] }),
+        codexAvailable
+          ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })
+          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+        codexAvailable
+          ? client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list")
+          : Promise.resolve({ models: [] as ModelInfo[] }),
+        codexAvailable
+          ? client.request<{ levels: AccessLevelInfo[] } & Record<string, unknown>>("access.list")
+          : Promise.resolve({ levels: [] as AccessLevelInfo[] }),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
+        client.request<AccountUsage & Record<string, unknown>>("usage.status")
+          .catch(() => ({ providers: {} })),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
-      const claudeAvailable = providerResult.providers.some(
-        (provider) => provider.id === "claude-code" && provider.available,
-      );
       const [claudeSessionResult, claudeModelResult, claudePermissionResult] = claudeAvailable
         ? await Promise.all([
           client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" }),
@@ -841,6 +873,7 @@ function App() {
       })));
       setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
+      setAccountUsage(usageResult);
       setRepositories(repositoryResult.repositories);
       setPairedClients(clientResult.clients);
       if (reconnected) dashboardSubscriptions.current.clear();
@@ -1283,7 +1316,7 @@ function App() {
         </nav>
       </header>
 
-      {hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" && (
+      {providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" && (
         <div className="runtime-banner" role="status">
           Fallback Codex runtime active. Live Desktop co-presence is unavailable.
         </div>
@@ -1301,6 +1334,7 @@ function App() {
           hosts={hostRegistry.hosts}
           appearance={appearance}
           hello={hello}
+          providers={providers}
           onAppearance={updateAppearance}
           notificationPreferences={notificationPreferences}
           notificationState={notificationState}
@@ -1313,6 +1347,16 @@ function App() {
             const next = browserNotificationState();
             setNotificationState(next);
             if (!granted) setError(notificationStateDescription(next, false));
+          }}
+          onProviderEnabled={async (provider, enabled) => {
+            try {
+              const result = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.configure", { provider, enabled });
+              setProviders(result.providers);
+              await refreshState(activeHost.id);
+            } catch (caught) {
+              setError(caught instanceof Error ? caught.message : "Provider setting could not be updated");
+              throw caught;
+            }
           }}
           onAdd={() => setHostSetupOpen(true)}
           onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
@@ -1346,6 +1390,7 @@ function App() {
             repositories={repositories}
             recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(providerSessionKey("codex", entry.sessionId)))}
             pairedClients={pairedClients}
+            providers={providers}
             connection={connection}
             disabled={!connected}
             onOpen={dashboardOpen}
@@ -1374,6 +1419,8 @@ function App() {
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
             results={visibleSessions}
+            accountUsage={accountUsage}
+            providers={providers}
             filters={searchFilters}
             repositoryOptions={repositoryOptions}
             searchLoading={searchLoading}
@@ -1464,7 +1511,7 @@ function App() {
               <div className="empty-detail">
                 <span className="brand-mark large">F</span>
                 <h2>{busy ? "Loading session…" : "Select a session"}</h2>
-                <p>Open an existing Codex session or start a new one.</p>
+                <p>Open an existing session or start a new one.</p>
               </div>
             )}
           </section>
@@ -1619,6 +1666,8 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 
 export function SessionList({
   results,
+  accountUsage = null,
+  providers = [],
   filters,
   repositoryOptions,
   searchLoading,
@@ -1636,6 +1685,8 @@ export function SessionList({
   onHide,
 }: {
   results: VisibleSession[];
+  accountUsage?: AccountUsage | null;
+  providers?: ProviderInfo[];
   filters: SessionFilters;
   repositoryOptions: RepositoryFilterOption[];
   searchLoading: boolean;
@@ -1704,8 +1755,76 @@ export function SessionList({
         )}
         </>}
       </div>
+      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} providers={providers} />}
     </aside>
   );
+}
+
+export function AccountUsageDock({ usage, providers: providerInfo }: { usage: AccountUsage; providers: ProviderInfo[] }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = usePopoverDismiss<HTMLDivElement>(open, setOpen);
+  const providers = ([
+    { id: "codex", label: "Codex" },
+    { id: "claude-code", label: "Claude" },
+  ] as const)
+    .filter((provider) => providerInfo.length === 0
+      ? usage.providers[provider.id] !== undefined
+      : providerInfo.some((entry) => entry.id === provider.id && providerEnabled(entry)))
+    .map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
+  const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
+  if (!availableWindows.length && !providers.some(({ usage: providerUsage }) => providerUsage)) return null;
+  const usedPercent = availableWindows.length
+    ? Math.max(...availableWindows.map((window) => Math.max(0, Math.min(100, window.usedPercent))))
+    : 0;
+  const summary = providers.map(({ label, usage: providerUsage }) => `${label} ${accountUsageRemaining(providerUsage)}`).join(", ");
+  return <div className="account-usage-anchor" ref={rootRef}>
+    <button className="account-usage-dock" type="button" aria-label={`Account usage, ${summary}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <UsageRing percentUsed={usedPercent} />
+      <span className="account-provider-summary">{providers.map(({ id, label, usage: providerUsage }) => <span key={id}><b>{label}</b><strong>{accountUsageRemaining(providerUsage)}</strong></span>)}<small>Account usage</small></span>
+    </button>
+    {open && <aside className="account-usage-panel" aria-label="Account usage">
+      <header><div><span className="eyebrow">Across providers</span><strong>Account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
+      <div className="account-provider-list">{providers.map(({ id, label, usage: providerUsage }) => {
+        const windows = accountUsageWindows(providerUsage);
+        return <section className="account-provider-usage" key={id}>
+          <div className="account-provider-heading"><strong>{label}</strong>{providerUsage?.experimental && <span>Experimental</span>}</div>
+          {windows.length ? <div className="account-limit-list">{windows.map((window, index) => {
+            const remaining = Math.max(0, Math.round(100 - window.usedPercent));
+            return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
+              <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
+              <div className="context-meter" role="meter" aria-label={`${label} ${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
+              <small>{rateLimitResetLabel(window.resetsAt)}</small>
+            </section>;
+          })}</div> : <p>{providerUsage?.availabilityReason || `${label} usage is unavailable.`}</p>}
+          {providerUsage?.observedAt && <small className="usage-observed">Last observed {new Date(providerUsage.observedAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small>}
+        </section>;
+      })}</div>
+    </aside>}
+  </div>;
+}
+
+function accountUsageWindows(usage: AccountUsage["providers"][ProviderId]) {
+  return [usage?.rateLimits?.primary, usage?.rateLimits?.secondary].filter(
+    (window): window is NonNullable<typeof window> => !!window && Number.isFinite(window.usedPercent),
+  );
+}
+
+function accountUsageRemaining(usage: AccountUsage["providers"][ProviderId]): string {
+  const windows = accountUsageWindows(usage);
+  if (!windows.length) return "unavailable";
+  return `${Math.max(0, Math.round(100 - Math.max(...windows.map((window) => window.usedPercent))))}% left`;
+}
+
+function rateLimitLabel(durationMins: number | undefined, index: number): string {
+  if (durationMins === 10_080) return "Weekly limit";
+  if (durationMins && durationMins % 60 === 0) return `${durationMins / 60}-hour limit`;
+  if (durationMins) return `${durationMins}-minute limit`;
+  return index === 0 ? "Primary limit" : "Secondary limit";
+}
+
+function rateLimitResetLabel(resetsAt: number | undefined): string {
+  if (!resetsAt) return "Reset time unavailable";
+  return `Resets ${new Date(resetsAt * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
 export function ConversationView({
@@ -1765,6 +1884,8 @@ export function ConversationView({
   const [jumpVisible, setJumpVisible] = useState(false);
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFile | null>(null);
   const [openingWorkspaceFile, setOpeningWorkspaceFile] = useState<string | null>(null);
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+  const sessionInfoRef = usePopoverDismiss<HTMLSpanElement>(sessionInfoOpen, setSessionInfoOpen);
   const workspaceFileRequest = useRef(0);
   const protectedItemIds = useMemo(() => new Set([
     ...(highlightItemId ? [highlightItemId] : []),
@@ -1815,6 +1936,7 @@ export function ConversationView({
   const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
+  const contextUsage = contextUsageView(session.tokenUsage);
 
   const openWorkspaceFile = async ({ path, line }: WorkspaceFileTarget) => {
     const request = ++workspaceFileRequest.current;
@@ -1963,8 +2085,12 @@ export function ConversationView({
     <div className="conversation">
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
-        <div><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
+        <div className="conversation-title"><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
         <StatusPill status={session.status} />
+        {contextUsage && <span className="session-context-control" ref={sessionInfoRef}>
+          <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
+          {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
+        </span>}
       </header>
       <div
         className="transcript"
@@ -2016,6 +2142,111 @@ export function ConversationView({
       {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onOpenWorkspaceFile={openWorkspaceFile} onClose={() => setWorkspaceFile(null)} />}
     </div>
   );
+}
+
+export interface ContextUsageView {
+  usedTokens: number;
+  remainingTokens: number;
+  contextWindow: number;
+  percentUsed: number;
+  percentRemaining: number;
+}
+
+export function contextUsageView(tokenUsage: SessionSummary["tokenUsage"]): ContextUsageView | null {
+  const usedTokens = tokenUsage?.last?.totalTokens;
+  const contextWindow = tokenUsage?.modelContextWindow;
+  if (!Number.isFinite(usedTokens) || !Number.isFinite(contextWindow) || (usedTokens ?? -1) < 0 || (contextWindow ?? 0) <= 0) return null;
+  const safeUsed = Math.max(0, usedTokens!);
+  const safeWindow = contextWindow!;
+  const remainingTokens = Math.max(0, safeWindow - safeUsed);
+  const percentUsed = Math.min(100, Math.round((safeUsed / safeWindow) * 100));
+  return {
+    usedTokens: safeUsed,
+    remainingTokens,
+    contextWindow: safeWindow,
+    percentUsed,
+    percentRemaining: Math.max(0, 100 - percentUsed),
+  };
+}
+
+export function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${millions >= 10 ? Math.round(millions) : millions.toFixed(1).replace(/\.0$/, "")}m`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${thousands >= 100 ? Math.round(thousands) : thousands.toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(Math.round(value));
+}
+
+function UsageRing({ percentUsed }: { percentUsed: number }) {
+  return <span className="context-ring" aria-hidden="true">
+    <svg viewBox="0 0 36 36"><circle className="context-ring-track" cx="18" cy="18" r="15.5" /><circle className="context-ring-value" cx="18" cy="18" r="15.5" pathLength="100" strokeDasharray={`${percentUsed} 100`} /></svg>
+  </span>;
+}
+
+function usePopoverDismiss<T extends HTMLElement>(open: boolean, setOpen: (open: boolean) => void) {
+  const rootRef = useRef<T>(null);
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: MouseEvent | FocusEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", dismissOutside);
+    document.addEventListener("focusin", dismissOutside);
+    document.addEventListener("keydown", dismissEscape);
+    return () => {
+      document.removeEventListener("mousedown", dismissOutside);
+      document.removeEventListener("focusin", dismissOutside);
+      document.removeEventListener("keydown", dismissEscape);
+    };
+  }, [open, setOpen]);
+  return rootRef;
+}
+
+function ContextUsageButton({ usage, open, onClick }: { usage: ContextUsageView; open: boolean; onClick: () => void }) {
+  return <button className="context-usage-button" type="button" aria-label={`Context usage, ${usage.percentRemaining}% left`} aria-expanded={open} onClick={onClick} title={`${formatTokenCount(usage.remainingTokens)} tokens left`}>
+    <UsageRing percentUsed={usage.percentUsed} /><span>{usage.percentRemaining}%</span>
+  </button>;
+}
+
+function SessionInfoPanel({ session, usage, model, effort, access, onClose }: { session: SessionSummary; usage: ContextUsageView; model: string; effort: string; access: string; onClose: () => void }) {
+  const total = session.tokenUsage?.total;
+  const last = session.tokenUsage?.last;
+  const turnCount = new Set((session.messages ?? []).map(({ turnId }) => turnId).filter(Boolean)).size;
+  const compactions = (session.messages ?? []).filter(({ kind }) => kind === "compaction");
+  const latestCompaction = compactions.at(-1);
+  const provider = sessionProvider(session);
+  return <aside className="session-info-panel" aria-label="Session info">
+    <header><div><span className="eyebrow">Session info</span><strong>Context window</strong></div><button type="button" onClick={onClose} aria-label="Close session info">×</button></header>
+    <div className="context-usage-summary"><span>{formatTokenCount(usage.usedTokens)} / {formatTokenCount(usage.contextWindow)} tokens</span><strong>{usage.percentRemaining}% left</strong></div>
+    <div className="context-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.percentUsed}><i style={{ width: `${usage.percentUsed}%` }} /></div>
+    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. {provider === "claude-code" ? "Claude" : "Codex"} normally compacts the conversation automatically before the window is exhausted.</p>
+    <dl>
+      <div><dt>Model</dt><dd>{model || session.model || "—"}</dd></div>
+      {effort && <div><dt>Reasoning</dt><dd>{reasoningLabel(effort)}</dd></div>}
+      {access && <div><dt>Access</dt><dd>{access}</dd></div>}
+      <div><dt>Transcript</dt><dd>{session.messages?.length ?? 0} items{turnCount ? ` · ${turnCount} ${turnCount === 1 ? "turn" : "turns"}` : ""}</dd></div>
+      <div><dt>Compactions</dt><dd>{compactions.length}</dd></div>
+      {latestCompaction && (latestCompaction.preTokens !== undefined || latestCompaction.compactionTrigger) && <div><dt>Last compaction</dt><dd>{compactionDetail(latestCompaction)}</dd></div>}
+      {total && <div><dt>Session tokens</dt><dd>{formatTokenCount(total.totalTokens)} total</dd></div>}
+      {last?.cachedInputTokens !== undefined && <div><dt>Cached input</dt><dd>{formatTokenCount(last.cachedInputTokens)}</dd></div>}
+      {last?.outputTokens !== undefined && <div><dt>Last output</dt><dd>{formatTokenCount(last.outputTokens)}</dd></div>}
+    </dl>
+  </aside>;
+}
+
+function compactionDetail(item: NonNullable<SessionSummary["messages"]>[number]): string {
+  const trigger = item.compactionTrigger === "manual" ? "Manual" : item.compactionTrigger === "auto" ? "Automatic" : "Completed";
+  if (item.preTokens !== undefined && item.postTokens !== undefined) {
+    return `${trigger} · ${formatTokenCount(item.preTokens)} → ${formatTokenCount(item.postTokens)}`;
+  }
+  return trigger;
 }
 
 interface RouteOption {
@@ -2128,6 +2359,9 @@ export function RouteSelect({
 }
 
 function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+  if (item.kind === "compaction") {
+    return <article id={`message-${item.id}`} className={`tool-card compaction-card ${highlighted ? "search-highlight" : ""}`}><span>↻</span><div><strong>Context compacted</strong><p>{compactionDetail(item)}</p></div>{item.durationMs !== undefined && <small>{formatDuration(item.durationMs)}</small>}</article>;
+  }
   if (item.kind === "command" || item.kind === "tool") {
     return <article id={`message-${item.id}`} className={`tool-card ${highlighted ? "search-highlight" : ""}`}><span>{item.kind === "command" ? "›_" : "◇"}</span><div><strong>{item.kind === "command" ? "Command" : "Tool"}</strong><p>{item.description || "Working"}</p></div><small>{item.status || "in progress"}{item.exitCode != null ? ` · exit ${item.exitCode}` : ""}</small></article>;
   }
@@ -2339,7 +2573,10 @@ export interface NewSessionSettings {
 
 export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState(".");
-  const [provider, setProvider] = useState<ProviderId>("codex");
+  const enabledProviders = providers.filter(providerEnabled);
+  const [provider, setProvider] = useState<ProviderId>(() =>
+    enabledProviders.find(({ id }) => id === "codex")?.id ?? enabledProviders[0]?.id ?? "codex"
+  );
   const [prompt, setPrompt] = useState("");
   const defaultRoute = routeForSession(null, models, accessLevels);
   const [model, setModel] = useState(defaultRoute.model);
@@ -2353,10 +2590,15 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
   const selectionAvailable = selected === "." || repositories.some((repository) => repository.id === selected);
   const location = selectionAvailable ? selected : ".";
   const selectedModel = models.find((entry) => entry.id === model);
-  const selectedProviderInfo = providers.find((entry) => entry.id === provider);
+  const selectedProviderInfo = enabledProviders.find((entry) => entry.id === provider);
   useEffect(() => {
     if (!selectionAvailable) setSelected(".");
   }, [selectionAvailable]);
+  useEffect(() => {
+    if (!enabledProviders.some(({ id }) => id === provider) && enabledProviders[0]) {
+      setProvider(enabledProviders[0].id);
+    }
+  }, [enabledProviders, provider]);
   const submit = () => onCreate({
     provider,
     repositoryId: location,
@@ -2370,11 +2612,11 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
       ...(access ? { accessLevel: access } : {}),
     }),
   });
-  const unavailable = provider === "claude-code" && selectedProviderInfo?.available !== true;
+  const unavailable = selectedProviderInfo?.available !== true;
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location && !unavailable && (provider === "codex" || prompt.trim())) void submit(); }}>
     <div className="modal-heading"><div><span className="eyebrow">{provider === "claude-code" ? "Claude Code" : "Codex"}</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
-    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{providers.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
-    {unavailable && <div className="new-session-empty" role="status"><strong>Claude Code is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason)}</p></div>}
+    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{enabledProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
+    {unavailable && <div className="new-session-empty" role="status"><strong>{selectedProviderInfo?.displayName ?? providerDisplayName(provider)} is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason, provider)}</p></div>}
     {hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}
     {provider === "claude-code" && !unavailable && <label>Initial prompt<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="What should Claude work on?" required /></label>}
     <div className="new-session-settings">{provider === "codex" ? <>
@@ -2389,7 +2631,11 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
   </form></div>;
 }
 
-function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"]): string {
+function providerDisplayName(provider: ProviderId): string {
+  return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"], provider: ProviderId = "claude-code"): string {
   const descriptions: Record<string, string> = {
     "cli-missing": "The Claude Code CLI is missing.",
     "node-missing": "Node.js 20 or newer is missing.",
@@ -2397,7 +2643,7 @@ function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason
     "authentication-unavailable": "Claude authentication is unavailable on the host.",
     "adapter-unavailable": "The Claude adapter is unavailable.",
   };
-  return descriptions[reason ?? "adapter-unavailable"];
+  return reason ? descriptions[reason] ?? `${providerDisplayName(provider)} is unavailable.` : `${providerDisplayName(provider)} is unavailable.`;
 }
 
 function SettingsView({
@@ -2405,6 +2651,7 @@ function SettingsView({
   hosts,
   appearance,
   hello,
+  providers,
   notificationPreferences,
   notificationState,
   hostNotificationOverride,
@@ -2413,6 +2660,7 @@ function SettingsView({
   onNotificationPreferences,
   onHostNotificationOverride,
   onNotificationPermission,
+  onProviderEnabled,
   onAdd,
   onSelect,
   onRename,
@@ -2422,6 +2670,7 @@ function SettingsView({
   hosts: StoredHost[];
   appearance: Appearance;
   hello: HelloPayload | null;
+  providers: ProviderInfo[];
   notificationPreferences: NotificationPreferences;
   notificationState: BrowserNotificationState;
   hostNotificationOverride: boolean;
@@ -2430,6 +2679,7 @@ function SettingsView({
   onNotificationPreferences: (preferences: NotificationPreferences) => void;
   onHostNotificationOverride: (enabled: boolean) => void;
   onNotificationPermission: () => Promise<void>;
+  onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
   onAdd: () => void;
   onSelect: (hostId: string) => void;
   onRename: (hostId: string, displayName: string) => void;
@@ -2455,6 +2705,7 @@ function SettingsView({
   return <main className="settings-page">
     <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
     <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
+    <ProviderSettings providers={providers} onProviderEnabled={onProviderEnabled} />
     <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
@@ -2467,8 +2718,39 @@ function SettingsView({
       <label className="check-row"><input type="checkbox" checked={notificationPreferences.criticalBypassQuietHours} onChange={(event) => update("criticalBypassQuietHours", event.target.checked)} /><span><strong>Allow critical alerts during quiet hours</strong><small>Only approval/input and failure alerts bypass quiet hours.</small></span></label>
       <div className="repository-overrides"><h3>Repository and workspace overrides</h3><p className="muted">Each event inherits the settings above until explicitly set to on or off. Identities are canonical workspace paths and stay in this browser.</p>{repositoryOptions.length === 0 && <p className="muted">No known repositories or workspaces yet.</p>}{repositoryOptions.map((repository) => <details key={repository.id}><summary>{repository.label}</summary><small title={repository.id}>{repository.id}</small><div className="override-grid">{overrideKeys.map(([key, label]) => { const value = notificationPreferences.repositoryOverrides[repository.id]?.[key]; return <label key={key}>{label}<select value={value === undefined ? "inherit" : String(value)} onChange={(event) => onNotificationPreferences(setRepositoryOverride(notificationPreferences, repository.id, { [key]: event.target.value === "inherit" ? undefined : event.target.value === "true" }))}><option value="inherit">Inherit</option><option value="true">On</option><option value="false">Off</option></select></label>; })}</div></details>)}</div>
     </section>
-    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div><div><dt>Codex</dt><dd>{hello?.codexConnected ? "Connected" : "Unavailable"}</dd></div><div><dt>Runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : "Fallback runtime"}</dd></div></dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
+    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? "Available" : "Unavailable"}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Fallback runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
   </main>;
+}
+
+export function ProviderSettings({ providers, onProviderEnabled }: {
+  providers: ProviderInfo[];
+  onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
+}) {
+  const [pending, setPending] = useState<ProviderId | null>(null);
+  const enabledCount = providers.filter(providerEnabled).length;
+  return <section className="settings-card provider-settings">
+    <h2>Providers</h2>
+    <p className="muted">Choose which installed CLIs Foreman uses on this host. At least one provider must remain enabled.</p>
+    <div className="provider-setting-list">{providers.map((provider) => {
+      const enabled = providerEnabled(provider);
+      const lastEnabled = enabled && enabledCount === 1;
+      const version = provider.version ?? provider.cliVersion;
+      const state = !enabled ? "Disabled" : provider.available ? "Available" : "Unavailable";
+      return <label className="check-row" key={provider.id}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={pending !== null || lastEnabled}
+          onChange={(event) => {
+            const next = event.target.checked;
+            setPending(provider.id);
+            void onProviderEnabled(provider.id, next).finally(() => setPending(null));
+          }}
+        />
+        <span><strong>{provider.displayName}</strong><small>{state}{version ? ` · ${version}` : ""}{lastEnabled ? " · at least one required" : ""}</small></span>
+      </label>;
+    })}</div>
+  </section>;
 }
 
 function StatusPill({ status }: { status: string }) {

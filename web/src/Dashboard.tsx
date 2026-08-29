@@ -20,7 +20,7 @@ import {
   type RecentActivityEntry,
   type RepositoryGroup,
 } from "./dashboard";
-import { sessionProvider, type ApprovalRequest, type InputRequest, type PairedClient, type RepositoryInfo, type ServiceStatus, type SessionSummary } from "./protocol";
+import { providerEnabled, sessionProvider, type ApprovalRequest, type InputRequest, type PairedClient, type ProviderInfo, type RepositoryInfo, type ServiceStatus, type SessionSummary } from "./protocol";
 import {
   loadDashboardPreferences,
   saveDashboardPreferences,
@@ -39,6 +39,7 @@ interface DashboardProps {
   repositories?: RepositoryInfo[];
   recentActivity?: RecentActivityEntry[];
   pairedClients?: PairedClient[];
+  providers?: ProviderInfo[];
   connection: ConnectionState;
   disabled: boolean;
   onOpen: (session: SessionSummary) => void;
@@ -68,6 +69,7 @@ export function Dashboard({
   repositories: discoveredRepositories = [],
   recentActivity = [],
   pairedClients = [],
+  providers = [],
   connection,
   disabled,
   onOpen,
@@ -147,7 +149,7 @@ export function Dashboard({
       </header>
 
       <section className="dashboard-overview" aria-label="Foreman overview">
-        <HealthPanel status={serviceStatus} connection={connection} now={now} clients={pairedClients} disabled={disabled} restartBlocked={restartBlocked} onRevokeClient={onRevokeClient} onFetchDiagnostics={onFetchDiagnostics} onRestart={onRestart} />
+        <HealthPanel status={serviceStatus} providers={providers} connection={connection} now={now} clients={pairedClients} disabled={disabled} restartBlocked={restartBlocked} onRevokeClient={onRevokeClient} onFetchDiagnostics={onFetchDiagnostics} onRestart={onRestart} />
         <aside className="summary-strip" aria-label="Operational summary">
           <header><div><span className="eyebrow">Operational summary</span><strong>Work at a glance</strong></div><small>Live</small></header>
           <div className="summary-grid">
@@ -254,21 +256,26 @@ export function ElapsedTime({ startedAt }: { startedAt?: number | null }) {
   return <time>{formatElapsed(startedAt, now)}</time>;
 }
 
-function HealthPanel({ status, connection, now, clients, disabled, restartBlocked, onRevokeClient, onFetchDiagnostics, onRestart }: { status: ServiceStatus | null; connection: ConnectionState; now: number; clients: PairedClient[]; disabled: boolean; restartBlocked: boolean; onRevokeClient?: (client: PairedClient) => Promise<void>; onFetchDiagnostics?: () => Promise<DiagnosticEvent[]>; onRestart?: () => Promise<{ scheduled: boolean; timeoutSeconds?: number }> }) {
+function HealthPanel({ status, providers, connection, now, clients, disabled, restartBlocked, onRevokeClient, onFetchDiagnostics, onRestart }: { status: ServiceStatus | null; providers: ProviderInfo[]; connection: ConnectionState; now: number; clients: PairedClient[]; disabled: boolean; restartBlocked: boolean; onRevokeClient?: (client: PairedClient) => Promise<void>; onFetchDiagnostics?: () => Promise<DiagnosticEvent[]>; onRestart?: () => Promise<{ scheduled: boolean; timeoutSeconds?: number }> }) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const connected = connection === "connected";
-  const runtimeConnected = status?.codex.connected === true;
-  const mode = !status || !runtimeConnected ? "Codex unavailable" : status.codex.mode === "shared" ? "Shared Desktop runtime" : "Foreman-owned fallback runtime";
+  const enabledProviders = providers.filter(providerEnabled);
+  const codexEnabled = providers.length === 0 || enabledProviders.some(({ id }) => id === "codex");
+  const runtimeConnected = codexEnabled ? status?.codex.connected === true : enabledProviders.some(({ available }) => available);
+  const availableNames = enabledProviders.filter(({ available }) => available).map(({ displayName }) => displayName);
+  const mode = codexEnabled
+    ? !status || !runtimeConnected ? "Codex unavailable" : status.codex.mode === "shared" ? "Shared Desktop runtime" : "Foreman-owned fallback runtime"
+    : availableNames.length ? `${availableNames.join(" and ")} available` : "Enabled providers unavailable";
   const eventTimestamp = status?.codex.lastEvent ? Date.parse(status.codex.lastEvent) : null;
   const eventRecent = eventTimestamp !== null && now - eventTimestamp <= 30_000;
   const eventLabel = !runtimeConnected ? "Runtime disconnected" : eventTimestamp === null ? "Runtime connected · no events observed" : eventRecent ? `Last runtime event: ${formatAge(eventTimestamp, now)}` : `No runtime events for ${formatDuration(now - eventTimestamp)}`;
   const eventAge = !runtimeConnected ? "Disconnected" : eventTimestamp === null ? "No events observed" : eventRecent ? formatAge(eventTimestamp, now) : `No events for ${formatDuration(now - eventTimestamp)}`;
   return <article className="health-panel">
     <div className="health-title"><div><span className="eyebrow">Host status</span><h2>{connected ? "Foreman online" : connection === "reconnecting" ? "Reconnecting to Foreman" : "Foreman disconnected"}</h2></div><span className={`health-state ${connected ? "healthy" : "offline"}`}><i />{connected ? "Connected" : connection}</span></div>
-    <div className="health-runtime"><StatusIcon status={runtimeConnected ? "working" : "disconnected"} /><span><strong>{mode}</strong><small>{status?.codex.mode === "fallback" ? "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" : !runtimeConnected ? "Runtime needs attention" : eventLabel}</small></span></div>
+    <div className="health-runtime"><StatusIcon status={runtimeConnected ? "working" : "disconnected"} /><span><strong>{mode}</strong><small>{codexEnabled ? status?.codex.mode === "fallback" ? "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE" : !runtimeConnected ? "Runtime needs attention" : eventLabel : `${enabledProviders.length} provider${enabledProviders.length === 1 ? "" : "s"} enabled`}</small></span></div>
     <dl className="health-details">
-      <div><dt>Foreman</dt><dd>{status?.foremanVersion ?? "—"}</dd></div><div><dt>Codex</dt><dd>{status?.codex.version ?? "—"}</dd></div><div><dt>Uptime</dt><dd>{status ? formatDuration(status.uptimeSeconds * 1000 + Math.max(0, now - (status.receivedAt ?? now))) : "—"}</dd></div><div><dt>Clients</dt><dd>{status ? `${status.activeBrowserConnections ?? 0} browser · ${status.activeTcpConnections ?? 0} Android` : "—"}</dd></div>
-      <div><dt>Runtime event</dt><dd className={!eventRecent && runtimeConnected ? "quiet" : ""}>{eventAge}</dd></div><div><dt>Successful request</dt><dd>{formatAge(status?.codex.lastSuccessfulRequest, now)}</dd></div><div><dt>Attached</dt><dd>{formatAge(status?.codex.attachedAt, now)}</dd></div><div><dt>Threads</dt><dd>{status ? `${status.codex.loadedThreadCount ?? 0} loaded · ${status.codex.subscribedThreadCount ?? 0} subscribed` : "—"}</dd></div>
+      <div><dt>Foreman</dt><dd>{status?.foremanVersion ?? "—"}</dd></div>{providers.length ? providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? provider.version ?? provider.cliVersion ?? "Available" : "Unavailable"}</dd></div>) : <div><dt>Codex</dt><dd>{status?.codex.version ?? "—"}</dd></div>}<div><dt>Uptime</dt><dd>{status ? formatDuration(status.uptimeSeconds * 1000 + Math.max(0, now - (status.receivedAt ?? now))) : "—"}</dd></div><div><dt>Clients</dt><dd>{status ? `${status.activeBrowserConnections ?? 0} browser · ${status.activeTcpConnections ?? 0} Android` : "—"}</dd></div>
+      {codexEnabled && <><div><dt>Runtime event</dt><dd className={!eventRecent && runtimeConnected ? "quiet" : ""}>{eventAge}</dd></div><div><dt>Successful request</dt><dd>{formatAge(status?.codex.lastSuccessfulRequest, now)}</dd></div><div><dt>Attached</dt><dd>{formatAge(status?.codex.attachedAt, now)}</dd></div><div><dt>Threads</dt><dd>{status ? `${status.codex.loadedThreadCount ?? 0} loaded · ${status.codex.subscribedThreadCount ?? 0} subscribed` : "—"}</dd></div></>}
       <div className="health-root"><dt>Repository root</dt><dd title={status?.repositoryRoot}>{status?.repositoryRoot ?? "—"}</dd></div><div><dt>Listeners</dt><dd>{status ? `web :${status.listeners.webPort ?? "—"} · TCP :${status.listeners.tcpPort}` : "—"}</dd></div>
     </dl>
     {clients.length > 0 && <details className="client-diagnostics"><summary>Clients and access <span>{clients.filter((client) => client.connected).length} connected</span></summary><div className="client-list">{clients.map((client) => <div className="client-row" key={client.id}><span className={`client-presence ${client.connected ? "online" : "offline"}`} aria-hidden="true">{client.connected ? "●" : "○"}</span><span className="client-identity"><strong>{client.name}</strong><small>{clientTypeLabel(client.type)} · {client.connected ? `${client.connectionCount} connection${client.connectionCount === 1 ? "" : "s"}` : "Not connected"}{client.current ? " · This browser" : ""}</small></span><time>{client.pairedAt ? `Paired ${formatAge(client.pairedAt, now)}` : "Pairing date unavailable"}</time><button className="revoke-client" disabled={disabled || revoking !== null} onClick={() => {
@@ -279,7 +286,7 @@ function HealthPanel({ status, connection, now, clients, disabled, restartBlocke
       setRevoking(client.id);
       void onRevokeClient(client).catch(() => undefined).finally(() => setRevoking(null));
     }} aria-label={`Revoke token for ${client.name}`}>{revoking === client.id ? "Revoking…" : "Revoke"}</button></div>)}</div><p className="client-note">Revoking removes only the selected authentication token. It does not delete sessions or repositories.</p></details>}
-    {status && <details className="runtime-diagnostics"><summary>Runtime details</summary><dl><div><dt>Foreman ownership</dt><dd>{status.codex.ownedByForeman ? "Yes" : "No"}</dd></div><div><dt>App-server PID</dt><dd>{status.codex.appServerPid ?? "Shared runtime"}</dd></div>{status.codex.socketPath && <div><dt>Socket</dt><dd title={status.codex.socketPath}>{status.codex.socketPath}</dd></div>}</dl></details>}
+    {status && codexEnabled && <details className="runtime-diagnostics"><summary>Runtime details</summary><dl><div><dt>Foreman ownership</dt><dd>{status.codex.ownedByForeman ? "Yes" : "No"}</dd></div><div><dt>App-server PID</dt><dd>{status.codex.appServerPid ?? "Shared runtime"}</dd></div>{status.codex.socketPath && <div><dt>Socket</dt><dd title={status.codex.socketPath}>{status.codex.socketPath}</dd></div>}</dl></details>}
     {onFetchDiagnostics && onRestart && <HostOperations connection={connection} disabled={disabled} remoteRestartEnabled={status?.remoteRestartEnabled === true} restartBlocked={restartBlocked} fetchDiagnostics={onFetchDiagnostics} scheduleRestart={onRestart} />}
   </article>;
 }

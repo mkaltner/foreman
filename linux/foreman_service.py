@@ -31,8 +31,11 @@ from codex import (
     CodexError,
     matching_snippet,
     normalize_event,
+    rate_limit_snapshot,
     search_matches,
     session,
+    thread_token_usage,
+    token_count,
 )
 from claude_code import ClaudeCode, ClaudeCodeError, SUPPORTED_MODELS
 from diagnostics import DiagnosticBuffer, request_category
@@ -71,6 +74,27 @@ SEARCH_STATUSES = {
     "interrupted",
 }
 PROVIDERS = {"codex", "claude-code"}
+CODEX_OPERATIONS = {
+    "model.list",
+    "access.list",
+    "approval.list",
+    "approval.respond",
+    "input.list",
+    "input.respond",
+    "session.list",
+    "session.search",
+    "session.read",
+    "session.start",
+    "session.resume",
+    "session.subscribe",
+    "session.unsubscribe",
+    "session.archive",
+    "session.delete",
+    "session.settings",
+    "turn.prompt",
+    "turn.steer",
+    "turn.interrupt",
+}
 CLAUDE_PERMISSION_MODES = (
     "default",
     "dontAsk",
@@ -206,6 +230,38 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        for thread_id, raw_usage in self.state.session_token_usage().items():
+            if usage := thread_token_usage(raw_usage):
+                self.session_overlays[thread_id] = {"tokenUsage": usage}
+        self.provider_enabled = {
+            provider: self.state.provider_enabled(provider) for provider in PROVIDERS
+        }
+        if not any(self.provider_enabled.values()):
+            self.provider_enabled["codex"] = True
+            self.state.set_provider_enabled("codex", True)
+        self.account_usage: dict[str, Any] = {"available": False}
+        self.claude_account_usage: dict[str, Any] = {
+            "available": False,
+            "experimental": True,
+            "availabilityReason": "Updates after a Foreman-managed Claude run begins.",
+        }
+        cached_claude_usage = self.state.provider_account_usage("claude-code")
+        if isinstance(cached_claude_usage, dict):
+            cached_snapshot = rate_limit_snapshot(
+                cached_claude_usage.get("rateLimits")
+            )
+            cached_observed_at = token_count(cached_claude_usage.get("observedAt"))
+            if cached_snapshot:
+                self.claude_account_usage = {
+                    "available": True,
+                    "experimental": True,
+                    "rateLimits": cached_snapshot,
+                    **(
+                        {"observedAt": cached_observed_at}
+                        if cached_observed_at is not None
+                        else {}
+                    ),
+                }
         self.claude_session_overlays: dict[str, dict[str, Any]] = {}
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
@@ -229,13 +285,16 @@ class Foreman:
         )
 
     async def start(self) -> None:
-        await self.codex.start()
-        if self.codex.runtime_status == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE":
-            self.diagnostics.record("runtime.shared_attached")
-        elif getattr(self.codex, "process", None) is not None:
-            self.diagnostics.record("runtime.fallback_started")
-        print(f"Codex runtime: {self.codex.runtime_status}", flush=True)
-        if self.claude is not None:
+        if self.provider_enabled["codex"]:
+            await self.codex.start()
+            if self.codex.runtime_status == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE":
+                self.diagnostics.record("runtime.shared_attached")
+            elif getattr(self.codex, "process", None) is not None:
+                self.diagnostics.record("runtime.fallback_started")
+            print(f"Codex runtime: {self.codex.runtime_status}", flush=True)
+        else:
+            print("Codex provider: disabled", flush=True)
+        if self.claude is not None and self.provider_enabled["claude-code"]:
             try:
                 claude_status = await self.claude.start()
             except Exception:
@@ -351,6 +410,7 @@ class Foreman:
         overlay = self.claude_session_overlays.setdefault(session_id, {})
         run_id = message.get("runId")
         outgoing_event: dict[str, Any]
+        account_usage_changed = False
         if kind == "query.started":
             overlay.update(
                 {
@@ -434,6 +494,67 @@ class Foreman:
                 messages.append(safe_item)
             else:
                 existing.update(safe_item)
+        elif kind == "compaction":
+            item_id = f"claude-compaction-{run_id or observed_at}-{len(self.claude_session_messages.get(session_id, []))}"
+            pre_tokens = token_count(message.get("preTokens"))
+            post_tokens = token_count(message.get("postTokens"))
+            duration_ms = token_count(message.get("durationMs"))
+            safe_item = {
+                "id": item_id,
+                "kind": "compaction",
+                "description": "Context compacted",
+                "compactionTrigger": (
+                    "manual" if message.get("trigger") == "manual" else "auto"
+                ),
+                **({"preTokens": pre_tokens} if pre_tokens is not None else {}),
+                **({"postTokens": post_tokens} if post_tokens is not None else {}),
+                **({"durationMs": duration_ms} if duration_ms is not None else {}),
+            }
+            overlay.update(
+                {
+                    "activityLabel": "Context compacted",
+                    "activityText": "",
+                    "lastActivity": observed_at,
+                }
+            )
+            outgoing_event = {
+                "kind": "item",
+                "phase": "completed",
+                "turnId": run_id,
+                "item": safe_item,
+                "observedAt": observed_at,
+            }
+            self.claude_session_messages.setdefault(session_id, []).append(safe_item)
+        elif kind == "usage":
+            usage = thread_token_usage(message.get("tokenUsage"))
+            if usage:
+                overlay["tokenUsage"] = usage
+            raw_account_usage = message.get("accountUsage")
+            if isinstance(raw_account_usage, dict):
+                snapshot = rate_limit_snapshot(raw_account_usage.get("rateLimits"))
+                self.claude_account_usage = {
+                    "available": snapshot is not None,
+                    "experimental": True,
+                    "observedAt": observed_at,
+                    **({"rateLimits": snapshot} if snapshot else {}),
+                    **(
+                        {}
+                        if snapshot
+                        else {
+                            "availabilityReason": "Claude plan limits are unavailable for this account."
+                        }
+                    ),
+                }
+                self.state.remember_provider_account_usage(
+                    "claude-code", self.claude_account_usage
+                )
+                account_usage_changed = True
+            outgoing_event = {
+                "kind": "usage",
+                "turnId": run_id,
+                "tokenUsage": usage or {},
+                "observedAt": observed_at,
+            }
         elif kind == "permission.requested":
             item_id = f"claude-permission-{message.get('toolUseId') or run_id or 'active'}"
             name = message.get("name") if isinstance(message.get("name"), str) else "Tool"
@@ -547,12 +668,16 @@ class Foreman:
             ),
             return_exceptions=True,
         )
+        if account_usage_changed:
+            await self.broadcast_account_usage()
 
     async def provider_status(self) -> list[dict[str, Any]]:
         """Bounded provider catalog backed by the current adapter status."""
+        codex_enabled = self.provider_enabled["codex"]
+        claude_enabled = self.provider_enabled["claude-code"]
         claude = (
             await self.claude.status()
-            if self.claude is not None
+            if self.claude is not None and claude_enabled
             else {"provider": "claude-code", "available": False}
         )
         codex_capabilities = [
@@ -583,24 +708,26 @@ class Foreman:
                 "id": "codex",
                 "provider": "codex",
                 "displayName": "Codex",
-                "available": self.codex.is_connected,
+                "enabled": codex_enabled,
+                "available": codex_enabled and self.codex.is_connected,
                 "version": self.codex.version,
                 "runtime": self.codex.runtime_status,
-                "capabilities": codex_capabilities if self.codex.is_connected else [],
+                "capabilities": codex_capabilities if codex_enabled and self.codex.is_connected else [],
                 "limitations": [],
             },
             {
                 "id": "claude-code",
                 "provider": "claude-code",
                 "displayName": "Claude Code",
-                "available": claude.get("available") is True,
+                "enabled": claude_enabled,
+                "available": claude_enabled and claude.get("available") is True,
                 "cliVersion": claude.get("cliVersion"),
                 "sdkVersion": claude.get("sdkVersion"),
                 "nodeVersion": claude.get("nodeVersion"),
-                "capabilities": claude_capabilities,
+                "capabilities": claude_capabilities if claude_enabled else [],
                 "limitations": CLAUDE_LIMITATIONS,
                 "unavailableReason": (
-                    None if claude.get("available")
+                    None if not claude_enabled or claude.get("available")
                     else self.claude_unavailable_reason(claude)
                 ),
             },
@@ -669,7 +796,62 @@ class Foreman:
             raise CapabilityError(f"provider {provider} is unsupported")
         return provider
 
+    def require_provider_enabled(self, provider: str) -> None:
+        if not self.provider_enabled.get(provider, False):
+            display_name = "Claude Code" if provider == "claude-code" else "Codex"
+            raise CapabilityError(f"{display_name} is disabled in Settings")
+
+    async def provider_has_active_work(self, provider: str) -> bool:
+        if provider == "codex":
+            if self.codex.list_approvals() or self.codex.list_inputs():
+                return True
+            if any(
+                overlay.get("status") in ("working", "waiting")
+                for overlay in self.session_overlays.values()
+            ):
+                return True
+            if not getattr(self.codex, "is_connected", False):
+                return False
+            return any(
+                self.projected_session(thread)["status"] in ("working", "waiting")
+                for thread in await self.codex.list_threads()
+            )
+        return any(
+            overlay.get("state") == "working"
+            or overlay.get("status") in ("working", "waiting")
+            for overlay in self.claude_session_overlays.values()
+        )
+
+    async def configure_provider(self, provider: str, enabled: bool) -> None:
+        if self.provider_enabled[provider] == enabled:
+            return
+        if not enabled:
+            if sum(self.provider_enabled.values()) <= 1:
+                raise ValueError("at least one provider must remain enabled")
+            if await self.provider_has_active_work(provider):
+                raise ValueError(
+                    "provider has active or waiting sessions; resolve them before disabling it"
+                )
+            adapter = self.codex if provider == "codex" else self.claude
+            if adapter is not None:
+                await adapter.stop()
+            self.provider_enabled[provider] = False
+            self.state.set_provider_enabled(provider, False)
+            return
+
+        self.provider_enabled[provider] = True
+        self.state.set_provider_enabled(provider, True)
+        adapter = self.codex if provider == "codex" else self.claude
+        if adapter is not None:
+            try:
+                await adapter.start()
+            except Exception:
+                # Enabled and unavailable are intentionally separate states.
+                # The provider catalog exposes the bounded availability result.
+                pass
+
     async def require_claude(self) -> None:
+        self.require_provider_enabled("claude-code")
         if self.claude is None:
             raise CapabilityError("Claude Code is unavailable on this host")
         status = await self.claude.status()
@@ -862,6 +1044,21 @@ class Foreman:
         if method == "foreman/runtime/reconnected":
             self.diagnostics.record("runtime.reconnected")
             return
+        if method == "account/rateLimits/updated":
+            snapshot = rate_limit_snapshot(
+                (message.get("params") or {}).get("rateLimits")
+            )
+            if snapshot:
+                previous = self.account_usage.get("rateLimits")
+                merged = dict(previous) if isinstance(previous, dict) else {}
+                merged.update(
+                    (key, value)
+                    for key, value in snapshot.items()
+                    if value is not None
+                )
+                self.account_usage = {"available": True, "rateLimits": merged}
+                await self.broadcast_account_usage()
+            return
         if method in (
             "foreman/approval/requested",
             "foreman/approval/updated",
@@ -1049,7 +1246,7 @@ class Foreman:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
         observed_at = event.get("observedAt")
-        if kind != "route" and isinstance(observed_at, (int, float)):
+        if kind not in ("route", "usage") and isinstance(observed_at, (int, float)):
             overlay["lastActivity"] = observed_at
         if kind == "status":
             projected_status = event.get("status")
@@ -1117,6 +1314,17 @@ class Foreman:
             for key in ("model", "reasoningEffort", "accessLevel"):
                 if isinstance(event.get(key), str):
                     overlay[key] = event[key]
+        elif kind == "usage" and isinstance(event.get("tokenUsage"), dict):
+            usage = event["tokenUsage"]
+            last = usage.get("last")
+            if (
+                isinstance(last, dict)
+                and isinstance(last.get("totalTokens"), int)
+                and isinstance(usage.get("modelContextWindow"), int)
+                and usage["modelContextWindow"] > 0
+            ):
+                overlay["tokenUsage"] = usage
+                self.state.remember_session_token_usage(thread_id, usage)
 
     def projected_session(
         self, thread: dict[str, Any], include_messages: bool = False
@@ -1147,6 +1355,37 @@ class Foreman:
             ),
             return_exceptions=True,
         )
+
+    async def broadcast_account_usage(self) -> None:
+        outgoing = {
+            "version": VERSION,
+            "type": "usage.event",
+            "payload": self.account_usage_projection(),
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
+        )
+
+    def account_usage_projection(self) -> dict[str, Any]:
+        return {
+            "providers": {
+                **(
+                    {"codex": self.account_usage}
+                    if self.provider_enabled["codex"]
+                    else {}
+                ),
+                **(
+                    {"claude-code": self.claude_account_usage}
+                    if self.provider_enabled["claude-code"]
+                    else {}
+                ),
+            }
+        }
 
     async def client_connected(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1416,7 +1655,9 @@ class Foreman:
         }
 
     def service_status(self) -> dict[str, Any]:
-        codex_connected = getattr(self.codex, "is_connected", True)
+        codex_connected = self.provider_enabled["codex"] and getattr(
+            self.codex, "is_connected", True
+        )
         runtime = self.codex.runtime_status
         if not codex_connected:
             mode = "unavailable"
@@ -1556,28 +1797,31 @@ class Foreman:
             raise ValueError("payload must be an object")
 
         if message_type == "hello":
+            codex_enabled = self.provider_enabled["codex"]
             return {
                 "server": "Foreman",
                 "protocolVersion": VERSION,
                 "codexRuntime": self.codex.runtime_status,
-                "codexConnected": getattr(self.codex, "is_connected", True),
+                "codexConnected": self.provider_enabled["codex"]
+                and getattr(self.codex, "is_connected", True),
                 "capabilities": {
-                    "steer": True,
-                    "interrupt": True,
-                    "archive": self.codex.supports("thread/archive"),
-                    "delete": self.codex.supports("thread/delete"),
-                    "approvals": True,
-                    "structuredInput": bool(
+                    "steer": codex_enabled,
+                    "interrupt": codex_enabled,
+                    "archive": codex_enabled and self.codex.supports("thread/archive"),
+                    "delete": codex_enabled and self.codex.supports("thread/delete"),
+                    "approvals": codex_enabled,
+                    "structuredInput": codex_enabled and bool(
                         self.codex.supports("item/tool/requestUserInput")
                         or self.codex.supports("mcpServer/elicitation/request")
                     ),
-                    "models": self.codex.supports("model/list"),
-                    "access": self.codex.supports("permissionProfile/list"),
-                    "threadSettings": self.codex.supports("thread/settings/update"),
-                    "images": True,
-                    "search": True,
+                    "models": codex_enabled and self.codex.supports("model/list"),
+                    "access": codex_enabled and self.codex.supports("permissionProfile/list"),
+                    "threadSettings": codex_enabled and self.codex.supports("thread/settings/update"),
+                    "images": codex_enabled,
+                    "search": codex_enabled,
                     "diagnostics": True,
                     "workspaceFiles": True,
+                    "providerConfiguration": True,
                     "remoteRestart": self.remote_restart_enabled,
                 },
             }
@@ -1618,6 +1862,9 @@ class Foreman:
         if not client.authenticated:
             raise PermissionError("authenticate first")
 
+        if message_type in CODEX_OPERATIONS:
+            self.require_provider_enabled("codex")
+
         if message_type == "repository.list":
             return {"repositories": await asyncio.to_thread(self.repositories)}
         if message_type == "workspace.file.read":
@@ -1625,8 +1872,19 @@ class Foreman:
             return await asyncio.to_thread(self.read_workspace_file, path)
         if message_type == "provider.list":
             return {"providers": await self.provider_status()}
+        if message_type == "provider.configure":
+            provider = self.required_provider(payload)
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be a boolean")
+            await self.configure_provider(provider, enabled)
+            providers = await self.provider_status()
+            await self.broadcast_provider_status()
+            await self.broadcast_account_usage()
+            return {"provider": provider, "enabled": enabled, "providers": providers}
         if message_type == "provider.session.list":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider == "codex":
                 return {
                     "provider": provider,
@@ -1647,6 +1905,7 @@ class Foreman:
             }
         if message_type == "provider.session.read":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             session_id = required_text(payload, "sessionId", 160)
             if provider == "codex":
                 projected = self.projected_session(
@@ -1669,6 +1928,7 @@ class Foreman:
             }
         if message_type == "provider.model.list":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider == "codex":
                 return {
                     "provider": provider,
@@ -1686,6 +1946,7 @@ class Foreman:
             }
         if message_type == "provider.permission.list":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider == "codex":
                 return {
                     "provider": provider,
@@ -1716,6 +1977,7 @@ class Foreman:
             }
         if message_type in {"provider.session.start", "provider.session.resume", "provider.turn.prompt"}:
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider == "codex":
                 raise CapabilityError(
                     "Use the compatible Codex session.start, session.resume, or turn.prompt operation"
@@ -1790,6 +2052,7 @@ class Foreman:
             }
         if message_type in {"provider.session.subscribe", "provider.session.unsubscribe"}:
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             session_id = required_text(payload, "sessionId", 160)
             subscription = self.provider_subscription(provider, session_id)
             subscribed = message_type.endswith("subscribe") and not message_type.endswith("unsubscribe")
@@ -1809,6 +2072,7 @@ class Foreman:
             return {"provider": provider, "sessionId": session_id, "subscribed": subscribed}
         if message_type == "provider.session.delete":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider != "claude-code":
                 raise CapabilityError("Use the compatible Codex session.delete operation")
             session_id = required_text(payload, "sessionId", 160)
@@ -1839,6 +2103,7 @@ class Foreman:
             }
         if message_type == "provider.turn.interrupt":
             provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
             if provider != "claude-code":
                 raise CapabilityError("Use the compatible Codex turn.interrupt operation")
             session_id = required_text(payload, "sessionId", 160)
@@ -1855,6 +2120,10 @@ class Foreman:
             return {"accepted": True, "provider": provider, "sessionId": session_id}
         if message_type == "service.status":
             return self.service_status()
+        if message_type == "usage.status":
+            if self.provider_enabled["codex"]:
+                self.account_usage = await self.codex.account_rate_limits()
+            return self.account_usage_projection()
         if message_type == "diagnostics.list":
             return {"events": self.diagnostics.entries(), "limit": 100}
         if message_type == "service.restart":
@@ -1964,6 +2233,7 @@ class Foreman:
                 await self.codex.archive_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.state.forget_session_token_usage(thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
@@ -1975,6 +2245,7 @@ class Foreman:
                 await self.codex.delete_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.state.forget_session_token_usage(thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "session.settings":
@@ -2241,19 +2512,22 @@ class Foreman:
             raise ValueError("session is active; interrupt it before archive or delete")
 
     async def require_restart_safe(self) -> None:
-        if self.codex.list_approvals() or self.codex.list_inputs():
+        if self.provider_enabled["codex"] and (
+            self.codex.list_approvals() or self.codex.list_inputs()
+        ):
             raise ValueError(
                 "restart is unavailable while approval or input requests are pending"
             )
-        threads = await self.codex.list_threads()
-        if any(
-            self.projected_session(thread)["status"] in ("working", "waiting")
-            for thread in threads
-        ):
-            raise ValueError(
-                "restart is unavailable while sessions are active or waiting for attention"
-            )
-        if any(
+        if self.provider_enabled["codex"]:
+            threads = await self.codex.list_threads()
+            if any(
+                self.projected_session(thread)["status"] in ("working", "waiting")
+                for thread in threads
+            ):
+                raise ValueError(
+                    "restart is unavailable while sessions are active or waiting for attention"
+                )
+        if self.provider_enabled["claude-code"] and any(
             overlay.get("state") == "working"
             or overlay.get("status") in ("working", "waiting")
             for overlay in self.claude_session_overlays.values()
