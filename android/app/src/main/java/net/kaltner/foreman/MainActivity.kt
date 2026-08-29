@@ -2842,7 +2842,6 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         provider: String = PROVIDER_CODEX,
     ) {
         if (!supportedProvider(provider)) {
-            clearRememberedSession()
             showSessions()
             state.update { it.copy(error = "This session provider is not supported.") }
             return
@@ -2934,7 +2933,6 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     restorationSessionId == id &&
                     restorationProvider == provider
                 ) {
-                    clearRememberedSession()
                     state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
                     state.update {
                         it.copy(
@@ -3076,10 +3074,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         val sessions = snapshot.sessions
         var selectedReadError: String? = null
+        var authoritativeSelectionInvalid = false
         val selected = selectedSessionId?.let { sessionId ->
             val target = rememberedSessionTarget(selectedProvider, sessionId)
             val listed = target?.let { restorableSessionSummary(it, providers, sessions) }
             if (listed == null) {
+                authoritativeSelectionInvalid = true
                 null
             } else {
                 runCatching { readSession(selectedProvider, sessionId, listed) }.getOrElse { error ->
@@ -3129,7 +3129,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
         }
         if (applySelection && selectedSessionId != null && selected == null) {
-            clearRememberedSession()
+            if (authoritativeSelectionInvalid) clearRememberedSession()
             synchronizedHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
         }
         val validIds = sessions.mapTo(mutableSetOf()) { it.providerKey() }

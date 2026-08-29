@@ -1070,13 +1070,36 @@ function App() {
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
         const reopenProvider = selectedProviderRef.current;
+        const fallbackFromReopen = (clearStaleMemory: boolean) => {
+          if (
+            reopenGeneration !== sessionOpenGenerationRef.current ||
+            activeHostIdRef.current !== hostId ||
+            viewRef.current !== "detail" ||
+            selectedIdRef.current !== reopenId ||
+            selectedProviderRef.current !== reopenProvider
+          ) return;
+          if (clearStaleMemory) clearRememberedSession(hostId);
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
+          setCurrent(null);
+          setBusy(false);
+          setView("sessions");
+          updateRoute({ view: "sessions" }, true);
+        };
+        const providerAvailable = providerResult.providers.some(
+          (provider) => provider.id === reopenProvider && providerEnabled(provider) && provider.available,
+        );
+        const summary = reconciled.find(
+          (session) => session.id === reopenId && sessionProvider(session) === reopenProvider,
+        );
+        if (!providerAvailable || !summary) {
+          fallbackFromReopen(true);
+          return;
+        }
         try {
-          const providerAvailable = providerResult.providers.some(
-            (provider) => provider.id === reopenProvider && providerEnabled(provider) && provider.available,
-          );
-          if (!providerAvailable) throw new Error("Provider is disabled or unavailable");
-          const summary = reconciled.find((session) => session.id === reopenId && sessionProvider(session) === reopenProvider);
-          if (!summary) throw new Error("Session is no longer available");
           const result = await client.request<
             { session: SessionSummary } & Record<string, unknown>
           >("provider.session.read", {
@@ -1095,23 +1118,7 @@ function App() {
           saveRememberedSession({ hostId, provider: reopenProvider, sessionId: reopenId });
           await client.request("provider.session.subscribe", { provider: reopenProvider, sessionId: reopenId });
         } catch {
-          if (
-            reopenGeneration !== sessionOpenGenerationRef.current ||
-            activeHostIdRef.current !== hostId ||
-            viewRef.current !== "detail" ||
-            selectedIdRef.current !== reopenId ||
-            selectedProviderRef.current !== reopenProvider
-          ) return;
-          clearRememberedSession(hostId);
-          selectedIdRef.current = null;
-          selectedProviderRef.current = "codex";
-          viewRef.current = "sessions";
-          setSelectedId(null);
-          setSelectedProvider("codex");
-          setCurrent(null);
-          setBusy(false);
-          setView("sessions");
-          updateRoute({ view: "sessions" }, true);
+          fallbackFromReopen(false);
         }
       }
     },
@@ -1202,7 +1209,6 @@ function App() {
           selectedProviderRef.current === provider
         ) {
           setError(caught instanceof Error ? caught.message : "Session could not be loaded");
-          clearRememberedSession(hostId);
           selectedIdRef.current = null;
           selectedProviderRef.current = "codex";
           viewRef.current = "sessions";

@@ -253,6 +253,26 @@ describe("host navigation history", () => {
     );
   });
 
+  it("retains an authoritative remembered session after transient read failure", async () => {
+    const session: SessionSummary = { id: "temporarily-unreadable", repository: "/repo", title: "Retry later", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: session.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    mockConnectedState([session], undefined, async () => {
+      throw new Error("Connection closed during read");
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    expect(loadRememberedSession(home.id)).toEqual({
+      hostId: home.id,
+      provider: "codex",
+      sessionId: session.id,
+    });
+    expect(window.location.pathname).toBe("/sessions");
+  });
+
   it("clears a remembered session when the authoritative lifecycle deletes it", async () => {
     const session: SessionSummary = { id: "deleted", repository: "/repo", title: "Deleted", status: "idle", messages: [] };
     saveHostRegistry({ hosts: [home], activeHostId: home.id });
