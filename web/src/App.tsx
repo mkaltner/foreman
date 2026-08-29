@@ -2095,7 +2095,11 @@ export function ConversationView({
     if (provider === "codex") return routeForSession(session, models, accessLevels);
     const model = models.find((entry) => entry.id === session.model);
     const permission = accessLevels.find((entry) => entry.id === session.permissionMode);
-    return { model: model?.id ?? "", reasoningEffort: "", accessLevel: permission?.id ?? "" };
+    return {
+      model: model?.id ?? session.model ?? "",
+      reasoningEffort: "",
+      accessLevel: permission?.id ?? session.permissionMode ?? "",
+    };
   }, [accessLevels, models, provider, session]);
   const [model, setModel] = useState(initialRoute.model);
   const [effort, setEffort] = useState(initialRoute.reasoningEffort);

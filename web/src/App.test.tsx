@@ -973,6 +973,30 @@ describe("conversation drafts", () => {
     expect(screen.getByText("Model, reasoning, and access are available when this turn finishes.")).toBeInTheDocument();
   });
 
+  it("shows known server route values while catalog metadata is reconnecting", () => {
+    render(
+      <ConversationView
+        session={{ ...session("one"), status: "working", activeTurnId: "turn-1", model: "gpt-known", reasoningEffort: "high", accessLevel: "full", settingsRevision: 2 }}
+        approvals={[]}
+        models={[]}
+        accessLevels={[]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft=""
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={vi.fn().mockResolvedValue({})}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Access: full" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: gpt-known" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reasoning: high" })).toBeDisabled();
+    expect(screen.queryByText("Server default")).not.toBeInTheDocument();
+  });
+
   it("steers an active Codex turn without replacement route settings", async () => {
     const onRequest = vi.fn().mockResolvedValue({ accepted: true });
     render(

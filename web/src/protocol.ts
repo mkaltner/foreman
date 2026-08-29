@@ -693,20 +693,18 @@ export function routeForSession(
   models: ModelInfo[],
   accessLevels: AccessLevelInfo[],
 ): RouteSelection {
-  const model = models.find((entry) => entry.id === session?.model && entry.visible) ?? (
-    session === null
-      ? models.find((entry) => entry.isDefault && entry.visible) ?? models.find((entry) => entry.visible)
-      : undefined
-  );
-  const effort = model?.reasoningEfforts.includes(session?.reasoningEffort ?? "")
-    ? session?.reasoningEffort
-    : session === null ? model?.defaultReasoningEffort ?? model?.reasoningEfforts[0] : undefined;
-  const access = accessLevels.find((entry) => entry.id === session?.accessLevel) ?? (
-    session === null ? accessLevels[0] : undefined
-  );
+  if (session !== null) {
+    return {
+      model: session.model ?? "",
+      reasoningEffort: session.reasoningEffort ?? "",
+      accessLevel: session.accessLevel ?? "",
+    };
+  }
+  const model = models.find((entry) => entry.isDefault && entry.visible)
+    ?? models.find((entry) => entry.visible);
   return {
     model: model?.id ?? "",
-    reasoningEffort: effort ?? "",
-    accessLevel: access?.id ?? "",
+    reasoningEffort: model?.defaultReasoningEffort ?? model?.reasoningEfforts[0] ?? "",
+    accessLevel: accessLevels[0]?.id ?? "",
   };
 }

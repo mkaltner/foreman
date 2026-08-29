@@ -197,6 +197,16 @@ describe("session mapping and live events", () => {
       reasoningEffort: "",
       accessLevel: "",
     });
+    expect(routeForSession({
+      ...session,
+      model: "gpt-known",
+      reasoningEffort: "high",
+      accessLevel: "full",
+    }, [], [])).toEqual({
+      model: "gpt-known",
+      reasoningEffort: "high",
+      accessLevel: "full",
+    });
   });
 
   it("keeps a newer live setting when a stale refresh arrives and isolates sessions", () => {
