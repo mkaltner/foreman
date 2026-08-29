@@ -246,7 +246,7 @@ class TurnMonitorService : Service() {
         if (intent?.action == ACTION_STOP_ALL) {
             monitorAllTurns = false
             lifecycle.clear()
-            clearAttentionState()
+            detachAttentionState()
             clearLongRunningState()
             stopMonitoring()
             return START_NOT_STICKY
@@ -285,7 +285,7 @@ class TurnMonitorService : Service() {
 
         if (monitoredHostId != null && monitoredHostId != hostId) {
             lifecycle.clear()
-            clearAttentionState()
+            detachAttentionState()
             clearLongRunningState()
             client.close()
             connected = false
@@ -738,15 +738,15 @@ class TurnMonitorService : Service() {
     }
 
     @Synchronized
-    private fun clearAttentionState() {
+    private fun detachAttentionState() {
         val hostId = attentionLedgerHostId
         approvalNotifications.pendingRequests().forEach { request ->
             request.requestId?.let { requestId ->
                 hostId?.let { notificationManager.cancel(approvalNotificationId(it, requestId)) }
             }
         }
-        approvalNotifications.clearAll()
-        persistAttentionLedger()
+        // Detaching/stopping monitoring must not erase acknowledgment history.
+        // HostStore.forget is the sole owner of durable host-state deletion.
         notificationManager.cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
         attentionLedgerHostId = null
         approvalNotifications = AttentionNotificationLedger()

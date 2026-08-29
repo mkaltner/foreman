@@ -193,12 +193,6 @@ internal class AttentionNotificationLedger(
             acknowledged = acknowledged.toList(),
         )
 
-    @Synchronized
-    fun clearAll() {
-        pending.clear()
-        acknowledged.clear()
-    }
-
     private fun trimPending() {
         while (pending.size > MAX_ATTENTION_HISTORY) {
             val key = pending.keys.first()

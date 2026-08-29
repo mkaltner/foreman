@@ -189,6 +189,30 @@ class AttentionNotificationsTest {
     }
 
     @Test
+    fun detachingAndReturningToAHostPreservesPendingAcknowledgmentState() {
+        val attached = AttentionNotificationLedger()
+        attached.record(first)
+        attached.claimAlerts(listOf(first))
+        attached.acknowledgePending()
+        val durableHostSnapshot = attached.snapshot()
+
+        val otherHostOwner = AttentionNotificationLedger()
+        assertTrue(otherHostOwner.pendingRequests().isEmpty())
+
+        val restoredHostOwner = AttentionNotificationLedger(durableHostSnapshot)
+        val presentation = requireNotNull(
+            attentionNotificationPresentation(
+                restoredHostOwner.pendingRequests(),
+                restoredHostOwner.acknowledgedKeys(),
+            ),
+        )
+        assertEquals(listOf(first), restoredHostOwner.pendingRequests())
+        assertEquals(0, presentation.badgeCount)
+        assertFalse(presentation.useAttentionChannel)
+        assertTrue(restoredHostOwner.claimAlerts(listOf(first)).isEmpty())
+    }
+
+    @Test
     fun unacknowledgedProcessRestorePrimesTheStableEntryQuietlyBeforeRestoringItsBadge() {
         val original = AttentionNotificationLedger()
         original.record(first)
