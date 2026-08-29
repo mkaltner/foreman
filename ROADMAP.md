@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#52 Preserve session activity times across service
-  restarts](https://github.com/mkaltner/foreman/issues/52).
 - [ ] [#53 Restore the last-opened session across navigation and
   relaunch](https://github.com/mkaltner/foreman/issues/53).
 - [ ] [#54 Hide provider UI when only one provider is
@@ -67,6 +65,9 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Preserve provider session activity and terminal timestamps across
+  service restarts
+  ([PR #64](https://github.com/mkaltner/foreman/pull/64)).
 - [x] Consolidate Android monitoring, attention, and foreground outcomes into
   one user-visible notification
   ([PR #50](https://github.com/mkaltner/foreman/pull/50)).
