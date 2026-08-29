@@ -12,6 +12,9 @@ directly to the local Codex app-server and uses the official Claude Agent SDK
 through a bounded host-side bridge. Foreman is designed for fast, LAN-first
 operation.
 
+See the [product roadmap](ROADMAP.md) for current priorities and longer-term
+direction.
+
 > Claude Code support requires an authenticated local Claude Code CLI, Node.js
 > 20 or newer, and the packaged pinned Agent SDK. External Claude sessions are
 > discoverable and resumable, but Foreman cannot live-attach to their running
@@ -104,9 +107,15 @@ one paired client can use every provider available on that host.
   Android uses one foreground-only sequential probe alongside the active host.
 - Discover provider availability and browse active, recent, or resumable Codex
   and Claude Code sessions with visible provider identity.
+- Enable or disable installed providers while enforcing that every host keeps at
+  least one provider available.
+- Inspect provider account usage and each session's context-window consumption,
+  remaining tokens, model, access, turn count, and compaction history.
 - Search Codex session titles and bounded, normalized visible transcript text;
   Claude transcript search is not currently available.
 - Filter by repository/workspace, status, local date range, pins, and hidden sessions.
+- Organize sessions into collapsible repository and workspace groups whose
+  expanded state is retained per host across browser and Android relaunches.
 - Pin important sessions or non-destructively hide noisy sessions per client.
 - List, read, start, resume, and delete sessions. Codex also supports archive;
   Claude Code does not expose an archive operation.
@@ -125,10 +134,16 @@ one paired client can use every provider available on that host.
   **Full** to show every activity item. This is presentation-only.
 - Select installed Codex models, reasoning levels, and access profiles, or
   Claude Sonnet/Haiku and exact Claude permission modes.
+- Keep existing-session model, reasoning, access, and permission configuration
+  server-authoritative and durable; configuration remains a new-session choice
+  while active or waiting work is immutable.
 - Attach or paste up to four JPEG, PNG, or WebP images into Codex prompts or
   steers.
 - Notify Android devices for monitored Codex or managed Claude lifecycle, and
   supported background browser tabs for Codex turns.
+- Suppress redundant alerts while another paired client visibly focuses the
+  exact session, and consolidate Android monitoring, attention, and foreground
+  outcomes into one OS notification.
 - Follow light, dark, or system themes with a configurable accent color.
 - Use dedicated Android and responsive web clients.
 - Install as a rootless user-level systemd service without pip or a Python venv.
@@ -150,8 +165,9 @@ to the unified saved-host overview; **Home** and **Sessions** provide the same
 explicit in-app navigation.
 
 Android loads the host provider catalog after ordinary authentication. The new
-session dialog selects Codex or Claude Code, then shows only the applicable
-workspace, model, reasoning/access, or Claude permission controls. Claude
+session dialog selects an enabled Codex or Claude Code provider, then shows only
+the applicable workspace, model, reasoning/access, or Claude permission
+controls. Claude
 supports Sonnet, Haiku, and `default`, `dontAsk`, `acceptEdits`, `plan`, `auto`,
 or `bypassPermissions`; bypass mode is prominently marked high risk and never
 selected silently. External Claude sessions appear as **Resumable · Not
@@ -162,8 +178,10 @@ For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
 The Sessions screen provides expandable search and a compact filter dialog for
 repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
-and Hidden management. Search choices, pins, and hidden IDs use per-host local
-preferences; transcripts and image data are never stored there.
+and Hidden management. Repository and non-Git workspace groups are collapsible,
+bubble active work upward, and preserve their state across app relaunches.
+Search choices, group state, pins, and hidden IDs use per-host local preferences;
+transcripts and image data are never stored there.
 Activity detail defaults to **Focused** on Android and web. It groups consecutive
 routine, successfully completed command/tool cards from finished turns behind
 an expandable summary. Current-turn, running, failed, denied, or unknown work,
@@ -171,16 +189,18 @@ approvals, structured input, and search targets remain visible; **Full** restore
 the ungrouped transcript.
 Approval cards stay inside the existing conversation. Permission cards grant
 only selected requested access, and reconnect reloads only currently pending
-requests. Background approval notifications contain generic text and open the
-exact host and session/card without exposing commands or paths on the lock
-screen. Background monitoring is intentionally limited to the active host.
-Provider-aware Claude completion, failure, interruption, and attention alerts
-use the same privacy-safe Android notification preferences and open the exact
-host/provider/session. Merely resumable external sessions never notify.
+requests. Android reuses one foreground notification for monitoring, attention,
+and monitored outcomes instead of stacking a second Foreman entry. Attention
+content remains generic and opens the exact host and session/card without
+exposing commands or paths on the lock screen. Background monitoring is
+intentionally limited to the active host. Provider-aware Claude completion,
+failure, interruption, and attention alerts use the same privacy-safe Android
+notification preferences and open the exact host/provider/session. Merely
+resumable external sessions never notify.
 When a paired web or Android client is visibly focused on that exact session,
-other connected clients suppress its redundant event alerts. Android's quiet
-foreground-service monitoring card remains because the operating system
-requires it while global monitoring is enabled.
+other connected clients suppress its redundant event alerts. Android keeps the
+single quiet foreground-service entry because the operating system requires it
+while global monitoring is enabled.
 
 ## Web
 
@@ -393,6 +413,7 @@ Issues and feedback are welcome in the
 
 ## Documentation
 
+- [Product roadmap](ROADMAP.md)
 - [Installation guide](docs/install.md)
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
