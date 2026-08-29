@@ -189,24 +189,28 @@ describe("Claude session deletion", () => {
     const onAction = vi.fn();
     const onPin = vi.fn();
     const onHide = vi.fn();
-    render(<SessionList
-      results={[{ session, pinned: false, hidden: false, matches: [] }]}
-      filters={DEFAULT_SESSION_FILTERS}
-      repositoryOptions={[]}
-      searchLoading={false}
-      searchError=""
-      selectedId={null}
-      selectedProvider="codex"
-      disabled={false}
-      onOpen={vi.fn()}
-      onRefresh={vi.fn()}
-      onNew={vi.fn()}
-      onAction={onAction}
-      onFilters={vi.fn()}
-      onSearchNow={vi.fn()}
-      onPin={onPin}
-      onHide={onHide}
-    />);
+    const sessionList = (collapseScope: string) => (
+      <SessionList
+        collapseScope={collapseScope}
+        results={[{ session, pinned: false, hidden: false, matches: [] }]}
+        filters={DEFAULT_SESSION_FILTERS}
+        repositoryOptions={[]}
+        searchLoading={false}
+        searchError=""
+        selectedId={null}
+        selectedProvider="codex"
+        disabled={false}
+        onOpen={vi.fn()}
+        onRefresh={vi.fn()}
+        onNew={vi.fn()}
+        onAction={onAction}
+        onFilters={vi.fn()}
+        onSearchNow={vi.fn()}
+        onPin={onPin}
+        onHide={onHide}
+      />
+    );
+    const { rerender } = render(sessionList("home"));
 
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pin Claude work" }));
@@ -220,6 +224,11 @@ describe("Claude session deletion", () => {
     fireEvent.click(repositoryGroup);
     expect(repositoryGroup).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+
+    rerender(sessionList("work"));
+    expect(screen.getByRole("button", { name: /Workspace: \/projects\/foreman/ }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 });
 

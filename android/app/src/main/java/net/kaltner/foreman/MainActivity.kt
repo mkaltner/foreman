@@ -4338,7 +4338,7 @@ private fun SessionsScreen(
     viewModel: ForemanViewModel,
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
-    var collapsedRepositoryIds by remember { mutableStateOf(emptySet<String>()) }
+    var collapsedRepositoryIds by remember(state.activeHostId) { mutableStateOf(emptySet<String>()) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -4812,26 +4812,60 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
     repositoryRoot: String,
 ) {
     item(key = "repository:${group.repository.id}") {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = toggleCollapsed).padding(top = 8.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = toggleCollapsed),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
-            Text(
-                group.repository.label,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "${group.sessions.size} ${if (collapsed) "›" else "⌄"}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    group.repository.label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    Text(
+                        "${group.sessions.size} ${if (collapsed) "›" else "⌄"}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
         }
     }
     if (!collapsed) {
-        sessionCards(group.sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot)
+        sessionCards(
+            group.sessions,
+            open,
+            action,
+            pin,
+            hide,
+            capabilities,
+            repositories,
+            repositoryRoot,
+            showRepositoryLabel = false,
+        )
     }
 }
 
@@ -4868,6 +4902,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    showRepositoryLabel: Boolean = true,
 ) {
     items(sessions, key = { it.session.providerKey() }) { visible ->
         val session = visible.session
@@ -4877,7 +4912,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
             matches = visible.matches,
             pinned = visible.pinned,
             hidden = visible.hidden,
-            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot).label,
+            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot)
+                .label
+                .takeIf { showRepositoryLabel },
             onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId, provider) },
             onAction = { action(session, it) },
             onPin = { pin(provider, session.id) },
@@ -4893,7 +4930,7 @@ private fun SessionCard(
     matches: List<SessionSearchMatch>,
     pinned: Boolean,
     hidden: Boolean,
-    repositoryLabel: String,
+    repositoryLabel: String?,
     onClick: () -> Unit,
     onAction: (SessionAction) -> Unit,
     onPin: () -> Unit,
@@ -4902,18 +4939,21 @@ private fun SessionCard(
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    sessionDisplayTitle(session),
-                    modifier = Modifier.weight(1f),
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.width(8.dp))
+            Text(
+                sessionDisplayTitle(session),
+                modifier = Modifier.fillMaxWidth(),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 ProviderBadge(sessionProvider(session))
                 Spacer(Modifier.width(6.dp))
                 StatusPill(sessionDisplayStatus(session))
+                Spacer(Modifier.weight(1f))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
                     Icon(
                         if (pinned) Icons.Default.Star else Icons.Default.StarBorder,
@@ -4939,11 +4979,13 @@ private fun SessionCard(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
-            Text(
-                repositoryLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            repositoryLabel?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             matches.take(3).forEach { match ->
                 Text(
                     "${match.kind.replaceFirstChar { it.uppercase() }} · ${match.snippet}",

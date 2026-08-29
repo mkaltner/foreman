@@ -1426,6 +1426,7 @@ function App() {
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
+            collapseScope={activeHost.id}
             results={visibleSessions}
             groupByRepository={appearance.groupSessionsByRepository}
             repositories={repositories}
@@ -1676,6 +1677,7 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 }
 
 export function SessionList({
+  collapseScope = "",
   results,
   groupByRepository = true,
   repositories = [],
@@ -1698,6 +1700,7 @@ export function SessionList({
   onPin,
   onHide,
 }: {
+  collapseScope?: string;
   results: VisibleSession[];
   groupByRepository?: boolean;
   repositories?: RepositoryInfo[];
@@ -1721,6 +1724,7 @@ export function SessionList({
   onHide: (provider: ProviderId, id: string) => void;
 }) {
   const [collapsedRepositories, setCollapsedRepositories] = useState<Set<string>>(() => new Set());
+  useEffect(() => setCollapsedRepositories(new Set()), [collapseScope]);
   const sessions = results.map(({ session }) => session);
   const pinnedSessions = results.filter(({ pinned }) => pinned).map(({ session }) => session);
   const unpinnedSessions = results.filter(({ pinned }) => !pinned).map(({ session }) => session);
