@@ -1773,6 +1773,69 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
             ["thread-newer", "thread-older"],
         )
 
+    async def test_approval_and_input_activity_survive_service_recreation(
+        self,
+    ) -> None:
+        with patch("foreman_service.time.time", return_value=1_700_000_100):
+            await self.app.codex_event(
+                {
+                    "method": "foreman/approval/requested",
+                    "params": {
+                        "approval": {
+                            "id": "approval-1",
+                            "sessionId": "thread-approval",
+                            "turnId": "turn-approval",
+                            "type": "command",
+                        }
+                    },
+                },
+            )
+        with patch("foreman_service.time.time", return_value=1_700_003_700):
+            await self.app.codex_event(
+                {
+                    "method": "foreman/input/requested",
+                    "params": {
+                        "input": {
+                            "id": "input-1",
+                            "sessionId": "thread-input",
+                            "turnId": "turn-input",
+                            "supported": True,
+                        }
+                    },
+                },
+            )
+        await self.app.flush_session_timestamp_persistence()
+
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        projections = [
+            restored.projected_session(
+                {
+                    **THREAD,
+                    "id": thread_id,
+                    "updatedAt": None,
+                    "recencyAt": None,
+                    "turns": [],
+                }
+            )
+            for thread_id in ("thread-approval", "thread-input")
+        ]
+
+        self.assertEqual(
+            [item["lastActivity"] for item in projections],
+            [1_700_000_100, 1_700_003_700],
+        )
+        self.assertEqual(
+            [item["id"] for item in restored.sort_session_projections(projections)],
+            ["thread-input", "thread-approval"],
+        )
+
     async def test_provider_restoration_is_isolated_and_missing_timestamps_stay_old(
         self,
     ) -> None:

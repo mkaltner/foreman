@@ -1289,6 +1289,7 @@ class Foreman:
                     overlay["waitDescription"] = None
                 overlay["activityLabel"] = "Approval resolved"
                 overlay["lastActivity"] = observed_at
+        self.persist_overlay_timestamps("codex", thread_id, overlay)
         outgoing = {
             "version": VERSION,
             "type": f"approval.{action}",
@@ -1342,6 +1343,7 @@ class Foreman:
                 overlay["waitDescription"] = None
             overlay["activityLabel"] = "Input request resolved"
             overlay["lastActivity"] = observed_at
+        self.persist_overlay_timestamps("codex", thread_id, overlay)
         outgoing = {
             "version": VERSION,
             "type": f"input.{action}",
