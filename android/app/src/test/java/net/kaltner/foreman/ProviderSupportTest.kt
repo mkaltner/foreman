@@ -32,6 +32,76 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun contextUsageCalculatesRemainingWindow() {
+        val usage = contextUsageView(
+            ThreadTokenUsage(
+                last = TokenUsageBreakdown(totalTokens = 57_900),
+                modelContextWindow = 258_000,
+            ),
+        )
+
+        assertEquals(57_900L, usage?.usedTokens)
+        assertEquals(200_100L, usage?.remainingTokens)
+        assertEquals(22, usage?.percentUsed)
+        assertEquals(78, usage?.percentRemaining)
+        assertEquals("57.9k", formatTokenCount(usage!!.usedTokens))
+        assertEquals("258k", formatTokenCount(usage.contextWindow))
+    }
+
+    @Test
+    fun contextUsageRejectsMissingOrInvalidWindows() {
+        assertEquals(null, contextUsageView(null))
+        assertEquals(
+            null,
+            contextUsageView(
+                ThreadTokenUsage(
+                    last = TokenUsageBreakdown(totalTokens = 100),
+                    modelContextWindow = 0,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun accountUsageUsesMostConstrainedWindow() {
+        val usage = ProviderAccountUsage(
+            available = true,
+            rateLimits = RateLimitSnapshot(
+                primary = RateLimitWindow(usedPercent = 12.4, windowDurationMins = 300),
+                secondary = RateLimitWindow(usedPercent = 34.6, windowDurationMins = 10_080),
+            ),
+        )
+
+        assertEquals("65% left", accountUsageRemaining(usage))
+        assertEquals(2, accountUsageWindows(usage).size)
+        assertEquals(300L, accountUsageWindows(usage).first().windowDurationMins)
+    }
+
+    @Test
+    fun sessionUsageAndCompactionDecodeFromProtocol() {
+        val session = json.decodeFromString<SessionSummary>(
+            """{"id":"thread","repository":"/repo","title":"Usage","status":"idle","messages":[{"id":"compact-1","kind":"compaction","description":"Context compacted","compactionTrigger":"auto","preTokens":900000,"postTokens":120000,"durationMs":2000}],"tokenUsage":{"total":{"totalTokens":950000},"last":{"totalTokens":120000,"cachedInputTokens":54000,"outputTokens":1100},"modelContextWindow":258000}}""",
+        )
+
+        assertEquals(258_000L, session.tokenUsage?.modelContextWindow)
+        assertEquals(54_000L, session.tokenUsage?.last?.cachedInputTokens)
+        assertEquals("compaction", session.messages.single().kind)
+        assertEquals("auto", session.messages.single().compactionTrigger)
+        assertEquals(900_000L, session.messages.single().preTokens)
+    }
+
+    @Test
+    fun accountUsageDecodesBothProviders() {
+        val usage = json.decodeFromString<AccountUsage>(
+            """{"providers":{"codex":{"available":true,"rateLimits":{"primary":{"usedPercent":14,"windowDurationMins":300}}},"claude-code":{"available":false,"experimental":true,"availabilityReason":"Unavailable"}}}""",
+        )
+
+        assertEquals(14.0, usage.providers[PROVIDER_CODEX]?.rateLimits?.primary?.usedPercent)
+        assertTrue(usage.providers[PROVIDER_CLAUDE_CODE]?.experimental == true)
+        assertEquals("Unavailable", usage.providers[PROVIDER_CLAUDE_CODE]?.availabilityReason)
+    }
+
+    @Test
     fun legacySessionWithoutProviderDecodesAsCodexIdentity() {
         val session = json.decodeFromString<SessionSummary>(
             """{"id":"same","repository":"/repo","title":"Legacy","status":"idle"}""",

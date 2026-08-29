@@ -84,6 +84,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -128,6 +129,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -139,6 +141,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.roundToInt
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -790,6 +793,7 @@ internal data class UiState(
     val workspaceFile: WorkspaceFile? = null,
     val sessions: List<SessionSummary> = emptyList(),
     val providers: List<ProviderInfo> = defaultProviders(),
+    val accountUsage: AccountUsage = AccountUsage(),
     val repositories: List<RepositoryInfo> = emptyList(),
     val selected: SessionSummary? = null,
     val composerDrafts: Map<ComposerDraftKey, String> = emptyMap(),
@@ -882,6 +886,7 @@ internal fun storedComposerDrafts(
 private data class SyncSnapshot(
     val sessions: List<SessionSummary>,
     val providers: List<ProviderInfo>,
+    val accountUsage: AccountUsage,
     val repositories: List<RepositoryInfo>,
     val repositoryRoot: String,
     val models: List<ModelInfo>,
@@ -924,6 +929,7 @@ internal fun UiState.withForgottenConnection(): UiState =
         error = null,
         sessions = emptyList(),
         providers = defaultProviders(),
+        accountUsage = AccountUsage(),
         repositories = emptyList(),
         selected = null,
         composerDrafts = emptyMap(),
@@ -1652,6 +1658,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         capabilities = client.capabilities,
                         sessions = emptyList(),
                         providers = defaultProviders(),
+                        accountUsage = AccountUsage(),
                         repositories = emptyList(),
                         selected = null,
                         approvals = emptyList(),
@@ -1966,6 +1973,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 error = null,
                 sessions = emptyList(),
                 providers = defaultProviders(),
+                accountUsage = AccountUsage(),
                 repositories = emptyList(),
                 selected = null,
                 showNewSession = false,
@@ -2297,6 +2305,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val serviceStatusRequest = async { client.request("service.status") }
+                val usageRequest = async {
+                    runCatching { client.request("usage.status") }.getOrNull()
+                }
                 val modelsRequest =
                     async {
                         if (codexAvailable) {
@@ -2344,6 +2355,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     repositoriesRequest.await().payload.getValue("repositories").jsonArray
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
                 val serviceStatus = serviceStatusRequest.await().payload
+                val accountUsage = usageRequest.await()?.payload?.let {
+                    runCatching { json.decodeFromJsonElement<AccountUsage>(it) }.getOrNull()
+                } ?: AccountUsage()
                 val codexStatus = serviceStatus["codex"]?.jsonObject
                 val repositoryRoot = serviceStatus["repositoryRoot"]?.jsonPrimitive?.content.orEmpty()
                 val models =
@@ -2366,6 +2380,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 SyncSnapshot(
                     sessions = sessions,
                     providers = providers,
+                    accountUsage = accountUsage,
                     repositories = repositories,
                     repositoryRoot = repositoryRoot,
                     models = models,
@@ -2408,6 +2423,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
                 .copy(
                     providers = snapshot.providers,
+                    accountUsage = snapshot.accountUsage,
                     repositoryRoot = snapshot.repositoryRoot,
                     claudeModels = snapshot.claudeModels,
                     claudePermissionModes = snapshot.claudePermissionModes,
@@ -3032,6 +3048,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun handleEvent(message: WireMessage) {
         if (handleApprovalEvent(message)) return
         if (handleInputEvent(message)) return
+        if (message.type == "usage.event") {
+            val usage = runCatching {
+                json.decodeFromJsonElement<AccountUsage>(message.payload)
+            }.getOrNull() ?: return
+            state.update { it.copy(accountUsage = usage) }
+            return
+        }
         if (message.type == "provider.event") {
             val providers = message.payload["providers"]?.jsonArray?.mapNotNull {
                 runCatching { json.decodeFromJsonElement<ProviderInfo>(it) }.getOrNull()
@@ -3105,6 +3128,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { current ->
             val selected = current.selected
             if (selected?.matches(provider, sessionId) != true) {
+                val usage = if (kind == "usage") event["tokenUsage"]?.let {
+                    runCatching { json.decodeFromJsonElement<ThreadTokenUsage>(it) }.getOrNull()
+                } else null
                 val inferredStatus =
                     if (eventShowsWorkingActivity(kind)) {
                         "working"
@@ -3126,6 +3152,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                         event["reasoningEffort"]?.jsonPrimitive?.content
                                             ?: it.reasoningEffort,
                                 )
+                            } else if (it.matches(provider, sessionId) && usage != null) {
+                                it.copy(tokenUsage = usage)
                             } else if (it.matches(provider, sessionId) && inferredStatus != null) {
                                 it.copy(
                                     status = inferredStatus,
@@ -3298,6 +3326,17 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         composerAccessLevel = accessLevel,
                         composerModel = model,
                         composerEffort = reasoningEffort,
+                    )
+                }
+                "usage" -> {
+                    val usage = event["tokenUsage"]?.let {
+                        runCatching { json.decodeFromJsonElement<ThreadTokenUsage>(it) }.getOrNull()
+                    } ?: return@update current
+                    current.copy(
+                        selected = selected.copy(tokenUsage = usage),
+                        sessions = current.sessions.map {
+                            if (it.matches(provider, sessionId)) it.copy(tokenUsage = usage) else it
+                        },
                     )
                 }
                 else -> current
@@ -4019,12 +4058,17 @@ private fun HostDashboardScreen(
                                 OverviewMetric("Active", dashboard.active.size.toString(), Modifier.weight(1f))
                                 OverviewMetric("Waiting", dashboard.waitingCount.toString(), Modifier.weight(1f))
                             }
-                            Text(
-                                "Codex ${dashboard.active.count { sessionProvider(it) == PROVIDER_CODEX }} · " +
-                                    "Claude ${dashboard.active.count { sessionProvider(it) == PROVIDER_CLAUDE_CODE }} active",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            val providerActivity = state.providers.filter { it.enabled }.joinToString(" · ") { provider ->
+                                val label = provider.displayName.removeSuffix(" Code")
+                                "$label ${dashboard.active.count { sessionProvider(it) == provider.id }}"
+                            }
+                            if (providerActivity.isNotBlank()) {
+                                Text(
+                                    "$providerActivity active",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OverviewMetric("Failed", dashboard.failedCount.toString(), Modifier.weight(1f))
                                 OverviewMetric("Recent", dashboard.recent.size.toString(), Modifier.weight(1f))
@@ -4107,6 +4151,8 @@ private fun HostDashboardScreen(
 
 @Composable
 private fun DashboardHealthCard(state: UiState) {
+    val enabledProviders = state.providers.filter { it.enabled }
+    val codexEnabled = enabledProviders.any { it.id == PROVIDER_CODEX }
     val runtime =
         when {
             !state.runtimeConnected -> "Runtime unavailable"
@@ -4128,12 +4174,23 @@ private fun DashboardHealthCard(state: UiState) {
                     fontWeight = FontWeight.Bold,
                 )
             }
-            Text(runtime, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (codexEnabled) Text(runtime, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                "Foreman ${state.foremanVersion ?: "—"} · Codex ${state.codexVersion ?: "—"}",
+                "Foreman ${state.foremanVersion ?: "—"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            enabledProviders.forEach { provider ->
+                val version = when (provider.id) {
+                    PROVIDER_CODEX -> state.codexVersion ?: provider.version ?: provider.cliVersion
+                    else -> provider.cliVersion ?: provider.version ?: provider.sdkVersion
+                }
+                Text(
+                    "${provider.displayName} ${version ?: "—"} · ${if (provider.available) "available" else "unavailable"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -4302,6 +4359,9 @@ private fun SessionsScreen(
                     ),
             )
         },
+        bottomBar = {
+            AccountUsageDock(state.accountUsage, state.providers)
+        },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().imePadding()) {
@@ -4463,6 +4523,243 @@ private fun SessionsScreen(
         )
     }
 }
+
+@Composable
+private fun AccountUsageDock(usage: AccountUsage, providers: List<ProviderInfo>) {
+    val visible = providers.filter { it.enabled }.mapNotNull { provider ->
+        usage.providers[provider.id]?.let { provider to it }
+    }
+    if (visible.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    val usedPercent = visible.flatMap { accountUsageWindows(it.second) }
+        .maxOfOrNull { it.usedPercent }?.roundToInt()?.coerceIn(0, 100) ?: 0
+    Surface(tonalElevation = 3.dp, shadowElevation = 4.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { open = true }
+                .navigationBarsPadding().padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            UsageRing(usedPercent, 28.dp)
+            Column(Modifier.weight(1f)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    visible.forEach { (provider, providerUsage) ->
+                        Text(
+                            "${provider.displayName.removeSuffix(" Code")} ${accountUsageRemaining(providerUsage)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                Text("Account usage", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+    if (open) AccountUsageDialog(visible, onDismiss = { open = false })
+}
+
+@Composable
+private fun AccountUsageDialog(
+    providers: List<Pair<ProviderInfo, ProviderAccountUsage>>,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Account usage") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                providers.forEachIndexed { providerIndex, (provider, usage) ->
+                    if (providerIndex > 0) HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(provider.displayName, fontWeight = FontWeight.Bold)
+                            if (usage.experimental) Text("EXPERIMENTAL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                        val windows = accountUsageWindows(usage)
+                        if (windows.isEmpty()) {
+                            Text(
+                                usage.availabilityReason ?: "Usage is unavailable.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            windows.forEachIndexed { index, window ->
+                                val remaining = (100 - window.usedPercent).roundToInt().coerceIn(0, 100)
+                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(rateLimitLabel(window.windowDurationMins, index), style = MaterialTheme.typography.labelMedium)
+                                        Text("$remaining% left", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { (window.usedPercent / 100).toFloat().coerceIn(0f, 1f) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    window.resetsAt?.let {
+                                        Text(
+                                            "Resets ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it * 1000))}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        usage.observedAt?.let {
+                            Text(
+                                "Last observed ${DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it * 1000))}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+private fun rateLimitLabel(durationMinutes: Long?, index: Int): String =
+    when (durationMinutes) {
+        10_080L -> "Weekly limit"
+        null -> if (index == 0) "Primary limit" else "Secondary limit"
+        else -> when {
+            durationMinutes > 0 && durationMinutes % 60 == 0L -> "${durationMinutes / 60}-hour limit"
+            durationMinutes > 0 -> "$durationMinutes-minute limit"
+            else -> if (index == 0) "Primary limit" else "Secondary limit"
+        }
+    }
+
+@Composable
+private fun UsageRing(percentUsed: Int, size: Dp) {
+    CircularProgressIndicator(
+        progress = { (percentUsed / 100f).coerceIn(0f, 1f) },
+        modifier = Modifier.size(size),
+        strokeWidth = 3.dp,
+        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+    )
+}
+
+@Composable
+private fun SessionContextUsageAction(session: SessionSummary, state: UiState) {
+    val usage = contextUsageView(session.tokenUsage) ?: return
+    var open by remember(session.providerKey()) { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier.padding(horizontal = 3.dp).clickable { open = true },
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            UsageRing(usage.percentUsed, 22.dp)
+            Text(
+                "${usage.percentRemaining}%",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+    if (open) {
+        SessionInfoDialog(session, usage, state, onDismiss = { open = false })
+    }
+}
+
+@Composable
+private fun SessionInfoDialog(
+    session: SessionSummary,
+    usage: ContextUsageView,
+    state: UiState,
+    onDismiss: () -> Unit,
+) {
+    val provider = sessionProvider(session)
+    val models = if (provider == PROVIDER_CLAUDE_CODE) state.claudeModels else state.models
+    val model = models.firstOrNull { it.id == session.model }?.displayName ?: session.model ?: "—"
+    val access = if (provider == PROVIDER_CLAUDE_CODE) {
+        state.claudePermissionModes.firstOrNull { it.id == session.permissionMode }?.displayName
+            ?: session.permissionMode
+    } else {
+        state.accessLevels.firstOrNull { it.id == session.accessLevel }?.displayName
+            ?: session.accessLevel
+    }
+    val turnCount = session.messages.mapNotNull { it.turnId }.distinct().size
+    val compactions = session.messages.filter { it.kind == "compaction" }
+    val latestCompaction = compactions.lastOrNull()
+    val total = session.tokenUsage?.total
+    val last = session.tokenUsage?.last
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("SESSION INFO", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text("Context window")
+            }
+        },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${formatTokenCount(usage.usedTokens)} / ${formatTokenCount(usage.contextWindow)} tokens")
+                    Text("${usage.percentRemaining}% left", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+                LinearProgressIndicator(
+                    progress = { usage.percentUsed / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "${formatTokenCount(usage.remainingTokens)} tokens remain. ${providerDisplayName(provider)} normally compacts the conversation automatically before the window is exhausted.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                SessionUsageRow("Model", model)
+                session.reasoningEffort?.takeIf { provider == PROVIDER_CODEX }?.let {
+                    SessionUsageRow("Reasoning", it.replaceFirstChar(Char::uppercase))
+                }
+                access?.let { SessionUsageRow(if (provider == PROVIDER_CODEX) "Access" else "Permission", it) }
+                SessionUsageRow(
+                    "Transcript",
+                    "${session.messages.size} items" + if (turnCount > 0) " · $turnCount ${if (turnCount == 1) "turn" else "turns"}" else "",
+                )
+                SessionUsageRow("Compactions", compactions.size.toString())
+                latestCompaction?.let { SessionUsageRow("Last compaction", compactionDetail(it)) }
+                total?.let { SessionUsageRow("Session tokens", "${formatTokenCount(it.totalTokens)} total") }
+                last?.cachedInputTokens?.let { SessionUsageRow("Cached input", formatTokenCount(it)) }
+                last?.outputTokens?.let { SessionUsageRow("Last output", formatTokenCount(it)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun SessionUsageRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private fun compactionDetail(item: ConversationItem): String {
+    val trigger = when (item.compactionTrigger) {
+        "manual" -> "Manual"
+        "auto" -> "Automatic"
+        else -> "Completed"
+    }
+    return if (item.preTokens != null && item.postTokens != null) {
+        "$trigger · ${formatTokenCount(item.preTokens)} → ${formatTokenCount(item.postTokens)}"
+    } else trigger
+}
+
+private fun compactDuration(durationMs: Long): String =
+    if (durationMs < 1_000) "${durationMs}ms" else "${String.format(java.util.Locale.US, "%.1f", durationMs / 1_000.0).removeSuffix(".0")}s"
 
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     title: String,
@@ -4807,6 +5104,7 @@ private fun SessionDetailScreen(
                     }
                 },
                 actions = {
+                    if (selected != null) SessionContextUsageAction(selected, state)
                     HostSelectorMenu(state, viewModel, compact = true)
                     if (selected != null && providerInterruptEligible(selected)) {
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
@@ -5136,6 +5434,26 @@ private fun ConversationRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+        "compaction" -> Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Row(
+                Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("↻", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Context compacted", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                    Text(compactionDetail(item), style = MaterialTheme.typography.bodySmall)
+                }
+                item.durationMs?.let {
+                    Text(compactDuration(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }

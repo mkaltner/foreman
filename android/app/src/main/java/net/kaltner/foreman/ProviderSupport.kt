@@ -1,5 +1,7 @@
 package net.kaltner.foreman
 
+import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -31,6 +33,84 @@ data class PermissionModeInfo(
     val description: String = "",
     val highRisk: Boolean = false,
 )
+
+@Serializable
+data class RateLimitWindow(
+    val usedPercent: Double,
+    val windowDurationMins: Long? = null,
+    val resetsAt: Long? = null,
+)
+
+@Serializable
+data class RateLimitSnapshot(
+    val limitId: String? = null,
+    val limitName: String? = null,
+    val primary: RateLimitWindow? = null,
+    val secondary: RateLimitWindow? = null,
+    val planType: String? = null,
+    val rateLimitReachedType: String? = null,
+)
+
+@Serializable
+data class ProviderAccountUsage(
+    val available: Boolean,
+    val rateLimits: RateLimitSnapshot? = null,
+    val experimental: Boolean = false,
+    val observedAt: Long? = null,
+    val availabilityReason: String? = null,
+)
+
+@Serializable
+data class AccountUsage(
+    val providers: Map<String, ProviderAccountUsage> = emptyMap(),
+)
+
+internal data class ContextUsageView(
+    val usedTokens: Long,
+    val remainingTokens: Long,
+    val contextWindow: Long,
+    val percentUsed: Int,
+    val percentRemaining: Int,
+)
+
+internal fun contextUsageView(tokenUsage: ThreadTokenUsage?): ContextUsageView? {
+    val used = tokenUsage?.last?.totalTokens ?: return null
+    val window = tokenUsage.modelContextWindow ?: return null
+    if (used < 0 || window <= 0) return null
+    val safeUsed = used.coerceAtLeast(0)
+    val percentUsed = ((safeUsed.toDouble() / window) * 100).roundToInt().coerceIn(0, 100)
+    return ContextUsageView(
+        usedTokens = safeUsed,
+        remainingTokens = (window - safeUsed).coerceAtLeast(0),
+        contextWindow = window,
+        percentUsed = percentUsed,
+        percentRemaining = 100 - percentUsed,
+    )
+}
+
+internal fun formatTokenCount(value: Long): String =
+    when {
+        value >= 1_000_000 -> {
+            val millions = value / 1_000_000.0
+            if (millions >= 10) "${millions.toInt()}m"
+            else "${String.format(Locale.US, "%.1f", millions).removeSuffix(".0")}m"
+        }
+        value >= 1_000 -> {
+            val thousands = value / 1_000.0
+            if (thousands >= 100) "${thousands.toInt()}k"
+            else "${String.format(Locale.US, "%.1f", thousands).removeSuffix(".0")}k"
+        }
+        else -> value.toString()
+    }
+
+internal fun accountUsageWindows(usage: ProviderAccountUsage?): List<RateLimitWindow> =
+    listOfNotNull(usage?.rateLimits?.primary, usage?.rateLimits?.secondary)
+
+internal fun accountUsageRemaining(usage: ProviderAccountUsage?): String {
+    val windows = accountUsageWindows(usage)
+    if (windows.isEmpty()) return "unavailable"
+    return "${(100 - windows.maxOf { it.usedPercent }).roundToInt().coerceIn(0, 100)}% left"
+}
 
 data class SessionIdentity(
     val hostId: String,

@@ -134,6 +134,27 @@ data class ConversationItem(
     val turnId: String? = null,
     val images: List<ImagePayload> = emptyList(),
     val imageCount: Int = 0,
+    val compactionTrigger: String? = null,
+    val preTokens: Long? = null,
+    val postTokens: Long? = null,
+    val durationMs: Long? = null,
+)
+
+@Serializable
+data class TokenUsageBreakdown(
+    val totalTokens: Long,
+    val inputTokens: Long? = null,
+    val cachedInputTokens: Long? = null,
+    val cacheWriteInputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val reasoningOutputTokens: Long? = null,
+)
+
+@Serializable
+data class ThreadTokenUsage(
+    val total: TokenUsageBreakdown? = null,
+    val last: TokenUsageBreakdown? = null,
+    val modelContextWindow: Long? = null,
 )
 
 enum class ActivityDetail { Focused, Full }
@@ -206,6 +227,7 @@ data class SessionSummary(
     val externalLimitation: String? = null,
     val waitDescription: String? = null,
     val statusChangedAt: Long? = null,
+    val tokenUsage: ThreadTokenUsage? = null,
 )
 
 @Serializable
