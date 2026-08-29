@@ -283,6 +283,8 @@ class Foreman:
         self.restart_runner = restart_runner or self.systemd_restart
         self.restart_scheduled = False
         self.restart_task: asyncio.Task[None] | None = None
+        self.timestamp_persistence_pending: set[tuple[str, str]] = set()
+        self.timestamp_persistence_task: asyncio.Task[None] | None = None
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
         self.stopping = False
@@ -360,6 +362,7 @@ class Foreman:
             )
         except TimeoutError:
             self.diagnostics.record("service.shutdown_timed_out")
+        await self.flush_session_timestamp_persistence()
 
     async def claude_event(self, message: dict[str, Any]) -> None:
         kind = message.get("kind")
@@ -424,6 +427,8 @@ class Foreman:
         if isinstance(cwd, str) and cwd:
             self.claude_session_cwds[session_id] = cwd
         overlay = self.claude_session_overlays.setdefault(session_id, {})
+        known_activity = self.timestamp(overlay.get("lastActivity"))
+        known_terminal = self.timestamp(overlay.get("terminalAt"))
         run_id = message.get("runId")
         outgoing_event: dict[str, Any]
         account_usage_changed = False
@@ -671,8 +676,37 @@ class Foreman:
         else:
             return
 
+        incoming_activity = self.timestamp(overlay.get("lastActivity"))
+        activity_candidates = [
+            value
+            for value in (known_activity, incoming_activity)
+            if value is not None
+        ]
+        if activity_candidates:
+            overlay["lastActivity"] = max(activity_candidates)
+        if overlay.get("status") in ("working", "waiting"):
+            overlay.pop("terminalAt", None)
+        else:
+            terminal_candidates = [
+                value
+                for value in (
+                    known_terminal,
+                    self.timestamp(overlay.get("terminalAt")),
+                )
+                if value is not None
+            ]
+            if terminal_candidates:
+                overlay["terminalAt"] = max(terminal_candidates)
         if outgoing_event.get("kind") not in ("route", "usage", "lifecycle"):
-            outgoing_event.setdefault("activityAt", observed_at)
+            outgoing_event["activityAt"] = self.timestamp(
+                overlay.get("lastActivity")
+            )
+        if outgoing_event.get("kind") == "status" and overlay.get(
+            "status"
+        ) in ("completed", "failed", "interrupted"):
+            outgoing_event["completedAt"] = self.timestamp(
+                overlay.get("terminalAt")
+            )
         self.persist_overlay_timestamps("claude-code", session_id, overlay)
 
         outgoing = {
@@ -1037,6 +1071,8 @@ class Foreman:
             {"model": model, "permissionMode": permission_mode},
         )
         overlay = self.claude_session_overlays.setdefault(session_id, {})
+        known_activity = self.timestamp(overlay.get("lastActivity"))
+        started_at = int(time.time())
         overlay.update(
             {
                 "source": "managed",
@@ -1046,10 +1082,15 @@ class Foreman:
                 "model": model,
                 "permissionMode": permission_mode,
                 "activeTurnId": run_id,
-                "lastActivity": int(time.time()),
+                "lastActivity": max(
+                    value
+                    for value in (known_activity, started_at)
+                    if value is not None
+                ),
                 **route_settings,
             }
         )
+        overlay.pop("terminalAt", None)
         self.persist_overlay_timestamps("claude-code", session_id, overlay)
         self.claude_session_messages.setdefault(session_id, []).append(
             {
@@ -1393,12 +1434,23 @@ class Foreman:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
         activity_at = event.get("activityAt", event.get("observedAt"))
-        if kind not in ("route", "usage") and self.timestamp(activity_at) is not None:
+        incoming_activity = self.timestamp(activity_at)
+        known_activity = self.timestamp(overlay.get("lastActivity"))
+        if kind not in ("route", "usage") and incoming_activity is not None:
+            activity_at = max(
+                value
+                for value in (known_activity, incoming_activity)
+                if value is not None
+            )
             overlay["lastActivity"] = activity_at
+            event["activityAt"] = activity_at
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
-                if projected_status != overlay.get("status"):
+                if (
+                    projected_status != overlay.get("status")
+                    and self.timestamp(activity_at) is not None
+                ):
                     overlay["statusChangedAt"] = activity_at
                 overlay["status"] = projected_status
                 overlay["attention"] = projected_status == "waiting"
@@ -1412,7 +1464,20 @@ class Foreman:
                 overlay["activeTurnId"] = None
                 overlay["activeTurnStartedAt"] = None
             if projected_status in ("completed", "failed", "interrupted"):
-                overlay["terminalAt"] = event.get("completedAt") or activity_at
+                event_terminal = self.timestamp(event.get("completedAt"))
+                if event_terminal is None:
+                    event_terminal = self.timestamp(activity_at)
+                terminal_candidates = [
+                    value
+                    for value in (
+                        self.timestamp(overlay.get("terminalAt")),
+                        event_terminal,
+                    )
+                    if value is not None
+                ]
+                if terminal_candidates:
+                    overlay["terminalAt"] = max(terminal_candidates)
+                    event["completedAt"] = overlay["terminalAt"]
                 overlay["turnDurationMs"] = event.get("durationMs")
                 overlay["failureSummary"] = event.get("failureSummary")
             if event.get("waitType") in ("approval", "input"):
@@ -1589,19 +1654,11 @@ class Foreman:
             for key in ("lastActivity", "terminalAt")
             if (value := self.timestamp(overlay.get(key))) is not None
         }
-        timestamps = (
-            known
-            if desired == known
-            else self.state.remember_session_timestamps(
-                provider,
-                session_id,
-                last_activity=desired.get("lastActivity"),
-                terminal_at=desired.get("terminalAt"),
-                clear_terminal=active,
-            )
-        )
+        timestamps = known if desired == known else desired
         overlay.pop("terminalAt", None)
         overlay.update(timestamps)
+        if desired != known:
+            self.queue_session_timestamp_persistence(provider, session_id)
         return {
             **projected,
             "lastActivity": timestamps.get("lastActivity"),
@@ -1613,15 +1670,106 @@ class Foreman:
         self, provider: str, session_id: str, overlay: dict[str, Any]
     ) -> None:
         active = overlay.get("status") in ("working", "waiting")
-        timestamps = self.state.remember_session_timestamps(
-            provider,
-            session_id,
-            last_activity=self.timestamp(overlay.get("lastActivity")),
-            terminal_at=self.timestamp(overlay.get("terminalAt")),
-            clear_terminal=active,
-        )
+        activity_candidates = [
+            value
+            for value in (
+                self.timestamp(overlay.get("lastActivity")),
+                self.timestamp(overlay.get("terminalAt")),
+            )
+            if value is not None
+        ]
+        timestamps: dict[str, int | float] = {}
+        if activity_candidates:
+            timestamps["lastActivity"] = max(activity_candidates)
+        terminal_at = self.timestamp(overlay.get("terminalAt"))
+        if terminal_at is not None and not active:
+            timestamps["terminalAt"] = terminal_at
         overlay.pop("terminalAt", None)
         overlay.update(timestamps)
+        self.queue_session_timestamp_persistence(provider, session_id)
+
+    def queue_session_timestamp_persistence(
+        self, provider: str, session_id: str
+    ) -> None:
+        self.timestamp_persistence_pending.add((provider, session_id))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.persist_session_timestamp_batch(
+                list(self.timestamp_persistence_pending)
+            )
+            self.timestamp_persistence_pending.clear()
+            return
+        if (
+            self.timestamp_persistence_task is None
+            or self.timestamp_persistence_task.done()
+        ):
+            self.timestamp_persistence_task = loop.create_task(
+                self.persist_session_timestamp_worker()
+            )
+
+    def session_timestamp_entries(
+        self, keys: list[tuple[str, str]]
+    ) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for provider, session_id in keys:
+            overlays = (
+                self.session_overlays
+                if provider == "codex"
+                else self.claude_session_overlays
+            )
+            overlay = overlays.get(session_id, {})
+            entries.append(
+                {
+                    "provider": provider,
+                    "sessionId": session_id,
+                    "lastActivity": self.timestamp(overlay.get("lastActivity")),
+                    "terminalAt": self.timestamp(overlay.get("terminalAt")),
+                    "clearTerminal": overlay.get("status") in ("working", "waiting"),
+                }
+            )
+        return entries
+
+    def persist_session_timestamp_batch(
+        self, keys: list[tuple[str, str]]
+    ) -> None:
+        self.state.remember_session_timestamp_batch(
+            self.session_timestamp_entries(keys)
+        )
+
+    async def persist_session_timestamp_worker(self) -> None:
+        await asyncio.sleep(0)
+        try:
+            while self.timestamp_persistence_pending:
+                keys = list(self.timestamp_persistence_pending)
+                self.timestamp_persistence_pending.difference_update(keys)
+                entries = self.session_timestamp_entries(keys)
+                await asyncio.to_thread(
+                    self.state.remember_session_timestamp_batch,
+                    entries,
+                )
+        except Exception:
+            self.diagnostics.record("state.timestamp_persist_failed")
+        finally:
+            self.timestamp_persistence_task = None
+            if self.timestamp_persistence_pending:
+                self.queue_session_timestamp_persistence(
+                    *next(iter(self.timestamp_persistence_pending))
+                )
+
+    async def flush_session_timestamp_persistence(self) -> None:
+        while self.timestamp_persistence_pending or (
+            self.timestamp_persistence_task is not None
+            and not self.timestamp_persistence_task.done()
+        ):
+            task = self.timestamp_persistence_task
+            if task is None:
+                self.queue_session_timestamp_persistence(
+                    *next(iter(self.timestamp_persistence_pending))
+                )
+                task = self.timestamp_persistence_task
+            if task is not None:
+                await task
 
     def remember_session_settings(
         self, provider: str, session_id: str, settings: dict[str, Any]
@@ -2471,7 +2619,10 @@ class Foreman:
                 self.claude_session_cwds.pop(session_id, None)
                 self.claude_session_messages.pop(session_id, None)
                 self.state.forget_session_settings(provider, session_id)
-                self.state.forget_session_timestamps(provider, session_id)
+                await self.flush_session_timestamp_persistence()
+                await asyncio.to_thread(
+                    self.state.forget_session_timestamps, provider, session_id
+                )
             subscription = self.provider_subscription(provider, session_id)
             for connected in self.clients:
                 connected.subscriptions.discard(subscription)
@@ -2626,7 +2777,10 @@ class Foreman:
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
-            self.state.forget_session_timestamps("codex", thread_id)
+            await self.flush_session_timestamp_persistence()
+            await asyncio.to_thread(
+                self.state.forget_session_timestamps, "codex", thread_id
+            )
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
@@ -2640,7 +2794,10 @@ class Foreman:
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
-            self.state.forget_session_timestamps("codex", thread_id)
+            await self.flush_session_timestamp_persistence()
+            await asyncio.to_thread(
+                self.state.forget_session_timestamps, "codex", thread_id
+            )
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "session.settings":

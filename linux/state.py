@@ -215,55 +215,99 @@ class State:
         terminal_at: int | float | None = None,
         clear_terminal: bool = False,
     ) -> dict[str, Any]:
-        if provider not in {"codex", "claude-code"}:
-            raise ValueError("provider is unsupported")
-        if not session_id or len(session_id) > 160:
-            raise ValueError("session ID is invalid")
-        incoming_activity = _timestamp(last_activity)
-        incoming_terminal = _timestamp(terminal_at)
+        return self.remember_session_timestamp_batch(
+            [
+                {
+                    "provider": provider,
+                    "sessionId": session_id,
+                    "lastActivity": last_activity,
+                    "terminalAt": terminal_at,
+                    "clearTerminal": clear_terminal,
+                }
+            ]
+        ).get((provider, session_id), {})
 
-        def update(data: dict[str, Any]) -> dict[str, Any]:
+    def remember_session_timestamp_batch(
+        self, entries: list[dict[str, Any]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        normalized: list[
+            tuple[str, str, int | float | None, int | float | None, bool]
+        ] = []
+        for entry in entries:
+            provider = entry.get("provider")
+            session_id = entry.get("sessionId")
+            if provider not in {"codex", "claude-code"}:
+                raise ValueError("provider is unsupported")
+            if not isinstance(session_id, str) or not session_id or len(session_id) > 160:
+                raise ValueError("session ID is invalid")
+            normalized.append(
+                (
+                    provider,
+                    session_id,
+                    _timestamp(entry.get("lastActivity")),
+                    _timestamp(entry.get("terminalAt")),
+                    entry.get("clearTerminal") is True,
+                )
+            )
+        if not normalized:
+            return {}
+
+        def update(data: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
             stored = data.setdefault("sessionTimestamps", {})
             if not isinstance(stored, dict):
                 stored = {}
                 data["sessionTimestamps"] = stored
-            by_provider = stored.setdefault(provider, {})
-            if not isinstance(by_provider, dict):
-                by_provider = {}
-                stored[provider] = by_provider
-            previous = by_provider.get(session_id)
-            if not isinstance(previous, dict):
-                previous = {}
-            previous_activity = _timestamp(previous.get("lastActivity"))
-            previous_terminal = _timestamp(previous.get("terminalAt"))
-            activity_candidates = [
-                value
-                for value in (
-                    previous_activity,
-                    incoming_activity,
-                    previous_terminal,
-                    incoming_terminal,
-                )
-                if value is not None
-            ]
-            terminal_candidates = [
-                value
-                for value in (previous_terminal, incoming_terminal)
-                if value is not None
-            ]
-            projected: dict[str, Any] = {}
-            if activity_candidates:
-                projected["lastActivity"] = max(activity_candidates)
-            if terminal_candidates and not clear_terminal:
-                projected["terminalAt"] = max(terminal_candidates)
-            if not projected:
-                by_provider.pop(session_id, None)
-                return {}
-            by_provider[session_id] = {
-                **projected,
-                "recordedAt": int(time.time()),
-            }
-            if len(by_provider) > 500:
+            results: dict[tuple[str, str], dict[str, Any]] = {}
+            touched_providers: set[str] = set()
+            for (
+                provider,
+                session_id,
+                incoming_activity,
+                incoming_terminal,
+                clear_terminal,
+            ) in normalized:
+                by_provider = stored.setdefault(provider, {})
+                if not isinstance(by_provider, dict):
+                    by_provider = {}
+                    stored[provider] = by_provider
+                touched_providers.add(provider)
+                previous = by_provider.get(session_id)
+                if not isinstance(previous, dict):
+                    previous = {}
+                previous_activity = _timestamp(previous.get("lastActivity"))
+                previous_terminal = _timestamp(previous.get("terminalAt"))
+                activity_candidates = [
+                    value
+                    for value in (
+                        previous_activity,
+                        incoming_activity,
+                        previous_terminal,
+                        incoming_terminal,
+                    )
+                    if value is not None
+                ]
+                terminal_candidates = [
+                    value
+                    for value in (previous_terminal, incoming_terminal)
+                    if value is not None
+                ]
+                projected: dict[str, Any] = {}
+                if activity_candidates:
+                    projected["lastActivity"] = max(activity_candidates)
+                if terminal_candidates and not clear_terminal:
+                    projected["terminalAt"] = max(terminal_candidates)
+                if projected:
+                    by_provider[session_id] = {
+                        **projected,
+                        "recordedAt": int(time.time()),
+                    }
+                else:
+                    by_provider.pop(session_id, None)
+                results[(provider, session_id)] = projected
+            for provider in touched_providers:
+                by_provider = stored[provider]
+                if len(by_provider) <= 500:
+                    continue
                 oldest = sorted(
                     by_provider,
                     key=lambda key: by_provider[key].get("recordedAt", 0)
@@ -272,7 +316,8 @@ class State:
                 )[: len(by_provider) - 500]
                 for key in oldest:
                     by_provider.pop(key, None)
-            return projected
+                    results.pop((provider, key), None)
+            return results
 
         return self._locked(update)
 

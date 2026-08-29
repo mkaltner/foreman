@@ -1261,6 +1261,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["secondary"]["usedPercent"],
                 28,
             )
+            await app.flush_session_timestamp_persistence()
             restored = Foreman(
                 "127.0.0.1",
                 0,
@@ -1556,6 +1557,7 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         if self.app.restart_task is not None:
             await asyncio.gather(self.app.restart_task, return_exceptions=True)
+        await self.app.flush_session_timestamp_persistence()
         self.temporary.cleanup()
 
     async def test_enabled_restart_flushes_ack_before_exact_runner(self) -> None:
@@ -1714,6 +1716,7 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
                     "completedAt": completed_at,
                 },
             )
+        await self.app.flush_session_timestamp_persistence()
 
         restored = Foreman(
             "127.0.0.1",
@@ -1842,6 +1845,36 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([item["id"] for item in bubbled], ["older-active", "newer-idle"])
         self.assertEqual(bubbled[0]["lastActivity"], 1_700_000_100)
+        await restored.flush_session_timestamp_persistence()
+
+    async def test_high_frequency_timestamps_are_coalesced_off_the_event_loop(
+        self,
+    ) -> None:
+        with patch.object(
+            self.app.state,
+            "remember_session_timestamp_batch",
+            wraps=self.app.state.remember_session_timestamp_batch,
+        ) as remember:
+            for activity_at in range(1_700_000_000, 1_700_000_020):
+                self.app.remember_session_event(
+                    "thread-streaming",
+                    {
+                        "kind": "activity",
+                        "label": "Responding",
+                        "activityAt": activity_at,
+                        "observedAt": 1_900_000_000,
+                    },
+                )
+
+            self.assertEqual(remember.call_count, 0)
+            await self.app.flush_session_timestamp_persistence()
+            self.assertEqual(remember.call_count, 1)
+            self.assertEqual(
+                self.app.state.session_timestamps("codex")["thread-streaming"][
+                    "lastActivity"
+                ],
+                1_700_000_019,
+            )
 
     async def test_session_context_snapshot_survives_service_recreation(self) -> None:
         await self.app.codex_event(
