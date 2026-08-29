@@ -450,9 +450,6 @@ internal fun sessionPresenceSyncPending(
 
 internal fun dashboardBackDestination(): Screen = Screen.Overview
 
-internal fun dashboardReturnTarget(target: OverviewReturnTarget?): OverviewReturnTarget? =
-    target?.takeUnless { it.screen == Screen.Dashboard }
-
 internal data class OverviewReturnTarget(
     val hostId: String,
     val screen: Screen,
@@ -1340,15 +1337,6 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun backFromOverview() {
         val target = consumeOverviewReturnTarget() ?: return
         navigateToOverviewReturnTarget(target)
-    }
-
-    fun backFromDashboard() {
-        val target = dashboardReturnTarget(consumeOverviewReturnTarget())
-        if (target == null) {
-            showOverview()
-        } else {
-            navigateToOverviewReturnTarget(target)
-        }
     }
 
     private fun consumeOverviewReturnTarget(): OverviewReturnTarget? =
@@ -4651,7 +4639,7 @@ private fun HostDashboardScreen(
                 (pendingApprovals.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet(),
         )
 
-    BackHandler(onBack = viewModel::backFromDashboard)
+    BackHandler(onBack = viewModel::showOverview)
 
     Scaffold(
         topBar = {

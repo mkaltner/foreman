@@ -298,11 +298,6 @@ class ForemanConnectionTest {
     @Test
     fun dashboardDestinationSurvivesReconnectUnlessOpeningAConversation() {
         assertEquals(Screen.Overview, dashboardBackDestination())
-        assertEquals(
-            OverviewReturnTarget("host-a", Screen.Sessions),
-            dashboardReturnTarget(OverviewReturnTarget("host-a", Screen.Sessions)),
-        )
-        assertNull(dashboardReturnTarget(OverviewReturnTarget("host-a", Screen.Dashboard)))
         assertEquals(Screen.Dashboard, reconnectDestination(Screen.Dashboard, null))
         assertEquals(Screen.Sessions, reconnectDestination(Screen.Overview, null))
         assertEquals(Screen.Detail, reconnectDestination(Screen.Dashboard, "thread-1"))
@@ -366,27 +361,32 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun sessionsHomeDashboardBackReturnsDirectlyToSessions() {
+    fun sessionsHomeDashboardBackReturnsHomeThenSessions() {
         val navigation = OverviewNavigationState()
         navigation.capture(Screen.Sessions, "host-a", null)
 
-        val targetAfterOpeningDashboard = dashboardReturnTarget(navigation.consume("host-a"))
+        // Dashboard Back only reveals Home; it must not consume Home's origin.
+        assertTrue(navigation.hasReturnTarget())
 
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),
-            targetAfterOpeningDashboard,
+            navigation.consume("host-a"),
         )
         assertFalse(navigation.hasReturnTarget())
     }
 
     @Test
-    fun dashboardHomeDashboardBackFallsBackToHomeInsteadOfLooping() {
+    fun dashboardHomeDashboardBackPreservesTheNormalBackStackOnce() {
         val navigation = OverviewNavigationState()
         navigation.capture(Screen.Dashboard, "host-a", null)
 
-        val targetAfterOpeningDashboard = dashboardReturnTarget(navigation.consume("host-a"))
+        // Dashboard Back returns to Home without consuming the original Dashboard entry.
+        assertTrue(navigation.hasReturnTarget())
 
-        assertNull(targetAfterOpeningDashboard)
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Dashboard),
+            navigation.consume("host-a"),
+        )
         assertFalse(navigation.hasReturnTarget())
     }
 
