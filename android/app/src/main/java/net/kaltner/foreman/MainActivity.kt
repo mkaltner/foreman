@@ -377,6 +377,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        TurnMonitorService.acknowledgeAttention(applicationContext)
         foremanViewModel.onNotificationPermissionState(notificationPermissionGranted())
         foremanViewModel.onForeground()
     }
@@ -413,18 +414,28 @@ class MainActivity : ComponentActivity() {
                 PackageManager.PERMISSION_GRANTED
 
     private fun openNotificationSession(intent: Intent?) {
-        intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)?.let {
+        val sessionId = intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)
+        if (sessionId != null) {
             foremanViewModel.openSessionFromNotification(
                 intent.getStringExtra(TurnMonitorService.EXTRA_HOST_ID),
                 intent.getStringExtra(TurnMonitorService.EXTRA_PROVIDER) ?: PROVIDER_CODEX,
-                it,
+                sessionId,
                 intent.getStringExtra(TurnMonitorService.EXTRA_APPROVAL_ID),
+            )
+        } else if (intent?.getBooleanExtra(TurnMonitorService.EXTRA_OPEN_ATTENTION, false) == true) {
+            foremanViewModel.openAttentionFromNotification(
+                intent.getStringExtra(TurnMonitorService.EXTRA_HOST_ID),
             )
         }
     }
 }
 
 internal enum class Screen { Setup, Overview, Dashboard, Sessions, Detail, Diagnostics }
+
+internal fun shouldStopMonitoringForNotificationPermission(
+    monitoringEnabled: Boolean,
+    permissionGranted: Boolean,
+): Boolean = monitoringEnabled && !permissionGranted
 
 internal fun reconnectDestination(current: Screen, selectedSessionId: String?): Screen =
     when {
@@ -1956,7 +1967,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun onNotificationPermissionState(granted: Boolean) {
         state.update { it.copy(notificationPermissionGranted = granted) }
-        if (!granted && state.value.monitorActiveTurns) setMonitorActiveTurns(false)
+        if (shouldStopMonitoringForNotificationPermission(state.value.monitorActiveTurns, granted)) {
+            setMonitorActiveTurns(false)
+        }
     }
 
     fun openSessionFromNotification(
@@ -1971,6 +1984,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             openSession(id, focusedApprovalId = approvalId, provider = provider)
         } else {
             openHostSession(hostId, provider, id, approvalId)
+        }
+    }
+
+    fun openAttentionFromNotification(hostId: String?) {
+        if (hostId == null || hosts.load(hostId) == null) return
+        overviewNavigation.clear()
+        if (state.value.activeHostId == hostId && state.value.connected) {
+            showDashboard()
+        } else {
+            switchHost(hostId, Screen.Dashboard)
         }
     }
 

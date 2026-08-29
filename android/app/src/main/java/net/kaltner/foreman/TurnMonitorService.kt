@@ -60,15 +60,10 @@ internal const val FOREGROUND_NOTIFICATION_ID = 1001
 internal fun outcomeNotificationId(
     hostId: String,
     sessionId: String,
-    replaceForegroundWatcher: Boolean,
 ): Int =
-    if (replaceForegroundWatcher) {
-        FOREGROUND_NOTIFICATION_ID
-    } else {
-        parseProviderSessionKey(sessionId)?.let { (provider, rawSessionId) ->
-            providerNotificationId(hostId, provider, rawSessionId)
-        } ?: providerNotificationId(hostId, PROVIDER_CODEX, sessionId)
-    }
+    parseProviderSessionKey(sessionId)?.let { (provider, rawSessionId) ->
+        providerNotificationId(hostId, provider, rawSessionId)
+    } ?: providerNotificationId(hostId, PROVIDER_CODEX, sessionId)
 
 internal data class GlobalTurnCandidate(
     val provider: String,
@@ -126,45 +121,6 @@ internal fun focusedSessionKeys(sessions: Iterable<JsonElement>): Set<String> =
             provider in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) && sessionId.isNotBlank()
         }
     }
-
-internal class ApprovalNotificationLedger {
-    private val pending = linkedMapOf<String, String>()
-    private val displayed = linkedSetOf<String>()
-
-    fun record(approvalId: String, sessionId: String) {
-        pending[approvalId] = sessionId
-    }
-
-    fun shouldDisplay(approvalId: String, focusedSessions: Set<String>): Boolean {
-        val sessionId = pending[approvalId] ?: return false
-        return approvalId !in displayed && sessionId !in focusedSessions
-    }
-
-    fun markDisplayed(approvalId: String) {
-        if (approvalId in pending) displayed.add(approvalId)
-    }
-
-    fun containsSession(sessionId: String): Boolean = pending.containsValue(sessionId)
-
-    fun pendingForSession(sessionId: String): List<String> =
-        pending.filterValues { it == sessionId }.keys.toList()
-
-    fun hideSession(sessionId: String): List<String> =
-        pendingForSession(sessionId).also(displayed::removeAll)
-
-    fun clear(approvalId: String) {
-        pending.remove(approvalId)
-        displayed.remove(approvalId)
-    }
-
-    fun clearSession(sessionId: String): List<String> =
-        pendingForSession(sessionId).also { ids -> ids.forEach(::clear) }
-
-    fun clearAll() {
-        pending.clear()
-        displayed.clear()
-    }
-}
 
 internal class MonitorLifecycle(
     private val initialReconnectDelay: Long = 2_000L,
@@ -240,7 +196,8 @@ class TurnMonitorService : Service() {
     private val lifecycle = MonitorLifecycle()
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
-    private val approvalNotifications = ApprovalNotificationLedger()
+    private var approvalNotifications = AttentionNotificationLedger()
+    private var attentionLedgerHostId: String? = null
     private val repositoryIdentities = linkedMapOf<String, String>()
     private val activeTurns = linkedMapOf<String, ActiveTurn>()
     private val longRunningJobs = linkedMapOf<String, Job>()
@@ -250,6 +207,8 @@ class TurnMonitorService : Service() {
     @Volatile private var monitorAllTurns = false
     @Volatile private var connected = false
     @Volatile private var focusedSessions: Set<String> = emptySet()
+    @Volatile private var foregroundStarted = false
+    private var foregroundOutcomeResetJob: Job? = null
 
     private data class ActiveTurn(
         val turnKey: String,
@@ -258,6 +217,7 @@ class TurnMonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceCreated = true
         createNotificationChannels()
         client =
             ForemanClient(
@@ -271,9 +231,22 @@ class TurnMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_ACKNOWLEDGE_ATTENTION) {
+            monitoredHostId?.let { hostId ->
+                loadAttentionLedger(hostId, force = true)
+                approvalNotifications.acknowledgePending()
+                persistAttentionLedger()
+                foregroundOutcomeResetJob?.cancel()
+                if (!lifecycle.isEmpty() || monitorAllTurns) showForeground(reconnecting = false)
+            }
+            if (lifecycle.isEmpty() && !monitorAllTurns) stopSelf()
+            return START_NOT_STICKY
+        }
+
         if (intent?.action == ACTION_STOP_ALL) {
             monitorAllTurns = false
             lifecycle.clear()
+            clearAttentionState()
             clearLongRunningState()
             stopMonitoring()
             return START_NOT_STICKY
@@ -285,6 +258,7 @@ class TurnMonitorService : Service() {
                 return START_NOT_STICKY
             }
             activeTurns.keys.forEach(::scheduleLongRunning)
+            refreshAttentionNotification()
             return START_REDELIVER_INTENT
         }
 
@@ -311,16 +285,17 @@ class TurnMonitorService : Service() {
 
         if (monitoredHostId != null && monitoredHostId != hostId) {
             lifecycle.clear()
-            approvalNotifications.clearAll()
+            clearAttentionState()
             clearLongRunningState()
             client.close()
             connected = false
         }
         monitoredHostId = hostId
+        loadAttentionLedger(requireNotNull(hostId))
         if (monitorAll) monitorAllTurns = true
-        showForeground(reconnecting = false)
 
         if (monitorAll) {
+            showForeground(reconnecting = false)
             scope.launch {
                 runCatching { connectAndSync(emptySet()) }
                     .onFailure { scheduleReconnect() }
@@ -341,6 +316,7 @@ class TurnMonitorService : Service() {
                 intent.getLongExtra(EXTRA_STARTED_AT, 0L).takeIf { it > 0L },
             )
         }
+        showForeground(reconnecting = false)
         scope.launch {
             runCatching { connectAndSync(setOf(sessionKey)) }
                 .onFailure { scheduleReconnect() }
@@ -352,6 +328,9 @@ class TurnMonitorService : Service() {
 
     override fun onDestroy() {
         reconnectJob?.cancel()
+        foregroundOutcomeResetJob?.cancel()
+        foregroundStarted = false
+        serviceCreated = false
         client.close()
         scope.cancel()
         super.onDestroy()
@@ -418,12 +397,20 @@ class TurnMonitorService : Service() {
                 lifecycle.status(sessionKey, status)?.let { finishMonitoring(sessionKey, it) }
                 if (!lifecycle.contains(sessionKey)) clearTurnState(sessionKey)
             }
+            val staleExplicitRequests = approvalNotifications.explicitKeys()
+            val syncedExplicitRequests = linkedSetOf<String>()
             if ("approvals" in client.capabilities) {
                 client.request("approval.list").payload["approvals"]?.jsonArray?.forEach { raw ->
                     val approval = raw.jsonObject
                     val approvalId = approval["id"]?.jsonPrimitive?.content ?: return@forEach
                     val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return@forEach
-                    notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), approvalId)
+                    recordAttentionRequest(
+                        explicitAttentionRequest(
+                            "approval",
+                            approvalId,
+                            providerSessionKey(PROVIDER_CODEX, sessionId),
+                        ),
+                    )?.let(syncedExplicitRequests::add)
                 }
             }
             if ("structuredInput" in client.capabilities) {
@@ -431,9 +418,23 @@ class TurnMonitorService : Service() {
                     val input = raw.jsonObject
                     val inputId = input["id"]?.jsonPrimitive?.content ?: return@forEach
                     val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return@forEach
-                    notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), inputId)
+                    recordAttentionRequest(
+                        explicitAttentionRequest(
+                            "input",
+                            inputId,
+                            providerSessionKey(PROVIDER_CODEX, sessionId),
+                        ),
+                    )?.let(syncedExplicitRequests::add)
                 }
             }
+            approvalNotifications.clearKeys(staleExplicitRequests - syncedExplicitRequests)
+            approvalNotifications.clearKeys(
+                approvalNotifications.pendingRequests()
+                    .filterNot { lifecycle.contains(it.sessionId) }
+                    .map(AttentionRequest::key),
+            )
+            persistAttentionLedger()
+            refreshAttentionNotification()
             lifecycle.resetReconnectDelay()
             if (lifecycle.isEmpty() && !monitorAllTurns) stopMonitoring() else showForeground(reconnecting = false)
         }
@@ -485,11 +486,16 @@ class TurnMonitorService : Service() {
             val approval = message.payload["approval"]?.jsonObject ?: return
             val approvalId = approval["id"]?.jsonPrimitive?.content ?: return
             val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return
+            val request = explicitAttentionRequest(
+                "approval",
+                approvalId,
+                providerSessionKey(PROVIDER_CODEX, sessionId),
+            )
             if (message.type == "approval.resolved" || approval["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
-                approvalNotifications.clear(approvalId)
-                monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, approvalId)) }
+                resolveAttentionRequest(request)
             } else {
-                notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), approvalId)
+                recordAttentionRequest(request)
+                refreshAttentionNotification()
             }
             return
         }
@@ -497,11 +503,16 @@ class TurnMonitorService : Service() {
             val input = message.payload["input"]?.jsonObject ?: return
             val inputId = input["id"]?.jsonPrimitive?.content ?: return
             val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return
+            val request = explicitAttentionRequest(
+                "input",
+                inputId,
+                providerSessionKey(PROVIDER_CODEX, sessionId),
+            )
             if (message.type == "input.resolved" || input["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
-                approvalNotifications.clear(inputId)
-                monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, inputId)) }
+                resolveAttentionRequest(request)
             } else {
-                notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), inputId)
+                recordAttentionRequest(request)
+                refreshAttentionNotification()
             }
             return
         }
@@ -516,6 +527,7 @@ class TurnMonitorService : Service() {
             shouldEnrollGlobalTurn(monitorAllTurns, enabledProviders, provider, status) &&
                 lifecycle.monitorActive(sessionKey, status)
         if (!lifecycle.contains(sessionKey)) return
+        if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionKey)
         if (status == "working") {
             clearAttentionNotifications(sessionKey)
             recordActiveTurn(
@@ -534,7 +546,6 @@ class TurnMonitorService : Service() {
             clearTurnState(sessionKey)
             if (lifecycle.isEmpty() && !monitorAllTurns) stopMonitoring()
         }
-        if (status !in setOf("working", "waiting")) clearApprovalNotifications(sessionKey)
     }
 
     @Synchronized
@@ -560,78 +571,78 @@ class TurnMonitorService : Service() {
         if (outcome.event == NotificationEvent.Approval) {
             longRunningJobs.remove(sessionId)?.cancel()
             if (approvalNotifications.containsSession(sessionId)) return
+            val provider = parseProviderSessionKey(sessionId)?.first ?: PROVIDER_CODEX
+            if (
+                provider == PROVIDER_CODEX &&
+                    ("approvals" in client.capabilities || "structuredInput" in client.capabilities)
+            ) {
+                return
+            }
+            recordAttentionRequest(statusAttentionRequest(sessionId))
+            refreshAttentionNotification()
+            return
         } else {
             clearTurnState(sessionId)
         }
         val preferences = NotificationPreferenceStore(this).load(hostId)
-        var replacedForegroundWatcher = false
-        if (sessionId !in focusedSessions && preferences.shouldNotify(outcome.event, repositoryId)) {
-            replacedForegroundWatcher = monitorAllTurns && outcome.event != NotificationEvent.Approval
-            val notification = resultNotification(
-                hostId,
-                sessionId,
-                outcome.copy(detail = detail ?: outcome.detail),
-                ongoing = replacedForegroundWatcher,
-            )
-            if (replacedForegroundWatcher) {
-                notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
-            }
-            notificationManager.notify(
-                outcomeNotificationId(hostId, sessionId, replacedForegroundWatcher),
-                notification,
-            )
-        }
-        if (lifecycle.isEmpty() && !monitorAllTurns) {
+        val shouldNotify =
+            sessionId !in focusedSessions && preferences.shouldNotify(outcome.event, repositoryId)
+        val monitoringContinues = !lifecycle.isEmpty() || monitorAllTurns
+        if (!monitoringContinues) {
             stopMonitoring()
-        } else if (!replacedForegroundWatcher) {
+            if (shouldNotify) {
+                notificationManager.notify(
+                    outcomeNotificationId(hostId, sessionId),
+                    resultNotification(
+                        hostId,
+                        sessionId,
+                        outcome.copy(detail = detail ?: outcome.detail),
+                    ),
+                )
+            }
+        } else if (shouldNotify) {
+            showForegroundOutcome(sessionId, outcome.copy(detail = detail ?: outcome.detail))
+        } else {
             showForeground(reconnecting = false)
         }
     }
 
     @Synchronized
-    private fun notifyApproval(sessionId: String, approvalId: String) {
-        if (!lifecycle.contains(sessionId)) return
-        val hostId = monitoredHostId ?: return
-        approvalNotifications.record(approvalId, sessionId)
-        if (!approvalNotifications.shouldDisplay(approvalId, focusedSessions)) return
-        val preferences = NotificationPreferenceStore(this).load(hostId)
-        if (!preferences.shouldNotify(NotificationEvent.Approval, repositoryIdentities[sessionId].orEmpty())) return
-        notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
-        val outcome = approvalNotificationText()
-        val (provider, rawSessionId) =
-            parseProviderSessionKey(sessionId) ?: (PROVIDER_CODEX to sessionId)
-        val notification =
-            notificationBuilder(RESULT_CHANNEL)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(outcome.title)
-                .setContentText(outcome.detail)
-                .setContentIntent(openSessionIntent(hostId, provider, rawSessionId, approvalId))
-                .setVisibility(Notification.VISIBILITY_PRIVATE)
-                .setOnlyAlertOnce(true)
-                .setAutoCancel(true)
-                .build()
-        notificationManager.notify(approvalNotificationId(hostId, approvalId), notification)
-        approvalNotifications.markDisplayed(approvalId)
+    private fun recordAttentionRequest(request: AttentionRequest): String? {
+        if (!lifecycle.contains(request.sessionId)) return null
+        val hostId = monitoredHostId ?: return null
+        approvalNotifications.replaceStatusRequest(request)
+        request.requestId?.let { notificationManager.cancel(approvalNotificationId(hostId, it)) }
+        notificationManager.cancel(outcomeNotificationId(hostId, request.sessionId))
+        persistAttentionLedger()
+        return request.key
+    }
+
+    @Synchronized
+    private fun resolveAttentionRequest(request: AttentionRequest) {
+        approvalNotifications.clear(request.key)
+        request.requestId?.let { requestId ->
+            monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, requestId)) }
+        }
+        persistAttentionLedger()
+        refreshAttentionNotification()
     }
 
     @Synchronized
     private fun clearApprovalNotifications(sessionId: String) {
-        approvalNotifications.clearSession(sessionId).forEach {
-            monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
+        approvalNotifications.clearSession(sessionId).forEach { request ->
+            request.requestId?.let { requestId ->
+                monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, requestId)) }
+            }
         }
-    }
-
-    @Synchronized
-    private fun hideApprovalNotifications(sessionId: String) {
-        approvalNotifications.hideSession(sessionId).forEach {
-            monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
-        }
+        persistAttentionLedger()
+        refreshAttentionNotification()
     }
 
     @Synchronized
     private fun clearAttentionNotifications(sessionId: String) {
         monitoredHostId?.let { hostId ->
-            notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
+            notificationManager.cancel(outcomeNotificationId(hostId, sessionId))
         }
         clearApprovalNotifications(sessionId)
     }
@@ -672,10 +683,8 @@ class TurnMonitorService : Service() {
             val current = NotificationPreferenceStore(this@TurnMonitorService).load(hostId)
             if (sessionId in focusedSessions) return@launch
             if (!current.shouldNotify(NotificationEvent.LongRunning, repositoryId)) return@launch
-            notificationManager.notify(
-                longRunningNotificationId(hostId, sessionId),
-                resultNotification(hostId, sessionId, longRunningNotificationText()),
-            )
+            notificationManager.cancel(longRunningNotificationId(hostId, sessionId))
+            showForegroundOutcome(sessionId, longRunningNotificationText())
         }
     }
 
@@ -704,16 +713,10 @@ class TurnMonitorService : Service() {
         focusedSessions = next
         val hostId = monitoredHostId ?: return
         newlyFocused.forEach { sessionId ->
-            notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
+            notificationManager.cancel(outcomeNotificationId(hostId, sessionId))
             notificationManager.cancel(longRunningNotificationId(hostId, sessionId))
-            hideApprovalNotifications(sessionId)
         }
-        newlyUnfocused.forEach { sessionId ->
-            approvalNotifications.pendingForSession(sessionId).forEach { approvalId ->
-                notifyApproval(sessionId, approvalId)
-            }
-        }
-        if (newlyFocused.isNotEmpty() && monitorAllTurns) showForeground(reconnecting = false)
+        if (newlyFocused.isNotEmpty() || newlyUnfocused.isNotEmpty()) refreshAttentionNotification()
     }
 
     private fun failMonitoring(sessionId: String, detail: String) {
@@ -721,35 +724,102 @@ class TurnMonitorService : Service() {
         finishMonitoring(sessionId, requireNotNull(monitorOutcome("failed")), detail)
     }
 
+    @Synchronized
+    private fun loadAttentionLedger(hostId: String, force: Boolean = false) {
+        if (!force && attentionLedgerHostId == hostId) return
+        approvalNotifications = AttentionNotificationLedger(AttentionNotificationStore(this).load(hostId))
+        attentionLedgerHostId = hostId
+    }
+
+    @Synchronized
+    private fun persistAttentionLedger() {
+        val hostId = attentionLedgerHostId ?: return
+        AttentionNotificationStore(this).save(hostId, approvalNotifications.snapshot())
+    }
+
+    @Synchronized
+    private fun clearAttentionState() {
+        val hostId = attentionLedgerHostId
+        approvalNotifications.pendingRequests().forEach { request ->
+            request.requestId?.let { requestId ->
+                hostId?.let { notificationManager.cancel(approvalNotificationId(it, requestId)) }
+            }
+        }
+        approvalNotifications.clearAll()
+        persistAttentionLedger()
+        notificationManager.cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
+        attentionLedgerHostId = null
+        approvalNotifications = AttentionNotificationLedger()
+    }
+
+    @Synchronized
+    private fun refreshAttentionNotification() {
+        foregroundOutcomeResetJob?.cancel()
+        foregroundOutcomeResetJob = null
+        if (lifecycle.isEmpty() && !monitorAllTurns) {
+            removeForegroundNotification()
+            showStandaloneAttentionIfNeeded()
+            stopSelf()
+        } else {
+            showForeground(reconnecting = false)
+        }
+    }
+
+    @Synchronized
+    private fun eligibleAttentionRequests(requireActiveMonitoring: Boolean = true): List<AttentionRequest> {
+        val hostId = monitoredHostId ?: return emptyList()
+        val preferences = NotificationPreferenceStore(this).load(hostId)
+        return eligibleAttentionRequests(
+            requests = approvalNotifications.pendingRequests(),
+            activeSessions = lifecycle.sessionIds(),
+            focusedSessions = focusedSessions,
+            requireActiveMonitoring = requireActiveMonitoring,
+        ) { request ->
+            preferences.shouldNotify(
+                    NotificationEvent.Approval,
+                    repositoryIdentities[request.sessionId].orEmpty(),
+                )
+        }
+    }
+
+    @Synchronized
     private fun showForeground(reconnecting: Boolean) {
         val count = lifecycle.size()
         if (count == 0 && !monitorAllTurns) return
-        val text =
-            if (reconnecting) {
-                "Reconnecting to Foreman…"
-            } else if (count == 0) {
-                "Watching for active turns"
-            } else if (count == 1) {
-                "Monitoring 1 active turn"
-            } else {
-                "Monitoring $count active turns"
+        val requests = eligibleAttentionRequests()
+        val presentation =
+            attentionNotificationPresentation(requests, approvalNotifications.acknowledgedKeys())
+                ?: monitoringNotificationPresentation(count, reconnecting)
+        val shouldAlert = approvalNotifications.claimAlerts(requests).isNotEmpty()
+        if (shouldAlert) persistAttentionLedger()
+        startForegroundPresentation(presentation, shouldAlert)
+    }
+
+    @Synchronized
+    private fun showForegroundOutcome(sessionId: String, outcome: MonitorOutcome) {
+        if (lifecycle.isEmpty() && !monitorAllTurns) return
+        val request = statusAttentionRequest(sessionId)
+        val presentation =
+            ForegroundNotificationPresentation(
+                title = outcome.title,
+                detail = outcome.detail,
+                destination = ForegroundNotificationDestination.Session,
+                request = request,
+                badgeCount = 1,
+                useAttentionChannel = true,
+            )
+        startForegroundPresentation(presentation, shouldAlert = true)
+        foregroundOutcomeResetJob?.cancel()
+        foregroundOutcomeResetJob =
+            scope.launch {
+                delay(FOREGROUND_OUTCOME_DURATION_MILLIS)
+                showForeground(reconnecting = false)
             }
-        val notification =
-            notificationBuilder(MONITOR_CHANNEL)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Foreman background monitoring")
-                .setContentText(text)
-                .setContentIntent(openAppIntent())
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .addAction(
-                    Notification.Action.Builder(
-                        Icon.createWithResource(this, R.drawable.ic_notification),
-                        "Stop",
-                        stopIntent(),
-                    ).build(),
-                )
-                .build()
+    }
+
+    private fun startForegroundNotification(notification: Notification) {
+        notificationManager.cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
+        foregroundStarted = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 FOREGROUND_NOTIFICATION_ID,
@@ -761,11 +831,154 @@ class TurnMonitorService : Service() {
         }
     }
 
+    private fun startForegroundPresentation(
+        presentation: ForegroundNotificationPresentation,
+        shouldAlert: Boolean,
+    ) {
+        val foregroundEntryActive =
+            notificationManager.activeNotifications.any {
+                it.id == FOREGROUND_NOTIFICATION_ID && it.tag == null
+            }
+        // Channel sound settings are immutable and user-controlled. If Android no
+        // longer has our entry, establish it on the quiet channel before restoring
+        // already-alerted attention content on the alert channel.
+        if (requiresQuietForegroundPriming(foregroundEntryActive, presentation, shouldAlert)) {
+            startForegroundNotification(
+                foregroundNotification(
+                    presentation.copy(useAttentionChannel = false, badgeCount = 0),
+                    shouldAlert = false,
+                ),
+            )
+        }
+        startForegroundNotification(foregroundNotification(presentation, shouldAlert))
+    }
+
+    @Synchronized
+    private fun showStandaloneAttentionIfNeeded() {
+        val requests = eligibleAttentionRequests(requireActiveMonitoring = false)
+        val presentation =
+            attentionNotificationPresentation(requests, approvalNotifications.acknowledgedKeys())
+        if (presentation == null) {
+            notificationManager.cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
+            return
+        }
+        val shouldAlert = approvalNotifications.claimAlerts(requests).isNotEmpty()
+        if (shouldAlert) persistAttentionLedger()
+        val standaloneEntryActive =
+            notificationManager.activeNotifications.any {
+                it.id == STANDALONE_ATTENTION_NOTIFICATION_ID && it.tag == null
+            }
+        if (requiresQuietForegroundPriming(standaloneEntryActive, presentation, shouldAlert)) {
+            notificationManager.notify(
+                STANDALONE_ATTENTION_NOTIFICATION_ID,
+                standaloneAttentionNotification(
+                    presentation.copy(useAttentionChannel = false, badgeCount = 0),
+                    shouldAlert = false,
+                ),
+            )
+        }
+        notificationManager.notify(
+            STANDALONE_ATTENTION_NOTIFICATION_ID,
+            standaloneAttentionNotification(presentation, shouldAlert),
+        )
+    }
+
+    private fun standaloneAttentionNotification(
+        presentation: ForegroundNotificationPresentation,
+        shouldAlert: Boolean,
+    ): Notification =
+        notificationBuilder(if (presentation.useAttentionChannel) RESULT_CHANNEL else MONITOR_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(presentation.title)
+            .setContentText(presentation.detail)
+            .setContentIntent(contentIntent(presentation))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setAutoCancel(true)
+            .setNumber(presentation.badgeCount)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setBadgeIconType(
+                        if (presentation.badgeCount > 0) Notification.BADGE_ICON_SMALL else Notification.BADGE_ICON_NONE,
+                    )
+                }
+            }
+            .applyAlertBehavior(shouldAlert, presentation.useAttentionChannel)
+            .build()
+
+    private fun foregroundNotification(
+        presentation: ForegroundNotificationPresentation,
+        shouldAlert: Boolean,
+    ): Notification =
+        notificationBuilder(if (presentation.useAttentionChannel) RESULT_CHANNEL else MONITOR_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(presentation.title)
+            .setContentText(presentation.detail)
+            .setContentIntent(contentIntent(presentation))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setNumber(presentation.badgeCount)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setBadgeIconType(
+                        if (presentation.badgeCount > 0) Notification.BADGE_ICON_SMALL else Notification.BADGE_ICON_NONE,
+                    )
+                }
+            }
+            .applyAlertBehavior(shouldAlert, presentation.useAttentionChannel)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_notification),
+                    "Stop",
+                    stopIntent(),
+                ).build(),
+            )
+            .build()
+
+    @Suppress("DEPRECATION")
+    private fun Notification.Builder.applyAlertBehavior(
+        shouldAlert: Boolean,
+        attentionChannel: Boolean,
+    ): Notification.Builder =
+        apply {
+            setOnlyAlertOnce(!shouldAlert)
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O && shouldAlert) {
+                @Suppress("DEPRECATION")
+                setDefaults(Notification.DEFAULT_SOUND or Notification.DEFAULT_VIBRATE)
+                @Suppress("DEPRECATION")
+                setPriority(Notification.PRIORITY_DEFAULT)
+            } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                @Suppress("DEPRECATION")
+                setDefaults(0)
+                setSound(null)
+                setVibrate(null)
+                @Suppress("DEPRECATION")
+                setPriority(if (attentionChannel) Notification.PRIORITY_DEFAULT else Notification.PRIORITY_LOW)
+            }
+        }
+
+    private fun contentIntent(presentation: ForegroundNotificationPresentation): PendingIntent =
+        when (presentation.destination) {
+            ForegroundNotificationDestination.App -> openAppIntent()
+            ForegroundNotificationDestination.AttentionDashboard ->
+                openAttentionIntent(requireNotNull(monitoredHostId))
+            ForegroundNotificationDestination.Session -> {
+                val request = requireNotNull(presentation.request)
+                val (provider, rawSessionId) =
+                    parseProviderSessionKey(request.sessionId) ?: (PROVIDER_CODEX to request.sessionId)
+                openSessionIntent(
+                    requireNotNull(monitoredHostId),
+                    provider,
+                    rawSessionId,
+                    request.requestId,
+                )
+            }
+        }
+
     private fun resultNotification(
         hostId: String,
         sessionId: String,
         outcome: MonitorOutcome,
-        ongoing: Boolean = false,
     ): Notification {
         val (provider, rawSessionId) =
             parseProviderSessionKey(sessionId) ?: (PROVIDER_CODEX to sessionId)
@@ -775,19 +988,8 @@ class TurnMonitorService : Service() {
             .setContentText(outcome.detail)
             .setContentIntent(openSessionIntent(hostId, provider, rawSessionId))
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setAutoCancel(!ongoing)
-            .setOngoing(ongoing)
-            .apply {
-                if (ongoing) {
-                    addAction(
-                        Notification.Action.Builder(
-                            Icon.createWithResource(this@TurnMonitorService, R.drawable.ic_notification),
-                            "Stop",
-                            stopIntent(),
-                        ).build(),
-                    )
-                }
-            }
+            .setAutoCancel(true)
+            .applyAlertBehavior(shouldAlert = true, attentionChannel = true)
             .build()
     }
 
@@ -804,6 +1006,7 @@ class TurnMonitorService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java)
+                .setAction(ACTION_OPEN_APP)
                 .apply { monitoredHostId?.let { putExtra(EXTRA_HOST_ID, it) } }
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -819,10 +1022,23 @@ class TurnMonitorService : Service() {
             this,
             "$hostId:$provider:$sessionId".hashCode(),
             Intent(this, MainActivity::class.java)
+                .setAction("$ACTION_OPEN_SESSION:$hostId:$provider:$sessionId")
                 .putExtra(EXTRA_HOST_ID, hostId)
                 .putExtra(EXTRA_PROVIDER, provider)
                 .putExtra(EXTRA_SESSION_ID, sessionId)
                 .apply { approvalId?.let { putExtra(EXTRA_APPROVAL_ID, it) } }
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    private fun openAttentionIntent(hostId: String): PendingIntent =
+        PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java)
+                .setAction(ACTION_OPEN_ATTENTION)
+                .putExtra(EXTRA_HOST_ID, hostId)
+                .putExtra(EXTRA_OPEN_ATTENTION, true)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -837,12 +1053,22 @@ class TurnMonitorService : Service() {
 
     @Suppress("DEPRECATION")
     private fun stopMonitoring() {
+        foregroundOutcomeResetJob?.cancel()
+        foregroundOutcomeResetJob = null
+        notificationManager.cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
+        removeForegroundNotification()
+        stopSelf()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun removeForegroundNotification() {
+        if (!foregroundStarted) return
+        foregroundStarted = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
             stopForeground(true)
         }
-        stopSelf()
     }
 
     private fun createNotificationChannels() {
@@ -876,6 +1102,7 @@ class TurnMonitorService : Service() {
         const val EXTRA_HOST_ID = "net.kaltner.foreman.extra.HOST_ID"
         const val EXTRA_PROVIDER = "net.kaltner.foreman.extra.PROVIDER"
         const val EXTRA_APPROVAL_ID = "net.kaltner.foreman.extra.APPROVAL_ID"
+        const val EXTRA_OPEN_ATTENTION = "net.kaltner.foreman.extra.OPEN_ATTENTION"
         private const val EXTRA_ACTIVE = "net.kaltner.foreman.extra.ACTIVE"
         private const val EXTRA_REPOSITORY_ID = "net.kaltner.foreman.extra.REPOSITORY_ID"
         private const val EXTRA_TURN_ID = "net.kaltner.foreman.extra.TURN_ID"
@@ -885,8 +1112,15 @@ class TurnMonitorService : Service() {
         private const val ACTION_CANCEL = "net.kaltner.foreman.action.CANCEL_MONITOR"
         private const val ACTION_STOP_ALL = "net.kaltner.foreman.action.STOP_MONITORING"
         private const val ACTION_REFRESH_PREFERENCES = "net.kaltner.foreman.action.REFRESH_NOTIFICATION_PREFERENCES"
+        private const val ACTION_ACKNOWLEDGE_ATTENTION = "net.kaltner.foreman.action.ACKNOWLEDGE_ATTENTION"
+        private const val ACTION_OPEN_APP = "net.kaltner.foreman.action.OPEN_APP"
+        private const val ACTION_OPEN_ATTENTION = "net.kaltner.foreman.action.OPEN_ATTENTION"
+        private const val ACTION_OPEN_SESSION = "net.kaltner.foreman.action.OPEN_SESSION"
         private const val MONITOR_CHANNEL = "foreman_monitoring"
         private const val RESULT_CHANNEL = "foreman_turn_updates"
+        private const val STANDALONE_ATTENTION_NOTIFICATION_ID = 1002
+        private const val FOREGROUND_OUTCOME_DURATION_MILLIS = 5_000L
+        @Volatile private var serviceCreated = false
 
         fun monitor(
             context: Context,
@@ -943,13 +1177,28 @@ class TurnMonitorService : Service() {
         }
 
         fun stopAll(context: Context) {
-            context.stopService(Intent(context, TurnMonitorService::class.java))
+            context.startService(
+                Intent(context, TurnMonitorService::class.java).setAction(ACTION_STOP_ALL),
+            )
         }
 
         fun refreshPreferences(context: Context) {
             context.startService(
                 Intent(context, TurnMonitorService::class.java)
                     .setAction(ACTION_REFRESH_PREFERENCES),
+            )
+        }
+
+        fun acknowledgeAttention(context: Context) {
+            val pendingChanged = AttentionNotificationStore(context).acknowledgeAllPending()
+            if (pendingChanged) {
+                context.getSystemService(NotificationManager::class.java)
+                    .cancel(STANDALONE_ATTENTION_NOTIFICATION_ID)
+            }
+            if (!pendingChanged && !serviceCreated) return
+            context.startService(
+                Intent(context, TurnMonitorService::class.java)
+                    .setAction(ACTION_ACKNOWLEDGE_ATTENTION),
             )
         }
 
