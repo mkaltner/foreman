@@ -33,6 +33,18 @@ data class RepositorySessionGroup(
     val sessions: List<VisibleSession>,
 )
 
+internal fun toggleCollapsedRepository(
+    collapsedByHost: Map<String, Set<String>>,
+    hostId: String?,
+    repositoryId: String,
+): Map<String, Set<String>> {
+    if (hostId == null) return collapsedByHost
+    val collapsed = collapsedByHost[hostId].orEmpty().toMutableSet()
+    if (!collapsed.add(repositoryId)) collapsed.remove(repositoryId)
+    return if (collapsed.isEmpty()) collapsedByHost - hostId
+    else collapsedByHost + (hostId to collapsed)
+}
+
 internal fun sessionRepositoryIdentity(
     path: String,
     repositories: List<RepositoryInfo>,

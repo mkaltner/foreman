@@ -28,6 +28,16 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun collapsedRepositoriesRemainScopedByHostAcrossNavigation() {
+        var collapsed = toggleCollapsedRepository(emptyMap(), "home", "/projects/foreman")
+        collapsed = toggleCollapsedRepository(collapsed, "work", "/projects/other")
+
+        assertEquals(setOf("/projects/foreman"), collapsed["home"])
+        assertEquals(setOf("/projects/other"), collapsed["work"])
+        assertFalse(toggleCollapsedRepository(collapsed, "home", "/projects/foreman").containsKey("home"))
+    }
+
+    @Test
     fun focusedSessionPresenceIsProviderAwareAndOnlyPublishedFromVisibleDetail() {
         val codex = SessionSummary("same", "/repo", "Codex", "working")
         val claude = codex.copy(provider = PROVIDER_CLAUDE_CODE)

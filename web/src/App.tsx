@@ -124,6 +124,8 @@ import {
   repositoryFilterOptions,
   repositorySessionGroups,
   sessionFiltersSearch,
+  toggleCollapsedRepository,
+  type CollapsedRepositoriesByHost,
   type SessionFilters,
   type RepositoryFilterOption,
   type VisibleSession,
@@ -256,6 +258,8 @@ function App() {
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
   const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
   const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [collapsedRepositoriesByHost, setCollapsedRepositoriesByHost] =
+    useState<CollapsedRepositoriesByHost>(() => new Map());
   const scrollPositions = useRef(new Map<string, number>());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
@@ -1195,6 +1199,11 @@ function App() {
       nextSnapshots.delete(hostId);
       return nextSnapshots;
     });
+    setCollapsedRepositoriesByHost((previous) => {
+      const collapsed = new Map(previous);
+      collapsed.delete(hostId);
+      return collapsed;
+    });
     persistRegistry(next);
     if (wasActive) {
       clearHostProjections();
@@ -1496,7 +1505,11 @@ function App() {
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
-            collapseScope={activeHost.id}
+            collapsedRepositories={collapsedRepositoriesByHost.get(activeHost.id) ?? new Set()}
+            onToggleRepository={(repositoryId) => {
+              setCollapsedRepositoriesByHost((previous) =>
+                toggleCollapsedRepository(previous, activeHost.id, repositoryId));
+            }}
             results={visibleSessions}
             groupByRepository={appearance.groupSessionsByRepository}
             repositories={repositories}
@@ -1747,7 +1760,8 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 }
 
 export function SessionList({
-  collapseScope = "",
+  collapsedRepositories: controlledCollapsedRepositories,
+  onToggleRepository,
   results,
   groupByRepository = true,
   repositories = [],
@@ -1770,7 +1784,8 @@ export function SessionList({
   onPin,
   onHide,
 }: {
-  collapseScope?: string;
+  collapsedRepositories?: ReadonlySet<string>;
+  onToggleRepository?: (repositoryId: string) => void;
   results: VisibleSession[];
   groupByRepository?: boolean;
   repositories?: RepositoryInfo[];
@@ -1793,8 +1808,17 @@ export function SessionList({
   onPin: (provider: ProviderId, id: string) => void;
   onHide: (provider: ProviderId, id: string) => void;
 }) {
-  const [collapsedRepositories, setCollapsedRepositories] = useState<Set<string>>(() => new Set());
-  useEffect(() => setCollapsedRepositories(new Set()), [collapseScope]);
+  const [localCollapsedRepositories, setLocalCollapsedRepositories] =
+    useState<Set<string>>(() => new Set());
+  const collapsedRepositories = controlledCollapsedRepositories ?? localCollapsedRepositories;
+  const toggleRepository = onToggleRepository ?? ((repositoryId: string) => {
+    setLocalCollapsedRepositories((previous) => {
+      const next = new Set(previous);
+      if (next.has(repositoryId)) next.delete(repositoryId);
+      else next.add(repositoryId);
+      return next;
+    });
+  });
   const sessions = results.map(({ session }) => session);
   const pinnedSessions = results.filter(({ pinned }) => pinned).map(({ session }) => session);
   const unpinnedSessions = results.filter(({ pinned }) => !pinned).map(({ session }) => session);
@@ -1825,12 +1849,7 @@ export function SessionList({
               className="repository-group-toggle"
               aria-expanded={!collapsedRepositories.has(group.repository.id)}
               aria-label={`${collapsedRepositories.has(group.repository.id) ? "Expand" : "Collapse"} ${group.repository.label} (${group.sessions.length} sessions)`}
-              onClick={() => setCollapsedRepositories((previous) => {
-                const next = new Set(previous);
-                if (next.has(group.repository.id)) next.delete(group.repository.id);
-                else next.add(group.repository.id);
-                return next;
-              })}
+              onClick={() => toggleRepository(group.repository.id)}
             >
               <span>{group.repository.label}</span>
               <span>{group.sessions.length} {collapsedRepositories.has(group.repository.id) ? "›" : "⌄"}</span>

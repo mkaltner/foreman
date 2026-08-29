@@ -8,6 +8,7 @@ import {
   repositoryFilterOptions,
   repositorySessionGroups,
   sessionFiltersSearch,
+  toggleCollapsedRepository,
 } from "./session-search";
 
 const repositories: RepositoryInfo[] = [
@@ -70,6 +71,16 @@ describe("session discovery semantics", () => {
       "Workspace: /home/operator",
     ]);
     expect(groups[0].sessions.map(({ session }) => session.id)).toEqual(["active", "done"]);
+  });
+
+  it("retains collapsed repositories per host across screen navigation", () => {
+    let collapsed = toggleCollapsedRepository(new Map(), "home", "/projects/foreman");
+    collapsed = toggleCollapsedRepository(collapsed, "work", "/projects/other");
+
+    expect(collapsed.get("home")).toEqual(new Set(["/projects/foreman"]));
+    expect(collapsed.get("work")).toEqual(new Set(["/projects/other"]));
+    expect(toggleCollapsedRepository(collapsed, "home", "/projects/foreman").has("home"))
+      .toBe(false);
   });
 
   it("maps Completed to idle and identifies canonical repositories and workspaces", () => {

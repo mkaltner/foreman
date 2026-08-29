@@ -34,6 +34,22 @@ export interface RepositorySessionGroup {
   sessions: VisibleSession[];
 }
 
+export type CollapsedRepositoriesByHost = ReadonlyMap<string, ReadonlySet<string>>;
+
+export function toggleCollapsedRepository(
+  collapsedByHost: CollapsedRepositoriesByHost,
+  hostId: string,
+  repositoryId: string,
+): CollapsedRepositoriesByHost {
+  const next = new Map(collapsedByHost);
+  const collapsed = new Set(next.get(hostId) ?? []);
+  if (collapsed.has(repositoryId)) collapsed.delete(repositoryId);
+  else collapsed.add(repositoryId);
+  if (collapsed.size === 0) next.delete(hostId);
+  else next.set(hostId, collapsed);
+  return next;
+}
+
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
   repository: "",

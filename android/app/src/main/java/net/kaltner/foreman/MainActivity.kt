@@ -822,6 +822,7 @@ internal data class UiState(
     val accentColor: AccentColor = AccentColor.Purple,
     val activityDetail: ActivityDetail = ActivityDetail.Focused,
     val groupSessionsByRepository: Boolean = true,
+    val collapsedRepositoriesByHost: Map<String, Set<String>> = emptyMap(),
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
@@ -954,6 +955,7 @@ internal fun UiState.withForgottenConnection(): UiState =
         repositories = emptyList(),
         selected = null,
         composerDrafts = emptyMap(),
+        collapsedRepositoriesByHost = emptyMap(),
         showNewSession = false,
         notificationPreferences = NotificationPreferences(),
         hostNotificationOverride = false,
@@ -1564,6 +1566,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(groupSessionsByRepository = enabled) }
     }
 
+    fun toggleCollapsedRepository(repositoryId: String) {
+        state.update {
+            it.copy(
+                collapsedRepositoriesByHost = toggleCollapsedRepository(
+                    it.collapsedRepositoriesByHost,
+                    it.activeHostId,
+                    repositoryId,
+                ),
+            )
+        }
+    }
+
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.setFollowNewMessages(enabled)
         state.update { it.copy(followNewMessages = enabled) }
@@ -1941,6 +1955,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     savedHosts = hosts.all().map { host -> host.summary() },
                     overviewSnapshots = it.overviewSnapshots - hostId,
                     composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+                    collapsedRepositoriesByHost = it.collapsedRepositoriesByHost - hostId,
                 )
             }
             return
@@ -1957,6 +1972,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             it.copy(
                 overviewSnapshots = it.overviewSnapshots - hostId,
                 composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+                collapsedRepositoriesByHost = it.collapsedRepositoriesByHost - hostId,
             )
         }
         activateSavedHost(next)
@@ -4452,7 +4468,9 @@ private fun SessionsScreen(
     viewModel: ForemanViewModel,
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
-    var collapsedRepositoryIds by remember(state.activeHostId) { mutableStateOf(emptySet<String>()) }
+    val collapsedRepositoryIds = state.activeHostId
+        ?.let(state.collapsedRepositoriesByHost::get)
+        .orEmpty()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -4592,13 +4610,7 @@ private fun SessionsScreen(
                                 repositorySessionSection(
                                     group,
                                     group.repository.id in collapsedRepositoryIds,
-                                    {
-                                        collapsedRepositoryIds = if (group.repository.id in collapsedRepositoryIds) {
-                                            collapsedRepositoryIds - group.repository.id
-                                        } else {
-                                            collapsedRepositoryIds + group.repository.id
-                                        }
-                                    },
+                                    { viewModel.toggleCollapsedRepository(group.repository.id) },
                                     { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
                                     viewModel::requestSessionAction,
                                     { provider, id -> viewModel.togglePinnedSession(id, provider) },
