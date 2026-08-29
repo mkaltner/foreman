@@ -473,6 +473,19 @@ internal fun overviewReturnTarget(
     }
 }
 
+internal fun validatedOverviewReturnTarget(
+    target: OverviewReturnTarget,
+    sessions: List<SessionSummary>,
+): OverviewReturnTarget =
+    if (
+        target.screen == Screen.Detail &&
+        target.sessionId?.let { id -> sessions.any { it.matches(target.provider, id) } } != true
+    ) {
+        OverviewReturnTarget(target.hostId, Screen.Sessions)
+    } else {
+        target
+    }
+
 internal class OverviewNavigationState {
     private var returnTarget: OverviewReturnTarget? = null
 
@@ -496,6 +509,53 @@ internal class OverviewNavigationState {
         returnTarget = null
     }
 }
+
+internal data class HostNavigationChoice(
+    val generation: Long,
+    val hostId: String,
+    val screen: Screen,
+    val sessionId: String? = null,
+    val provider: String = PROVIDER_CODEX,
+    val focusedApprovalId: String? = null,
+)
+
+internal class HostNavigationState {
+    private var generation = 0L
+    private var choice: HostNavigationChoice? = null
+
+    fun choose(
+        hostId: String,
+        screen: Screen,
+        sessionId: String? = null,
+        provider: String = PROVIDER_CODEX,
+        focusedApprovalId: String? = null,
+    ): HostNavigationChoice =
+        HostNavigationChoice(
+            generation = ++generation,
+            hostId = hostId,
+            screen = screen,
+            sessionId = sessionId,
+            provider = provider,
+            focusedApprovalId = focusedApprovalId,
+        ).also { choice = it }
+
+    fun current(hostId: String): HostNavigationChoice? = choice?.takeIf { it.hostId == hostId }
+
+    fun isCurrent(candidate: HostNavigationChoice): Boolean = choice == candidate
+}
+
+internal enum class HostNavigationAction { Show, Reconnect, Switch }
+
+internal fun hostNavigationAction(
+    activeHostId: String?,
+    activeHostConnected: Boolean,
+    requestedHostId: String,
+): HostNavigationAction =
+    when {
+        activeHostId != requestedHostId -> HostNavigationAction.Switch
+        activeHostConnected -> HostNavigationAction.Show
+        else -> HostNavigationAction.Reconnect
+    }
 
 internal enum class RestartPhase { Idle, Scheduling, Scheduled, Reconnecting, Succeeded, TimedOut, Failed }
 
@@ -744,6 +804,7 @@ internal fun UiState.withSynchronizedSessions(
     selectedSessionId: String?,
     selectedSession: SessionSummary?,
     selectedProvider: String = PROVIDER_CODEX,
+    applySelection: Boolean = true,
 ): UiState {
     val reconciledSelected = reconcileSelectedSession(selected, selectedSession)
     val previousById = this.sessions.associateBy { it.providerKey() }
@@ -753,9 +814,11 @@ internal fun UiState.withSynchronizedSessions(
     return copy(
         sessions = reconciledSessions,
         repositories = repositories,
-        selected = reconciledSelected,
+        selected = if (applySelection) reconciledSelected else selected,
         screen =
-            if (selectedSessionId != null && reconciledSelected?.matches(selectedProvider, selectedSessionId) == true) {
+            if (!applySelection) {
+                screen
+            } else if (selectedSessionId != null && reconciledSelected?.matches(selectedProvider, selectedSessionId) == true) {
                 Screen.Detail
             } else if (screen == Screen.Detail) {
                 Screen.Sessions
@@ -1136,10 +1199,6 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val sessionDiscoveryLock = Any()
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
-    private var notificationHostId: String? = null
-    private var notificationProvider: String = PROVIDER_CODEX
-    private var notificationSessionId: String? = null
-    private var notificationApprovalId: String? = null
     private var restorationProvider: String = savedPreferences.selectedSessionProvider
     private var restorationSessionId: String? = savedPreferences.selectedSessionId
     private var sessionOpenGeneration = 0L
@@ -1147,6 +1206,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var workspaceFileJob: Job? = null
     private var lastSearchRequestKey = ""
     private val overviewNavigation = OverviewNavigationState()
+    private val hostNavigation = HostNavigationState()
     private var overviewJob: Job? = null
     private var presenceSyncJob: Job? = null
     private var desiredPresenceKey: String? = null
@@ -1267,6 +1327,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun showOverview() {
         sessionOpenGeneration += 1
+        state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Overview) }
         state.update { it.copy(screen = dashboardBackDestination(), selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
@@ -1274,7 +1335,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun hasOverviewReturnTarget(): Boolean = overviewNavigation.hasReturnTarget()
 
     fun backFromOverview() {
-        val target = overviewNavigation.consume(state.value.activeHostId) ?: return
+        val target = consumeOverviewReturnTarget() ?: return
+        navigateToOverviewReturnTarget(target)
+    }
+
+    private fun consumeOverviewReturnTarget(): OverviewReturnTarget? =
+        overviewNavigation.consume(state.value.activeHostId)
+            ?.let { validatedOverviewReturnTarget(it, state.value.sessions) }
+
+    private fun navigateToOverviewReturnTarget(target: OverviewReturnTarget) {
         when (target.screen) {
             Screen.Dashboard -> showDashboard()
             Screen.Detail -> target.sessionId?.let { openSession(it, provider = target.provider) } ?: showSessions()
@@ -1285,12 +1354,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun showDashboard() {
         sessionOpenGeneration += 1
+        state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Dashboard) }
         state.update { it.copy(screen = Screen.Dashboard, selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
 
     fun showSessions() {
         sessionOpenGeneration += 1
+        state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
         state.update { it.copy(screen = Screen.Sessions, selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
@@ -1303,24 +1374,28 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun openOverviewSessions(hostId: String) {
+        overviewNavigation.clear()
+        when (hostNavigationAction(state.value.activeHostId, state.value.connected, hostId)) {
+            HostNavigationAction.Show -> showSessions()
+            HostNavigationAction.Reconnect -> {
+                showSessions()
+                reconnect()
+            }
+            HostNavigationAction.Switch -> switchHost(hostId, Screen.Sessions)
+        }
+    }
+
     fun reconnectOverviewHost(hostId: String) {
         if (hostId == state.value.activeHostId) reconnect() else openOverviewHost(hostId)
     }
 
     fun openOverviewSession(item: OverviewAttentionItem) {
         overviewNavigation.clear()
-        notificationHostId = item.hostId
-        notificationProvider = item.provider
-        notificationSessionId = item.sessionId
-        notificationApprovalId = item.approvalId
         if (item.hostId == state.value.activeHostId && state.value.connected) {
-            notificationHostId = null
-            notificationSessionId = null
             openSession(item.sessionId, focusedApprovalId = item.approvalId, provider = item.provider)
-        } else if (item.hostId == state.value.activeHostId) {
-            reconnect()
         } else {
-            switchHost(item.hostId)
+            openHostSession(item.hostId, item.provider, item.sessionId, item.approvalId)
         }
     }
 
@@ -1891,18 +1966,40 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         approvalId: String? = null,
     ) {
         if (hostId == null || hosts.load(hostId) == null) return
-        notificationHostId = hostId
-        notificationProvider = provider
-        notificationSessionId = id
-        notificationApprovalId = approvalId
-        if (state.value.activeHostId != hostId) {
-            switchHost(hostId)
-        } else if (state.value.connected) {
-            notificationHostId = null
-            notificationSessionId = null
+        overviewNavigation.clear()
+        if (state.value.activeHostId == hostId && state.value.connected) {
             openSession(id, focusedApprovalId = approvalId, provider = provider)
         } else {
+            openHostSession(hostId, provider, id, approvalId)
+        }
+    }
+
+    private fun openHostSession(
+        hostId: String,
+        provider: String,
+        sessionId: String,
+        focusedApprovalId: String? = null,
+    ) {
+        val choice = hostNavigation.choose(
+            hostId = hostId,
+            screen = Screen.Detail,
+            sessionId = sessionId,
+            provider = provider,
+            focusedApprovalId = focusedApprovalId,
+        )
+        if (state.value.activeHostId == hostId) {
+            state.update {
+                it.copy(
+                    screen = Screen.Detail,
+                    selected = null,
+                    loading = false,
+                    error = null,
+                    focusedApprovalId = focusedApprovalId,
+                )
+            }
             reconnect()
+        } else {
+            switchHost(hostId, choice)
         }
     }
 
@@ -1930,6 +2027,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val restored = preferences.load()
                 restorationProvider = restored.selectedSessionProvider
                 restorationSessionId = restored.selectedSessionId
+                hostNavigation.choose(saved.id, Screen.Sessions)
                 val filters = restored.searchFilters()
                 hosts.updateConnection(
                     saved.id,
@@ -2224,11 +2322,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun switchHost(hostId: String, destination: Screen = Screen.Sessions) {
         if (hostId == state.value.activeHostId) return
+        switchHost(hostId, hostNavigation.choose(hostId, destination))
+    }
+
+    private fun switchHost(hostId: String, choice: HostNavigationChoice) {
+        if (hostId == state.value.activeHostId) return
         val selected = hosts.select(hostId) ?: return
         overviewNavigation.invalidateForHost(selected.id)
         stopActiveHost()
         activeHost = selected
-        activateSavedHost(selected, destination)
+        activateSavedHost(selected, choice)
     }
 
     private fun stopActiveHost() {
@@ -2256,16 +2359,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.value.activeHostId?.let { hosts.updateConnection(it, "disconnected") }
     }
 
-    private fun activateSavedHost(saved: SavedHost, destination: Screen = Screen.Sessions) {
+    private fun activateSavedHost(saved: SavedHost, requestedChoice: HostNavigationChoice? = null) {
         overviewNavigation.invalidateForHost(saved.id)
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
         restorationProvider = restored.selectedSessionProvider
         restorationSessionId = restored.selectedSessionId
+        val choice = requestedChoice ?: hostNavigation.choose(
+            hostId = saved.id,
+            screen = if (restorationSessionId == null) Screen.Sessions else Screen.Detail,
+            sessionId = restorationSessionId,
+            provider = restorationProvider,
+        )
         val filters = restored.searchFilters()
         state.update {
             it.copy(
-                screen = if (notificationSessionId == null) destination else Screen.Detail,
+                screen = choice.screen,
                 displayName = saved.displayName,
                 host = saved.tcpEndpoint(),
                 pairingKey = "",
@@ -2307,7 +2416,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     it.collapsedRepositoriesByHost + (saved.id to restored.collapsedRepositoryIds)
                 },
                 highlightedItemId = null,
-                focusedApprovalId = null,
+                focusedApprovalId = choice.focusedApprovalId,
                 approvals = emptyList(),
                 submittingApprovalIds = emptySet(),
                 approvalErrors = emptyMap(),
@@ -2580,15 +2689,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private suspend fun reconnectSaved(saved: SavedHost) {
-        val selectedId =
-            notificationSessionId ?: state.value.selected?.id ?: restorationSessionId
-        val selectedProvider =
-            if (notificationSessionId != null) notificationProvider
-            else state.value.selected?.let(::sessionProvider) ?: restorationProvider
+        val initialChoice = hostNavigation.current(saved.id) ?: hostNavigation.choose(
+            hostId = saved.id,
+            screen = reconnectDestination(state.value.screen, restorationSessionId),
+            sessionId = restorationSessionId,
+            provider = restorationProvider,
+        )
         state.update { it.copy(loading = true, error = null, connectionStatus = "reconnecting") }
         runCatching {
             client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
             if (state.value.activeHostId != saved.id) return
+            val choice = hostNavigation.current(saved.id) ?: initialChoice
+            val selectedId = choice.sessionId.takeIf { choice.screen == Screen.Detail }
             hosts.updateConnection(
                 saved.id,
                 "connected",
@@ -2600,17 +2712,28 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     connected = true,
                     connectionStatus = "connected",
                     savedHosts = hosts.all().map { host -> host.summary() },
-                    screen = reconnectDestination(state.value.screen, selectedId),
+                    screen = choice.screen,
                     error = null,
                     capabilities = client.capabilities,
+                    focusedApprovalId = choice.focusedApprovalId,
                 )
             }
-            synchronizeSessions(selectedId, selectedProvider)
-            notificationHostId = null
-            notificationSessionId = null
-            state.update { it.copy(focusedApprovalId = notificationApprovalId) }
-            notificationApprovalId = null
+            synchronizeSessions(selectedId, choice.provider, choice)
+            val latestChoice = hostNavigation.current(saved.id)
+            if (
+                latestChoice != null &&
+                latestChoice != choice &&
+                latestChoice.screen == Screen.Detail &&
+                latestChoice.sessionId != null
+            ) {
+                openSession(
+                    latestChoice.sessionId,
+                    focusedApprovalId = latestChoice.focusedApprovalId,
+                    provider = latestChoice.provider,
+                )
+            }
         }.onFailure { error ->
+            if (state.value.activeHostId != saved.id) return
             hosts.updateConnection(saved.id, "disconnected")
             state.update {
                 it.copy(
@@ -2643,6 +2766,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         provider: String = PROVIDER_CODEX,
     ) {
         val generation = ++sessionOpenGeneration
+        state.value.activeHostId?.let { hostId ->
+            hostNavigation.choose(
+                hostId = hostId,
+                screen = Screen.Detail,
+                sessionId = id,
+                provider = provider,
+                focusedApprovalId = focusedApprovalId,
+            )
+        }
         val approvalsAtOpen = state.value.approvals.filter { it.sessionId == id }
         val inputsAtOpen = state.value.inputs.filter { it.sessionId == id }
         restorationProvider = provider
@@ -2722,7 +2854,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private suspend fun synchronizeSessions(
         selectedSessionId: String? = null,
         selectedProvider: String = PROVIDER_CODEX,
+        expectedNavigation: HostNavigationChoice? = null,
     ) {
+        val synchronizedHostId = expectedNavigation?.hostId ?: state.value.activeHostId
         state.update { it.copy(loading = true, error = null) }
         val providers = runCatching {
             client.request("provider.list").payload.getValue("providers").jsonArray
@@ -2857,13 +2991,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 readSession(selectedProvider, it)
             }
         }
+        if (state.value.activeHostId != synchronizedHostId) return
         state.update {
+            val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
             it.withSynchronizedSessions(
                     sessions = sessions,
                     repositories = snapshot.repositories,
                     selectedSessionId = selectedSessionId,
                     selectedSession = selected,
                     selectedProvider = selectedProvider,
+                    applySelection = applySelection,
                 )
                 .copy(
                     providers = snapshot.providers,
@@ -2991,6 +3128,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun backToSessions() {
         sessionOpenGeneration += 1
+        state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
         restorationSessionId = null
         preferences.setSelectedSession(PROVIDER_CODEX, null)
         state.update { it.copy(screen = Screen.Sessions, selected = null, loading = false, error = null, highlightedItemId = null, focusedApprovalId = null) }
@@ -4421,7 +4559,8 @@ private fun UnifiedOverviewScreen(
                 HostOverviewCard(
                     host,
                     snapshot,
-                    onOpen = { viewModel.openOverviewHost(host.id) },
+                    onOpenDashboard = { viewModel.openOverviewHost(host.id) },
+                    onOpenSessions = { viewModel.openOverviewSessions(host.id) },
                     onReconnect = { viewModel.reconnectOverviewHost(host.id) },
                     onRename = { renameHost = host; renameValue = host.displayName },
                     onForget = { forgetHost = host },
@@ -4769,7 +4908,8 @@ private fun dashboardSessionDetail(session: SessionSummary): String =
 private fun HostOverviewCard(
     host: SavedHostSummary,
     snapshot: HostOverviewSnapshot?,
-    onOpen: () -> Unit,
+    onOpenDashboard: () -> Unit,
+    onOpenSessions: () -> Unit,
     onReconnect: () -> Unit,
     onRename: () -> Unit,
     onForget: () -> Unit,
@@ -4795,9 +4935,21 @@ private fun HostOverviewCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text("Oldest ${overviewElapsed(snapshot?.oldestTurn?.timestamp)} · Latest activity ${overviewAge(snapshot?.latestActivity)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = onOpen) { Text("View dashboard") }
-                if (!live) FilledTonalButton(onClick = onReconnect) { Text("Reconnect") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenDashboard, modifier = Modifier.weight(1f)) {
+                    Text("View dashboard")
+                }
+                FilledTonalButton(onClick = onOpenSessions, modifier = Modifier.weight(1f)) {
+                    Text("View sessions")
+                }
+            }
+            if (!live) {
+                FilledTonalButton(onClick = onReconnect, modifier = Modifier.fillMaxWidth()) {
+                    Text("Reconnect host")
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(onClick = onRename) { Text("Edit") }

@@ -334,6 +334,198 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun sessionsHomeBackReturnsToSessionsWithoutCreatingALoop() {
+        val navigation = OverviewNavigationState()
+
+        navigation.capture(Screen.Sessions, "host-a", null)
+
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            navigation.consume("host-a"),
+        )
+        assertNull(navigation.consume("host-a"))
+        assertFalse(navigation.hasReturnTarget())
+    }
+
+    @Test
+    fun dashboardHomeBackReturnsToDashboardWithoutCreatingALoop() {
+        val navigation = OverviewNavigationState()
+
+        navigation.capture(Screen.Dashboard, "host-a", null)
+
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Dashboard),
+            navigation.consume("host-a"),
+        )
+        assertNull(navigation.consume("host-a"))
+    }
+
+    @Test
+    fun sessionsHomeDashboardBackReturnsHomeThenSessions() {
+        val navigation = OverviewNavigationState()
+        navigation.capture(Screen.Sessions, "host-a", null)
+
+        // Dashboard Back only reveals Home; it must not consume Home's origin.
+        assertTrue(navigation.hasReturnTarget())
+
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            navigation.consume("host-a"),
+        )
+        assertFalse(navigation.hasReturnTarget())
+    }
+
+    @Test
+    fun dashboardHomeDashboardBackPreservesTheNormalBackStackOnce() {
+        val navigation = OverviewNavigationState()
+        navigation.capture(Screen.Dashboard, "host-a", null)
+
+        // Dashboard Back returns to Home without consuming the original Dashboard entry.
+        assertTrue(navigation.hasReturnTarget())
+
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Dashboard),
+            navigation.consume("host-a"),
+        )
+        assertFalse(navigation.hasReturnTarget())
+    }
+
+    @Test
+    fun detailHomeBackReturnsToTheSameProviderSessionWhenItStillExists() {
+        val session =
+            SessionSummary(
+                id = "claude-thread",
+                repository = "/repo",
+                title = "Claude thread",
+                status = "idle",
+                provider = PROVIDER_CLAUDE_CODE,
+            )
+        val target =
+            requireNotNull(
+                overviewReturnTarget(
+                    Screen.Detail,
+                    "host-a",
+                    session.id,
+                    PROVIDER_CLAUDE_CODE,
+                ),
+            )
+
+        assertEquals(target, validatedOverviewReturnTarget(target, listOf(session)))
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            validatedOverviewReturnTarget(target, emptyList()),
+        )
+    }
+
+    @Test
+    fun homeSessionsChoiceTargetsTheActiveConnectedHostImmediately() {
+        val navigation = HostNavigationState()
+
+        val choice = navigation.choose("host-a", Screen.Sessions)
+
+        assertEquals(
+            HostNavigationAction.Show,
+            hostNavigationAction("host-a", activeHostConnected = true, requestedHostId = "host-a"),
+        )
+        assertEquals(Screen.Sessions, choice.screen)
+        assertEquals("host-a", choice.hostId)
+        assertEquals(choice, navigation.current("host-a"))
+    }
+
+    @Test
+    fun homeSessionsChoiceSwitchesToADifferentConnectedHost() {
+        val navigation = HostNavigationState()
+        navigation.choose("host-a", Screen.Overview)
+
+        val choice = navigation.choose("host-b", Screen.Sessions)
+
+        assertEquals(
+            HostNavigationAction.Switch,
+            hostNavigationAction("host-a", activeHostConnected = true, requestedHostId = "host-b"),
+        )
+        assertEquals(Screen.Sessions, choice.screen)
+        assertEquals(choice, navigation.current("host-b"))
+        assertNull(navigation.current("host-a"))
+    }
+
+    @Test
+    fun activeDisconnectedHostReconnectKeepsTheExplicitSessionsDestination() {
+        val navigation = HostNavigationState()
+
+        val requestedBeforeReconnect = navigation.choose("host-b", Screen.Sessions)
+
+        assertEquals(
+            HostNavigationAction.Reconnect,
+            hostNavigationAction("host-b", activeHostConnected = false, requestedHostId = "host-b"),
+        )
+        assertEquals(requestedBeforeReconnect, navigation.current("host-b"))
+        assertEquals(Screen.Sessions, navigation.current("host-b")?.screen)
+        assertNull(navigation.current("host-b")?.sessionId)
+    }
+
+    @Test
+    fun differentDisconnectedHostKeepsSessionsDestinationThroughSwitchAndReconnect() {
+        val navigation = HostNavigationState()
+
+        val requestedBeforeSwitch = navigation.choose("host-b", Screen.Sessions)
+
+        assertEquals(
+            HostNavigationAction.Switch,
+            hostNavigationAction("host-a", activeHostConnected = false, requestedHostId = "host-b"),
+        )
+        assertEquals(requestedBeforeSwitch, navigation.current("host-b"))
+        assertEquals(Screen.Sessions, navigation.current("host-b")?.screen)
+    }
+
+    @Test
+    fun notificationNavigationKeepsTheExactHostProviderAndSessionThroughReconnect() {
+        val navigation = HostNavigationState()
+
+        val choice =
+            navigation.choose(
+                hostId = "host-b",
+                screen = Screen.Detail,
+                sessionId = "claude-thread",
+                provider = PROVIDER_CLAUDE_CODE,
+                focusedApprovalId = "approval-1",
+            )
+
+        assertEquals(choice, navigation.current("host-b"))
+        assertEquals(Screen.Detail, choice.screen)
+        assertEquals("claude-thread", choice.sessionId)
+        assertEquals(PROVIDER_CLAUDE_CODE, choice.provider)
+        assertEquals("approval-1", choice.focusedApprovalId)
+    }
+
+    @Test
+    fun newerNavigationChoiceWinsOverAnOlderReconnectResult() {
+        val navigation = HostNavigationState()
+        val olderReconnect = navigation.choose("host-b", Screen.Sessions)
+
+        val newerChoice = navigation.choose("host-b", Screen.Dashboard)
+
+        assertFalse(navigation.isCurrent(olderReconnect))
+        assertTrue(navigation.isCurrent(newerChoice))
+
+        val selectedByOlderReconnect =
+            SessionSummary("old", "/repo", "Old selection", "idle", provider = PROVIDER_CODEX)
+        val currentSelection =
+            SessionSummary("new", "/repo", "New selection", "idle", provider = PROVIDER_CODEX)
+        val afterStaleSync =
+            UiState(screen = Screen.Detail, selected = currentSelection)
+                .withSynchronizedSessions(
+                    sessions = listOf(selectedByOlderReconnect, currentSelection),
+                    repositories = emptyList(),
+                    selectedSessionId = selectedByOlderReconnect.id,
+                    selectedSession = selectedByOlderReconnect,
+                    applySelection = false,
+                )
+
+        assertEquals(Screen.Detail, afterStaleSync.screen)
+        assertEquals(currentSelection, afterStaleSync.selected)
+    }
+
+    @Test
     fun unifiedOverviewReturnLifecycleIsHostBoundAndConsumedOnce() {
         val navigation = OverviewNavigationState()
 
