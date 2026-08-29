@@ -5,6 +5,7 @@ import {
   groupSessions,
   liveActivityLabel,
   liveActivityMessage,
+  reconcileSessionSettings,
   routeForSession,
   type AccessLevelInfo,
   type ModelInfo,
@@ -180,17 +181,56 @@ describe("session mapping and live events", () => {
     })).toEqual(expect.objectContaining({ status: "working" }));
   });
 
-  it("selects only dynamic model, effort, and access data", () => {
+  it("keeps new-session defaults separate from unknown existing-session settings", () => {
     const models: ModelInfo[] = [
       { id: "hidden", displayName: "Hidden", visible: false, isDefault: false, reasoningEfforts: ["low"] },
       { id: "dynamic", displayName: "Dynamic", visible: true, isDefault: true, reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium" },
     ];
     const access: AccessLevelInfo[] = [{ id: "workspace", displayName: "Workspace" }];
-    expect(routeForSession(session, models, access)).toEqual({
+    expect(routeForSession(null, models, access)).toEqual({
       model: "dynamic",
       reasoningEffort: "medium",
       accessLevel: "workspace",
     });
+    expect(routeForSession(session, models, access)).toEqual({
+      model: "",
+      reasoningEffort: "",
+      accessLevel: "",
+    });
+    expect(routeForSession({
+      ...session,
+      model: "gpt-known",
+      reasoningEffort: "high",
+      accessLevel: "full",
+    }, [], [])).toEqual({
+      model: "gpt-known",
+      reasoningEffort: "high",
+      accessLevel: "full",
+    });
+  });
+
+  it("keeps a newer live setting when a stale refresh arrives and isolates sessions", () => {
+    const newer = {
+      ...session,
+      accessLevel: "full",
+      model: "gpt-new",
+      reasoningEffort: "high",
+      settingsRevision: 4,
+    };
+    const stale = {
+      ...session,
+      accessLevel: "ask",
+      model: "gpt-old",
+      reasoningEffort: "low",
+      settingsRevision: 3,
+    };
+    expect(reconcileSessionSettings(newer, stale)).toEqual(newer);
+    expect(reconcileSessionSettings({ ...newer, id: "other" }, stale)).toEqual(stale);
+    expect(applySessionEvent(newer, {
+      kind: "route",
+      accessLevel: "ask",
+      settingsRevision: 2,
+    })).toEqual(newer);
   });
 
   it("isolates colliding event streams by provider", () => {

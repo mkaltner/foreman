@@ -58,7 +58,7 @@ version 1:
 
 - `provider.list`, `provider.configure`;
 - `provider.session.list`, `provider.session.read`, `provider.session.start`,
-  `provider.session.resume`, `provider.session.subscribe`,
+  `provider.session.resume`, `provider.session.settings`, `provider.session.subscribe`,
   `provider.session.unsubscribe`, `provider.session.delete`;
 - `provider.turn.prompt`, `provider.turn.interrupt`;
 - `provider.model.list`, `provider.permission.list`.
@@ -258,9 +258,23 @@ prompt, steer, and interrupt requests from other connected Foreman clients.
 profiles. `session.settings` accepts `sessionId` plus at least one of
 `accessLevel`, `model`, and `reasoningEffort`, validates the selection against
 the installed catalogs, and updates Codex's existing thread defaults for
-subsequent turns. It does not alter the active turn or resolve an approval that
-turn already requested. A `turn.prompt` may include `accessLevel`, `model`, and
-`reasoningEffort`; `turn.steer` keeps the active turn's route. Both accept up to
+subsequent turns. Foreman accepts the mutation only while the session is idle,
+serializes the check with prompt/steer/interrupt operations, durably records the
+acknowledged session values, and returns the updated session projection with a
+monotonic `settingsRevision`. Working, stopping, approval-waiting, and
+structured-input-waiting turns keep their route immutable until they finish.
+`provider.session.settings` provides the equivalent Foreman-owned session
+defaults for the Claude model and permission mode without claiming an
+unsupported Claude SDK thread-settings mutation. Route events and refreshes
+carry the revision so a stale read cannot replace a newer acknowledged setting.
+For pre-migration Codex sessions whose app-server projection omits access,
+Foreman may recover the last verified permission profile from the bounded tail
+of that session's persisted Codex turn context, then stores the recovered value
+in the normal server-authoritative session record.
+A `turn.prompt` may include `accessLevel`, `model`, and `reasoningEffort` for
+older clients, but known durable session values remain authoritative and those
+fields only bootstrap values Foreman does not yet know. `turn.steer` keeps the
+active turn's route and rejects replacement route fields. Both accept up to
 four images:
 
 ```json

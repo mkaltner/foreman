@@ -878,6 +878,7 @@ describe("conversation drafts", () => {
   });
 
   it("updates access on the existing session as soon as it is selected", async () => {
+    const confirmation = vi.spyOn(window, "confirm").mockReturnValue(true);
     const onRequest = vi.fn().mockResolvedValue({ updated: true });
     render(
       <ConversationView
@@ -902,11 +903,126 @@ describe("conversation drafts", () => {
     fireEvent.click(screen.getByRole("button", { name: "Access: Ask for approval" }));
     fireEvent.click(screen.getByRole("option", { name: /Full access/ }));
 
-    expect(onRequest).toHaveBeenCalledWith("session.settings", {
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("session.settings", {
       sessionId: "one",
       accessLevel: "full",
-    });
+    }));
     expect(screen.getByRole("button", { name: "Access: Full access" })).toBeInTheDocument();
+    confirmation.mockRestore();
+  });
+
+  it("uses acknowledged settings and restores the prior value after a failed update", async () => {
+    const onError = vi.fn();
+    const onRequest = vi.fn()
+      .mockResolvedValueOnce({
+        updated: true,
+        session: { ...session("one"), accessLevel: "ask", settingsRevision: 2 },
+      })
+      .mockRejectedValueOnce(new Error("Reconnect and try again"));
+    render(
+      <ConversationView
+        session={{ ...session("one"), accessLevel: "ask", settingsRevision: 1 }}
+        approvals={[]}
+        models={[]}
+        accessLevels={[
+          { id: "ask", displayName: "Ask for approval" },
+          { id: "auto", displayName: "Approve for me" },
+        ]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft=""
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={onRequest}
+        onError={onError}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Access: Ask for approval" }));
+    fireEvent.click(screen.getByRole("option", { name: /Approve for me/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Access: Ask for approval" }));
+    fireEvent.click(screen.getByRole("option", { name: /Approve for me/ }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Reconnect and try again"));
+    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toBeInTheDocument();
+  });
+
+  it.each(["working", "waiting", "stopping"])("locks every route control while a turn is %s", (status) => {
+    render(
+      <ConversationView
+        session={{ ...session("one"), status, activeTurnId: "turn-1", model: "model-test", reasoningEffort: "high", accessLevel: "ask" }}
+        approvals={[]}
+        models={[{ id: "model-test", displayName: "Model Test", visible: true, isDefault: true, reasoningEfforts: ["high"] }]}
+        accessLevels={[{ id: "ask", displayName: "Ask for approval" }]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft="Steer safely"
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={vi.fn().mockResolvedValue({})}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: Model Test" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reasoning: High" })).toBeDisabled();
+    expect(screen.getByText("Model, reasoning, and access are available when this turn finishes.")).toBeInTheDocument();
+  });
+
+  it("shows known server route values while catalog metadata is reconnecting", () => {
+    render(
+      <ConversationView
+        session={{ ...session("one"), status: "working", activeTurnId: "turn-1", model: "gpt-known", reasoningEffort: "high", accessLevel: "full", settingsRevision: 2 }}
+        approvals={[]}
+        models={[]}
+        accessLevels={[]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft=""
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={vi.fn().mockResolvedValue({})}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Access: full" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: gpt-known" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reasoning: high" })).toBeDisabled();
+    expect(screen.queryByText("Server default")).not.toBeInTheDocument();
+  });
+
+  it("steers an active Codex turn without replacement route settings", async () => {
+    const onRequest = vi.fn().mockResolvedValue({ accepted: true });
+    render(
+      <ConversationView
+        session={{ ...session("one"), status: "working", activeTurnId: "turn-1", model: "model-test", reasoningEffort: "high", accessLevel: "full" }}
+        approvals={[]}
+        models={[{ id: "model-test", displayName: "Model Test", visible: true, isDefault: true, reasoningEfforts: ["high"] }]}
+        accessLevels={[{ id: "full", displayName: "Full access" }]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft="Keep going"
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={onRequest}
+        onError={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("turn.steer", {
+      sessionId: "one",
+      turnId: "turn-1",
+      text: "Keep going",
+      images: [],
+    }));
   });
 
   it("resumes an external Claude session with exact model and permission values", async () => {
@@ -947,8 +1063,20 @@ describe("conversation drafts", () => {
     expect(screen.getByText(/Not live-attached/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Model: Sonnet" }));
     fireEvent.click(screen.getByRole("option", { name: /Haiku/ }));
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("provider.session.settings", {
+      provider: "claude-code",
+      sessionId: "external",
+      repositoryId: ".",
+      model: "haiku",
+    }));
     fireEvent.click(screen.getByRole("button", { name: "Permission: Default" }));
     fireEvent.click(screen.getByRole("option", { name: /Don’t ask/ }));
+    await waitFor(() => expect(onRequest).toHaveBeenCalledWith("provider.session.settings", {
+      provider: "claude-code",
+      sessionId: "external",
+      repositoryId: ".",
+      permissionMode: "dontAsk",
+    }));
     fireEvent.click(screen.getByRole("button", { name: "Resume in Foreman" }));
 
     await waitFor(() => expect(onRequest).toHaveBeenCalledWith("provider.session.resume", {

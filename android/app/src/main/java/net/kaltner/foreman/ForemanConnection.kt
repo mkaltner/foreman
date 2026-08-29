@@ -220,6 +220,7 @@ data class SessionSummary(
     val sessionId: String? = null,
     val repositoryId: String? = null,
     val permissionMode: String? = null,
+    val settingsRevision: Long? = null,
     val source: String? = null,
     val state: String? = null,
     val capabilities: List<String> = emptyList(),

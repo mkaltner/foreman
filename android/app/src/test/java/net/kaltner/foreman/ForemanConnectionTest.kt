@@ -773,7 +773,7 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun routeSelectionKeepsOnlySupportedEffortAndForwardsPromptOverrides() {
+    fun routeSelectionKeepsOnlySupportedEffortAndUsesServerSessionSettings() {
         val model =
             ModelInfo(
                 id = "gpt-test",
@@ -801,9 +801,9 @@ class ForemanConnectionTest {
                 model = model.id,
                 effort = "high",
             )
-        assertEquals("gpt-test", payload.getValue("model").jsonPrimitive.content)
-        assertEquals("high", payload.getValue("reasoningEffort").jsonPrimitive.content)
-        assertEquals("auto", payload.getValue("accessLevel").jsonPrimitive.content)
+        assertFalse(payload.containsKey("model"))
+        assertFalse(payload.containsKey("reasoningEffort"))
+        assertFalse(payload.containsKey("accessLevel"))
         assertEquals(
             "YWJj",
             payload.getValue("images").jsonArray.single().jsonObject
@@ -838,6 +838,51 @@ class ForemanConnectionTest {
                     session.copy(accessLevel = "full"),
                 )
         assertEquals("full", routed.composerAccessLevel)
+        val unknownExisting =
+            UiState(composerAccessLevel = "ask", newSessionAccessLevel = "ask")
+                .withAccessLevelsAndSessionAccess(accessLevels, session)
+        assertNull(unknownExisting.composerAccessLevel)
+        assertEquals("ask", unknownExisting.newSessionAccessLevel)
+        assertEquals("ask", UiState(composerAccessLevel = "ask").withAccessLevelsAndSessionAccess(accessLevels, null).composerAccessLevel)
+        assertTrue(sessionRouteEditable(session))
+        assertFalse(sessionRouteEditable(session.copy(status = "working")))
+        assertFalse(sessionRouteEditable(session.copy(status = "waiting")))
+        assertFalse(sessionRouteEditable(session.copy(status = "stopping")))
+    }
+
+    @Test
+    fun newerLiveSessionSettingsWinOverStaleRefreshAndRemainIsolated() {
+        val newer =
+            SessionSummary(
+                id = "thread-1",
+                repository = "/projects/example",
+                title = "Example",
+                status = "idle",
+                model = "gpt-new",
+                reasoningEffort = "high",
+                accessLevel = "full",
+                settingsRevision = 5,
+            )
+        val stale =
+            newer.copy(
+                model = "gpt-old",
+                reasoningEffort = "low",
+                accessLevel = "ask",
+                settingsRevision = 4,
+            )
+
+        assertEquals(newer, reconcileSessionSettings(newer, stale))
+        assertEquals(stale.copy(id = "thread-2"), reconcileSessionSettings(newer, stale.copy(id = "thread-2")))
+        val synchronized =
+            UiState(sessions = listOf(newer), selected = newer).withSynchronizedSessions(
+                sessions = listOf(stale, stale.copy(id = "thread-2")),
+                repositories = emptyList(),
+                selectedSessionId = newer.id,
+                selectedSession = stale,
+            )
+        assertEquals("full", synchronized.sessions.first { it.id == "thread-1" }.accessLevel)
+        assertEquals("ask", synchronized.sessions.first { it.id == "thread-2" }.accessLevel)
+        assertEquals("full", synchronized.selected?.accessLevel)
     }
 
     @Test

@@ -36,6 +36,7 @@ ACCESS_CACHE_SECONDS = 30
 PROJECTED_IMAGE_BYTES = 8 * 1024 * 1024
 SESSION_LIST_LIMIT = 500
 THREAD_HISTORY_LIMIT = 1_000
+SESSION_HISTORY_TAIL_BYTES = 4 * 1024 * 1024
 SEARCH_SNIPPET_LIMIT = 200
 SEARCH_SNIPPETS_PER_SESSION = 3
 DESKTOP_ATTACHMENT_HEADER = "# Files mentioned by the user:\n"
@@ -84,6 +85,7 @@ class Codex:
         socket_path: str | Path | None = None,
         fallback_socket_path: str | Path | None = None,
         allow_fallback: bool = True,
+        session_history_root: str | Path | None = None,
     ) -> None:
         self.executable = executable
         self.on_event = on_event
@@ -94,6 +96,9 @@ class Codex:
         if self.primary_socket_path == self.fallback_socket_path:
             raise ValueError("Foreman fallback socket must differ from the Codex socket")
         self.allow_fallback = allow_fallback
+        self.session_history_root = Path(
+            session_history_root or resolve_codex_home() / "sessions"
+        ).expanduser()
         self.socket_path = self.primary_socket_path
         self.runtime_status = SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE
         self.process: asyncio.subprocess.Process | None = None
@@ -117,6 +122,8 @@ class Codex:
         self._subscribed: set[str] = set()
         self._routes: dict[str, tuple[str | None, str | None]] = {}
         self._access_levels: dict[str, str | None] = {}
+        self._session_history_files: dict[str, Path] | None = None
+        self._historical_access_levels: dict[str, str | None] = {}
         self._supported_methods: set[str] = set()
         self._model_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._access_cache: tuple[float, list[dict[str, Any]]] | None = None
@@ -811,8 +818,18 @@ class Codex:
         thread_id = params.get("threadId")
         if not isinstance(thread_id, str) or not isinstance(settings, dict):
             return
-        self._routes[thread_id] = (settings.get("model"), settings.get("effort"))
-        self._access_levels[thread_id] = access_level(settings)
+        previous_model, previous_effort = self._routes.get(thread_id, (None, None))
+        self._routes[thread_id] = (
+            settings.get("model")
+            if isinstance(settings.get("model"), str)
+            else previous_model,
+            settings.get("effort")
+            if isinstance(settings.get("effort"), str)
+            else previous_effort,
+        )
+        selected_access_level = access_level(settings)
+        if selected_access_level is not None:
+            self._access_levels[thread_id] = selected_access_level
 
     async def _reconnect(self) -> None:
         delay = 0.25
@@ -945,14 +962,26 @@ class Codex:
 
     def _remember_route(self, result: dict[str, Any]) -> dict[str, Any]:
         thread = result["thread"]
+        previous_model, previous_effort = self._routes.get(thread["id"], (None, None))
         self._routes[thread["id"]] = (
-            result.get("model"),
-            result.get("reasoningEffort"),
+            result.get("model")
+            if isinstance(result.get("model"), str)
+            else previous_model,
+            result.get("reasoningEffort")
+            if isinstance(result.get("reasoningEffort"), str)
+            else previous_effort,
         )
-        self._access_levels[thread["id"]] = access_level(result)
+        selected_access_level = access_level(result)
+        if selected_access_level is not None:
+            self._access_levels[thread["id"]] = selected_access_level
         return self._with_route(thread)
 
     def _with_route(self, thread: dict[str, Any]) -> dict[str, Any]:
+        thread_id = thread["id"]
+        if not isinstance(self._access_levels.get(thread_id), str):
+            historical = self._historical_access_level(thread_id)
+            if historical is not None:
+                self._access_levels[thread_id] = historical
         model, effort = self._routes.get(thread["id"], (None, None))
         return {
             **thread,
@@ -960,6 +989,33 @@ class Codex:
             "_foremanReasoningEffort": effort,
             "_foremanAccessLevel": self._access_levels.get(thread["id"]),
         }
+
+    def _historical_access_level(self, thread_id: str) -> str | None:
+        if not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            thread_id,
+        ):
+            return None
+        if thread_id in self._historical_access_levels:
+            return self._historical_access_levels[thread_id]
+        if self._session_history_files is None:
+            self._session_history_files = {}
+            try:
+                candidates = self.session_history_root.rglob("*.jsonl")
+                for path in candidates:
+                    candidate_id = path.stem[-36:]
+                    if re.fullmatch(
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                        candidate_id,
+                    ):
+                        self._session_history_files[candidate_id] = path
+            except OSError:
+                pass
+        level = session_history_access_level(
+            self._session_history_files.get(thread_id)
+        )
+        self._historical_access_levels[thread_id] = level
+        return level
 
     async def ensure_resumed(self, thread_id: str) -> None:
         if thread_id not in self._loaded:
@@ -1132,8 +1188,13 @@ def resolve_socket_path() -> Path:
     override = os.environ.get("FOREMAN_CODEX_SOCKET")
     if override:
         return Path(override).expanduser()
-    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
-    return codex_home / "app-server-control" / "app-server-control.sock"
+    return resolve_codex_home() / "app-server-control" / "app-server-control.sock"
+
+
+def resolve_codex_home() -> Path:
+    return Path(
+        os.environ.get("CODEX_HOME", Path.home() / ".codex")
+    ).expanduser()
 
 
 def resolve_fallback_socket_path() -> Path:
@@ -1205,6 +1266,43 @@ def access_level(result: dict[str, Any]) -> str | None:
         return "auto"
     if profile_id == ":workspace":
         return "ask"
+    return None
+
+
+def turn_context_access_level(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    sandbox = payload.get("sandbox_policy")
+    sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else None
+    approval = payload.get("approval_policy")
+    reviewer = payload.get("approvals_reviewer")
+    if sandbox_type == "danger-full-access" and approval == "never":
+        return "full"
+    if sandbox_type == "workspace-write" and approval == "on-request":
+        return "auto" if reviewer == "auto_review" else "ask"
+    return None
+
+
+def session_history_access_level(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            start = max(0, size - SESSION_HISTORY_TAIL_BYTES)
+            handle.seek(start)
+            if start:
+                handle.readline()
+            lines = handle.readlines()
+    except OSError:
+        return None
+    for raw in reversed(lines):
+        try:
+            event = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn_context":
+            return turn_context_access_level(event.get("payload"))
     return None
 
 
