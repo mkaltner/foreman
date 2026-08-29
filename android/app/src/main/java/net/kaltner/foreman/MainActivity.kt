@@ -1537,7 +1537,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             overviewJob?.cancel()
             overviewJob = null
             overviewClient.close()
-            state.value.selected?.let(::monitorIfActive)
+            startGlobalTurnMonitoring()
             startOverviewPolling()
         } else {
             TurnMonitorService.stopAll(getApplication())
@@ -2457,7 +2457,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             )
         }
         scheduleSearch(0)
-        selected?.let(::monitorIfActive)
+        startGlobalTurnMonitoring()
         updateActiveOverview()
     }
 
@@ -3360,6 +3360,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private fun monitorIfActive(session: SessionSummary) {
         if (session.status == "working") prepareMonitor(session, active = true)
+    }
+
+    private fun startGlobalTurnMonitoring() {
+        val current = state.value
+        if (!current.monitorActiveTurns) return
+        val hostId = current.activeHostId ?: return
+        runCatching { TurnMonitorService.monitorAll(getApplication(), hostId) }
+            .onFailure { error ->
+                state.update {
+                    it.copy(error = error.message ?: "Android could not start background monitoring.")
+                }
+            }
     }
 
     private fun prepareMonitor(session: SessionSummary, active: Boolean): Boolean {
@@ -6337,13 +6349,13 @@ private fun UiSettingsMenu(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                     Text(
-                        "Background alerts require Android permission and active-turn monitoring. Android may stop background work under battery or force-stop restrictions.",
+                        "When enabled, Android watches all active turns on this host, including turns started from web or desktop. Android may stop background work under battery or force-stop restrictions.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 4.dp),
                     )
                     SettingsCheckboxItem(
-                        "Monitor active turns in background",
+                        "Monitor all turns in background",
                         state.monitorActiveTurns,
                     ) { requestTurnMonitoring(!state.monitorActiveTurns) }
                     SettingsCheckboxItem(
