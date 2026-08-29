@@ -123,6 +123,17 @@ describe("web turn notification lifecycle", () => {
     expect(monitor.observe(working({ status: "completed" }))).toBeNull();
   });
 
+  it("clears a stale turn alert when the terminal notification is suppressed", () => {
+    const monitor = new TurnNotificationMonitor();
+    monitor.configure({ ...DEFAULT_NOTIFICATION_PREFERENCES, notifyCompletions: false }, () => undefined);
+    monitor.observe(working());
+    expect(monitor.observeDecision(working({ status: "completed" }))).toEqual({
+      notification: null,
+      clearTag: "foreman-turn-home-one",
+    });
+    expect(monitor.observeDecision(working({ status: "completed" }))).toEqual({ notification: null });
+  });
+
   it("sends an explicit test through the active service worker", async () => {
     const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
     const browserNotification = Object.getOwnPropertyDescriptor(window, "Notification");

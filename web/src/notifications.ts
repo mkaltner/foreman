@@ -25,6 +25,11 @@ export interface TurnObservation {
   waitType?: "approval" | "input" | null;
 }
 
+export interface TurnNotificationDecision {
+  notification: TurnNotification | null;
+  clearTag?: string;
+}
+
 export type BrowserNotificationState =
   | "unsupported"
   | "insecure"
@@ -94,36 +99,45 @@ export class TurnNotificationMonitor {
   }
 
   observe(observation: TurnObservation): TurnNotification | null {
+    return this.observeDecision(observation).notification;
+  }
+
+  observeDecision(observation: TurnObservation): TurnNotificationDecision {
     if (observation.status === "working") {
       this.trackWorking(observation);
-      return null;
+      return { notification: null };
     }
     const active = this.active.get(observation.sessionId);
-    if (!active) return null;
+    if (!active) return { notification: null };
     if (observation.status === "waiting") {
       this.clearTimer(active);
       const attentionKey = active.turnKey;
-      if (this.attentionTurns.has(attentionKey)) return null;
+      if (this.attentionTurns.has(attentionKey)) return { notification: null };
       this.attentionTurns.add(attentionKey);
-      if (!shouldNotify("approval", this.preferences, observation.repositoryId, new Date(this.now()))) return null;
-      return attentionNotification(observation, attentionKey);
+      if (!shouldNotify("approval", this.preferences, observation.repositoryId, new Date(this.now()))) {
+        return { notification: null };
+      }
+      return { notification: attentionNotification(observation, attentionKey) };
     }
     const outcome = OUTCOMES[observation.status];
-    if (!outcome) return null;
+    if (!outcome) return { notification: null };
     this.clearTimer(active);
     this.active.delete(observation.sessionId);
     this.attentionTurns.delete(active.turnKey);
     const terminalTag = `foreman-turn-${observation.hostId}-${observation.sessionId}`;
     if (!shouldNotify(outcome.event, this.preferences, active.observation.repositoryId, new Date(this.now()))) {
-      return null;
+      return { notification: null, clearTag: terminalTag };
     }
     return {
-      hostId: observation.hostId,
-      sessionId: observation.sessionId,
-      title: outcome.title,
-      body: outcome.detail,
-      tag: terminalTag,
-      event: outcome.event,
+      clearTag: terminalTag,
+      notification: {
+        hostId: observation.hostId,
+        sessionId: observation.sessionId,
+        title: outcome.title,
+        body: outcome.detail,
+        tag: terminalTag,
+        event: outcome.event,
+      },
     };
   }
 

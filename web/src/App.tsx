@@ -659,7 +659,7 @@ function App() {
         repositoriesRef.current,
         repositoryRootRef.current,
       ).id;
-      const notification = provider === "codex" ? notificationMonitor.current.observe(
+      const notificationDecision = provider === "codex" ? notificationMonitor.current.observeDecision(
         {
           hostId: activeHostIdRef.current ?? "",
           sessionId: payload.sessionId,
@@ -669,12 +669,16 @@ function App() {
           activeTurnStartedAt: payload.event.startedAt ?? observedSession?.activeTurnStartedAt,
           waitType: payload.event.waitType ?? observedSession?.waitType,
         },
-      ) : null;
-      if (
-        notification &&
-        (document.visibilityState !== "visible" || !document.hasFocus())
-      ) {
-        void showTurnNotification(notification).catch(() => undefined);
+      ) : { notification: null };
+      const displayNotification = document.visibilityState !== "visible" || !document.hasFocus();
+      if (notificationDecision.clearTag) {
+        void clearTurnNotification(notificationDecision.clearTag)
+          .then(() => notificationDecision.notification && displayNotification
+            ? showTurnNotification(notificationDecision.notification)
+            : undefined)
+          .catch(() => undefined);
+      } else if (notificationDecision.notification && displayNotification) {
+        void showTurnNotification(notificationDecision.notification).catch(() => undefined);
       }
       const active = ["working", "waiting"].includes(payload.event.status);
       if (active && !dashboardSubscriptions.current.has(identityKey)) {
