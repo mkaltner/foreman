@@ -450,6 +450,9 @@ internal fun sessionPresenceSyncPending(
 
 internal fun dashboardBackDestination(): Screen = Screen.Overview
 
+internal fun dashboardReturnTarget(target: OverviewReturnTarget?): OverviewReturnTarget? =
+    target?.takeUnless { it.screen == Screen.Dashboard }
+
 internal data class OverviewReturnTarget(
     val hostId: String,
     val screen: Screen,
@@ -1335,9 +1338,24 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun hasOverviewReturnTarget(): Boolean = overviewNavigation.hasReturnTarget()
 
     fun backFromOverview() {
-        val target = overviewNavigation.consume(state.value.activeHostId)
+        val target = consumeOverviewReturnTarget() ?: return
+        navigateToOverviewReturnTarget(target)
+    }
+
+    fun backFromDashboard() {
+        val target = dashboardReturnTarget(consumeOverviewReturnTarget())
+        if (target == null) {
+            showOverview()
+        } else {
+            navigateToOverviewReturnTarget(target)
+        }
+    }
+
+    private fun consumeOverviewReturnTarget(): OverviewReturnTarget? =
+        overviewNavigation.consume(state.value.activeHostId)
             ?.let { validatedOverviewReturnTarget(it, state.value.sessions) }
-            ?: return
+
+    private fun navigateToOverviewReturnTarget(target: OverviewReturnTarget) {
         when (target.screen) {
             Screen.Dashboard -> showDashboard()
             Screen.Detail -> target.sessionId?.let { openSession(it, provider = target.provider) } ?: showSessions()
@@ -1361,7 +1379,6 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun openOverviewHost(hostId: String) {
-        overviewNavigation.clear()
         if (hostId == state.value.activeHostId) {
             showDashboard()
         } else {
@@ -4634,7 +4651,7 @@ private fun HostDashboardScreen(
                 (pendingApprovals.map { it.sessionId } + pendingInputs.map { it.sessionId }).toSet(),
         )
 
-    BackHandler(onBack = viewModel::showOverview)
+    BackHandler(onBack = viewModel::backFromDashboard)
 
     Scaffold(
         topBar = {

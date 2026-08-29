@@ -298,6 +298,11 @@ class ForemanConnectionTest {
     @Test
     fun dashboardDestinationSurvivesReconnectUnlessOpeningAConversation() {
         assertEquals(Screen.Overview, dashboardBackDestination())
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            dashboardReturnTarget(OverviewReturnTarget("host-a", Screen.Sessions)),
+        )
+        assertNull(dashboardReturnTarget(OverviewReturnTarget("host-a", Screen.Dashboard)))
         assertEquals(Screen.Dashboard, reconnectDestination(Screen.Dashboard, null))
         assertEquals(Screen.Sessions, reconnectDestination(Screen.Overview, null))
         assertEquals(Screen.Detail, reconnectDestination(Screen.Dashboard, "thread-1"))
@@ -358,6 +363,31 @@ class ForemanConnectionTest {
             navigation.consume("host-a"),
         )
         assertNull(navigation.consume("host-a"))
+    }
+
+    @Test
+    fun sessionsHomeDashboardBackReturnsDirectlyToSessions() {
+        val navigation = OverviewNavigationState()
+        navigation.capture(Screen.Sessions, "host-a", null)
+
+        val targetAfterOpeningDashboard = dashboardReturnTarget(navigation.consume("host-a"))
+
+        assertEquals(
+            OverviewReturnTarget("host-a", Screen.Sessions),
+            targetAfterOpeningDashboard,
+        )
+        assertFalse(navigation.hasReturnTarget())
+    }
+
+    @Test
+    fun dashboardHomeDashboardBackFallsBackToHomeInsteadOfLooping() {
+        val navigation = OverviewNavigationState()
+        navigation.capture(Screen.Dashboard, "host-a", null)
+
+        val targetAfterOpeningDashboard = dashboardReturnTarget(navigation.consume("host-a"))
+
+        assertNull(targetAfterOpeningDashboard)
+        assertFalse(navigation.hasReturnTarget())
     }
 
     @Test
