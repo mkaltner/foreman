@@ -284,7 +284,7 @@ class Foreman:
         self.restart_scheduled = False
         self.restart_task: asyncio.Task[None] | None = None
         self.timestamp_persistence_pending: set[tuple[str, str]] = set()
-        self.timestamp_persistence_task: asyncio.Task[None] | None = None
+        self.timestamp_persistence_task: asyncio.Task[bool] | None = None
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
         self.stopping = False
@@ -1739,8 +1739,9 @@ class Foreman:
             self.session_timestamp_entries(keys)
         )
 
-    async def persist_session_timestamp_worker(self) -> None:
+    async def persist_session_timestamp_worker(self) -> bool:
         await asyncio.sleep(0)
+        keys: list[tuple[str, str]] = []
         try:
             while self.timestamp_persistence_pending:
                 keys = list(self.timestamp_persistence_pending)
@@ -1750,16 +1751,16 @@ class Foreman:
                     self.state.remember_session_timestamp_batch,
                     entries,
                 )
+            return True
         except Exception:
+            self.timestamp_persistence_pending.update(keys)
             self.diagnostics.record("state.timestamp_persist_failed")
+            return False
         finally:
             self.timestamp_persistence_task = None
-            if self.timestamp_persistence_pending:
-                self.queue_session_timestamp_persistence(
-                    *next(iter(self.timestamp_persistence_pending))
-                )
 
     async def flush_session_timestamp_persistence(self) -> None:
+        retries_remaining = 1
         while self.timestamp_persistence_pending or (
             self.timestamp_persistence_task is not None
             and not self.timestamp_persistence_task.done()
@@ -1771,7 +1772,11 @@ class Foreman:
                 )
                 task = self.timestamp_persistence_task
             if task is not None:
-                await task
+                persisted = await task
+                if not persisted:
+                    if retries_remaining <= 0:
+                        raise RuntimeError("session timestamp persistence failed")
+                    retries_remaining -= 1
 
     def remember_session_settings(
         self, provider: str, session_id: str, settings: dict[str, Any]

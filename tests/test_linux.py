@@ -1939,6 +1939,58 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
                 1_700_000_019,
             )
 
+    async def test_failed_timestamp_batch_is_retried_before_restart(self) -> None:
+        remember = self.app.state.remember_session_timestamp_batch
+        attempts = 0
+
+        def fail_once(entries: list[dict[str, Any]]) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("temporary state write failure")
+            remember(entries)
+
+        with patch.object(
+            self.app.state,
+            "remember_session_timestamp_batch",
+            side_effect=fail_once,
+        ):
+            self.app.remember_session_event(
+                "thread-retry",
+                {
+                    "kind": "activity",
+                    "label": "Responding",
+                    "activityAt": 1_700_000_321,
+                    "observedAt": 1_900_000_000,
+                },
+            )
+            await self.app.flush_session_timestamp_persistence()
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(self.app.timestamp_persistence_pending, set())
+        self.assertEqual(
+            self.app.diagnostics.entries()[0]["category"],
+            "state.timestamp_persist_failed",
+        )
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        projected = restored.projected_session(
+            {
+                **THREAD,
+                "id": "thread-retry",
+                "updatedAt": None,
+                "recencyAt": None,
+                "turns": [],
+            }
+        )
+        self.assertEqual(projected["lastActivity"], 1_700_000_321)
+
     async def test_session_context_snapshot_survives_service_recreation(self) -> None:
         await self.app.codex_event(
             {
