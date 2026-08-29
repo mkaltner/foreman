@@ -2150,6 +2150,67 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovers_access_from_the_latest_persisted_turn_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history_root = Path(directory) / "sessions" / "2026" / "08" / "29"
+            history_root.mkdir(parents=True)
+            routes = {
+                "01a04e4b-2a43-7152-8923-debf05662852": (
+                    {
+                        "approval_policy": "on-request",
+                        "approvals_reviewer": "user",
+                        "sandbox_policy": {"type": "workspace-write"},
+                    },
+                    "full",
+                    {
+                        "approval_policy": "never",
+                        "approvals_reviewer": "user",
+                        "sandbox_policy": {"type": "danger-full-access"},
+                    },
+                ),
+                "01a04a8b-34a8-7920-8b7e-315e585071ad": (
+                    None,
+                    "auto",
+                    {
+                        "approval_policy": "on-request",
+                        "approvals_reviewer": "auto_review",
+                        "sandbox_policy": {"type": "workspace-write"},
+                    },
+                ),
+                "01a045c6-e2f2-7532-acd0-cc5d2e01d430": (
+                    None,
+                    "ask",
+                    {
+                        "approval_policy": "on-request",
+                        "approvals_reviewer": "user",
+                        "sandbox_policy": {"type": "workspace-write"},
+                    },
+                ),
+            }
+            for thread_id, (earlier, expected, latest) in routes.items():
+                events = []
+                if earlier is not None:
+                    events.append({"type": "turn_context", "payload": earlier})
+                events.extend(
+                    [
+                        {"type": "response_item", "payload": {"type": "message"}},
+                        {"type": "turn_context", "payload": latest},
+                    ]
+                )
+                (history_root / f"rollout-test-{thread_id}.jsonl").write_text(
+                    "\n".join(json.dumps(event) for event in events) + "\n",
+                    encoding="utf-8",
+                )
+
+            adapter = Codex(
+                "unused",
+                AsyncMock(),
+                session_history_root=history_root.parent.parent.parent,
+            )
+            for thread_id, (_, expected, _) in routes.items():
+                projected = adapter._with_route({**THREAD, "id": thread_id})
+                self.assertEqual(projected["_foremanAccessLevel"], expected)
+
     async def test_partial_resume_does_not_replace_known_route_with_ask(self) -> None:
         adapter = Codex("unused", AsyncMock())
         adapter._routes["thread-1"] = ("gpt-known", "high")

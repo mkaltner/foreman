@@ -267,6 +267,10 @@ structured-input-waiting turns keep their route immutable until they finish.
 defaults for the Claude model and permission mode without claiming an
 unsupported Claude SDK thread-settings mutation. Route events and refreshes
 carry the revision so a stale read cannot replace a newer acknowledged setting.
+For pre-migration Codex sessions whose app-server projection omits access,
+Foreman may recover the last verified permission profile from the bounded tail
+of that session's persisted Codex turn context, then stores the recovered value
+in the normal server-authoritative session record.
 A `turn.prompt` may include `accessLevel`, `model`, and `reasoningEffort` for
 older clients, but known durable session values remain authoritative and those
 fields only bootstrap values Foreman does not yet know. `turn.steer` keeps the
