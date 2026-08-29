@@ -70,6 +70,7 @@ function mockConnectedState(
     { id: "codex", displayName: "Codex", enabled: true, available: true },
   ],
   read: (session: SessionSummary) => Promise<{ session: SessionSummary }> = async (session) => ({ session }),
+  failedSessionLists: ReadonlySet<"codex" | "claude-code"> = new Set(),
 ): void {
   clientMock.start.mockImplementation(async (
     _endpoint: unknown,
@@ -86,6 +87,9 @@ function mockConnectedState(
       case "approval.list": return { approvals: [] };
       case "input.list": return { inputs: [] };
       case "provider.session.list":
+        if (failedSessionLists.has(payload?.provider as "codex" | "claude-code")) {
+          throw new Error("Provider session list is temporarily unavailable");
+        }
         return { sessions: sessions.filter((session) => (session.provider ?? "codex") === payload?.provider) };
       case "provider.session.read": {
         const session = sessions.find((candidate) =>
@@ -238,10 +242,23 @@ describe("host navigation history", () => {
     expect(window.location.search).toContain(`host=${work.id}`);
   });
 
-  it("clears missing or disabled memory after authoritative synchronization", async () => {
+  it("clears a missing session after an authoritative synchronization", async () => {
     saveHostRegistry({ hosts: [home], activeHostId: home.id });
-    saveRememberedSession({ hostId: home.id, provider: "claude-code", sessionId: "gone" });
-    window.history.replaceState(null, "", `/?host=${home.id}`);
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: "gone" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([]);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    await waitFor(() => expect(loadRememberedSession(home.id)).toBeNull());
+    expect(window.location.pathname).toBe("/sessions");
+  });
+
+  it("clears memory when its provider is disabled", async () => {
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "claude-code", sessionId: "disabled" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
     mockConnectedState([], [
       { id: "codex", displayName: "Codex", enabled: true, available: true },
       { id: "claude-code", displayName: "Claude Code", enabled: false, available: true },
@@ -251,7 +268,6 @@ describe("host navigation history", () => {
 
     await screen.findByRole("heading", { name: "Sessions" });
     await waitFor(() => expect(loadRememberedSession(home.id)).toBeNull());
-    expect(window.location.pathname).toBe("/sessions");
   });
 
   it("keeps valid memory after transient read failure", async () => {
@@ -265,6 +281,40 @@ describe("host navigation history", () => {
 
     await screen.findByRole("heading", { name: "Sessions" });
     expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id);
+  });
+
+  it("does not erase memory during temporary provider unavailability", async () => {
+    const session: SessionSummary = { id: "outage", repository: "/repo", title: "Outage", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    mockConnectedState([session]);
+
+    render(<App />);
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "provider.event",
+      payload: { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: false }] },
+    }));
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id);
+  });
+
+  it("keeps other providers synchronized when one session list temporarily fails", async () => {
+    const codex: SessionSummary = { id: "codex-ok", repository: "/repo", title: "Codex remains", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "claude-code", sessionId: "claude-retry" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([codex], [
+      { id: "codex", displayName: "Codex", enabled: true, available: true },
+      { id: "claude-code", displayName: "Claude Code", enabled: true, available: true },
+    ], async (session) => ({ session }), new Set(["claude-code"]));
+
+    render(<App />);
+
+    await screen.findByText(codex.title);
+    expect(loadRememberedSession(home.id)?.sessionId).toBe("claude-retry");
   });
 
   it("clears remembered identity when the authoritative lifecycle removes the session", async () => {
@@ -290,7 +340,7 @@ describe("host navigation history", () => {
     expect(window.location.pathname).toBe("/sessions");
   });
 
-  it("lets durable list, Dashboard, and detail URLs override remembered entry", async () => {
+  it("resumes memory from /sessions while Dashboard and detail URLs remain explicit", async () => {
     const remembered: SessionSummary = { id: "remembered", repository: "/repo", title: "Remembered", status: "idle", messages: [] };
     const linked: SessionSummary = { ...remembered, id: "linked", title: "Linked" };
     saveHostRegistry({ hosts: [home], activeHostId: home.id });
@@ -298,13 +348,9 @@ describe("host navigation history", () => {
     mockConnectedState([remembered, linked]);
 
     window.history.replaceState(null, "", `/sessions?host=${home.id}`);
-    const listView = render(<App />);
-    await screen.findByRole("heading", { name: "Sessions" });
-    expect(clientMock.request).not.toHaveBeenCalledWith(
-      "provider.session.read",
-      expect.objectContaining({ sessionId: remembered.id }),
-    );
-    listView.unmount();
+    const resumedView = render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(remembered.title));
+    resumedView.unmount();
 
     window.history.replaceState(null, "", `/dashboard?host=${home.id}`);
     const dashboardView = render(<App />);

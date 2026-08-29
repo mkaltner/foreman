@@ -465,9 +465,17 @@ internal fun rememberedSessionForEntry(
     authoritative: Boolean,
     providers: List<ProviderInfo>,
     sessions: List<SessionSummary>,
+    nonAuthoritativeProviders: Set<String> = emptySet(),
 ): RememberedSessionTarget? =
-    target?.takeIf {
-        !authoritative || restorableSessionSummary(it, providers, sessions) != null
+    target?.takeIf { remembered ->
+        if (!authoritative) return@takeIf true
+        val provider = providers.firstOrNull { it.id == remembered.provider }
+            ?: return@takeIf false
+        provider.enabled && (
+            !provider.available ||
+                provider.id in nonAuthoritativeProviders ||
+                sessions.any { it.matches(remembered.provider, remembered.sessionId) }
+        )
     }
 
 internal fun shouldStopMonitoringForNotificationPermission(
@@ -1101,6 +1109,7 @@ internal fun storedComposerDrafts(
 
 private data class SyncSnapshot(
     val sessions: List<SessionSummary>,
+    val nonAuthoritativeSessionProviders: Set<String>,
     val providers: List<ProviderInfo>,
     val accountUsage: AccountUsage,
     val repositories: List<RepositoryInfo>,
@@ -1255,6 +1264,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var sessionDiscoveryJob: Job? = null
     private var restorationProvider: String = initiallyRememberedSession?.provider ?: PROVIDER_CODEX
     private var restorationSessionId: String? = initiallyRememberedSession?.sessionId
+    private var nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
     private var sessionOpenGeneration = 0L
     private var searchJob: Job? = null
     private var workspaceFileJob: Job? = null
@@ -1341,10 +1351,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         it.id == sessionProvider(session) && it.enabled && it.available
                     }
                 }
-                val rememberedOpenable = providers.any {
-                    it.id == restorationProvider && it.enabled && it.available
+                val rememberedEnabled = providers.any {
+                    it.id == restorationProvider && it.enabled
                 }
-                if (restorationSessionId != null && !rememberedOpenable) clearRememberedSession()
+                if (restorationSessionId != null && !rememberedEnabled) clearRememberedSession()
                 state.update {
                     it.copy(
                         providers = providers,
@@ -1432,6 +1442,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             authoritative = current.connected && !current.loading,
             providers = current.providers,
             sessions = current.sessions,
+            nonAuthoritativeProviders = nonAuthoritativeSessionProviders,
         )
         if (remembered == null) {
             if (target != null) clearRememberedSession()
@@ -2125,6 +2136,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
                 restorationProvider = remembered?.provider ?: PROVIDER_CODEX
                 restorationSessionId = remembered?.sessionId
+                nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
                 hostNavigation.choose(saved.id, Screen.Sessions)
                 val filters = restored.searchFilters()
                 hosts.updateConnection(
@@ -2476,6 +2488,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         )
         restorationProvider = remembered?.provider ?: PROVIDER_CODEX
         restorationSessionId = remembered?.sessionId
+        nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
         val choice = requestedChoice ?: hostNavigation.choose(
             hostId = saved.id,
             screen = restorationDestination(remembered),
@@ -3011,7 +3024,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         if (codexAvailable) client.request("input.list") else null
                     }
                 val codexSessionsRequest = async {
-                    if (codexAvailable) listSessions(PROVIDER_CODEX) else emptyList()
+                    if (codexAvailable) runCatching { listSessions(PROVIDER_CODEX) }
+                    else Result.success(emptyList())
                 }
                 val repositoriesRequest = async { client.request("repository.list") }
                 val serviceStatusRequest = async { client.request("service.status") }
@@ -3034,13 +3048,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             null
                         }
                     }
-                val claudeSessions =
+                val claudeSessionsResult =
                     if (claudeAvailable) {
-                        listSessions(PROVIDER_CLAUDE_CODE)
+                        runCatching { listSessions(PROVIDER_CLAUDE_CODE) }
                     } else {
-                        emptyList()
+                        Result.success(emptyList())
                     }
-                val sessions = codexSessionsRequest.await() + claudeSessions
+                val codexSessionsResult = codexSessionsRequest.await()
+                val sessions = codexSessionsResult.getOrDefault(emptyList()) +
+                    claudeSessionsResult.getOrDefault(emptyList())
+                val nonAuthoritativeSessionProviders = buildSet {
+                    if (codexAvailable && codexSessionsResult.isFailure) add(PROVIDER_CODEX)
+                    if (claudeAvailable && claudeSessionsResult.isFailure) add(PROVIDER_CLAUDE_CODE)
+                }
                 val claudeModels =
                     if (claudeAvailable) {
                         runCatching {
@@ -3089,6 +3109,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         ?: emptyList()
                 SyncSnapshot(
                     sessions = sessions,
+                    nonAuthoritativeSessionProviders = nonAuthoritativeSessionProviders,
                     providers = providers,
                     accountUsage = accountUsage,
                     repositories = repositories,
@@ -3110,9 +3131,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         var authoritativeSelectionInvalid = false
         val selected = selectedSessionId?.let { sessionId ->
             val target = rememberedSessionTarget(selectedProvider, sessionId)
-            val listed = target?.let { restorableSessionSummary(it, providers, sessions) }
-            if (listed == null) {
+            val provider = providers.firstOrNull { it.id == selectedProvider }
+            val validated = rememberedSessionForEntry(
+                target,
+                authoritative = true,
+                providers = providers,
+                sessions = sessions,
+                nonAuthoritativeProviders = snapshot.nonAuthoritativeSessionProviders,
+            )
+            val providerSessionsAuthoritative = provider?.available == true &&
+                selectedProvider !in snapshot.nonAuthoritativeSessionProviders
+            val listed = sessions.firstOrNull { it.matches(selectedProvider, sessionId) }
+            if (validated == null) {
                 authoritativeSelectionInvalid = true
+                null
+            } else if (!providerSessionsAuthoritative || listed == null) {
+                selectedReadError = "${providerDisplayName(selectedProvider)} sessions are temporarily unavailable"
                 null
             } else {
                 runCatching { readSession(selectedProvider, sessionId) }.getOrElse { error ->
@@ -3124,6 +3158,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             }
         }
         if (state.value.activeHostId != synchronizedHostId) return
+        nonAuthoritativeSessionProviders = snapshot.nonAuthoritativeSessionProviders
         val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
         state.update {
             it.withSynchronizedSessions(
@@ -3162,7 +3197,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
         }
         if (applySelection && selectedSessionId != null && selected == null) {
-            if (authoritativeSelectionInvalid) clearRememberedSession()
+            if (
+                authoritativeSelectionInvalid &&
+                restorationSessionId == selectedSessionId &&
+                restorationProvider == selectedProvider
+            ) clearRememberedSession()
             synchronizedHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
         }
         val validIds = sessions.mapTo(mutableSetOf()) { it.providerKey() }
@@ -3802,8 +3841,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             } ?: return
             val claudeAvailable =
                 providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }
+            val enabledProviders = providers.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
             val openableProviders = providers.filter { it.enabled && it.available }.mapTo(mutableSetOf()) { it.id }
-            if (restorationSessionId != null && restorationProvider !in openableProviders) {
+            val previousProviders = state.value.providers.associateBy { it.id }
+            val invalidatedProviders = providers.filter { provider ->
+                provider.enabled && (
+                    !provider.available ||
+                        previousProviders[provider.id]?.available != provider.available
+                )
+            }.mapTo(mutableSetOf()) { it.id }
+            nonAuthoritativeSessionProviders =
+                (nonAuthoritativeSessionProviders + invalidatedProviders).intersect(enabledProviders)
+            if (restorationSessionId != null && restorationProvider !in enabledProviders) {
                 clearRememberedSession()
             }
             state.update { current ->

@@ -338,6 +338,23 @@ class ForemanConnectionTest {
         assertNull(restorableSessionSummary(target, providers.map {
             if (it.id == PROVIDER_CLAUDE_CODE) it.copy(enabled = false) else it
         }, listOf(session)))
+        val unavailableProviders = providers.map {
+            if (it.id == PROVIDER_CLAUDE_CODE) it.copy(available = false) else it
+        }
+        assertEquals(
+            target,
+            rememberedSessionForEntry(target, true, unavailableProviders, emptyList()),
+        )
+        assertEquals(
+            target,
+            rememberedSessionForEntry(
+                target,
+                true,
+                providers,
+                emptyList(),
+                setOf(PROVIDER_CLAUDE_CODE),
+            ),
+        )
         assertNull(rememberedSessionTarget("future-provider", "thread"))
     }
 

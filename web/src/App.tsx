@@ -230,8 +230,9 @@ function App() {
     ? requestedHostId
     : initialRegistry.activeHostId;
   const rememberedAtLaunch = loadRememberedSession(initialHostId);
+  const normalizedLaunchPath = window.location.pathname.replace(/\/+$/, "") || "/";
   const initialRoute = useRef<WebRoute>(
-    (window.location.pathname.replace(/\/+$/, "") || "/") === "/" && rememberedAtLaunch
+    (normalizedLaunchPath === "/" || normalizedLaunchPath === "/sessions") && rememberedAtLaunch
       ? {
         view: "detail",
         provider: rememberedAtLaunch.provider,
@@ -314,6 +315,10 @@ function App() {
   const lastBackendSearchKey = useRef("");
   const searchGeneration = useRef(0);
   const sessionsRef = useRef<SessionSummary[]>([]);
+  const sessionListAuthoritativeRef = useRef<Record<ProviderId, boolean>>({
+    codex: false,
+    "claude-code": false,
+  });
   const repositoriesRef = useRef<RepositoryInfo[]>([]);
   const repositoryRootRef = useRef("");
   const currentRef = useRef<SessionSummary | null>(null);
@@ -330,6 +335,7 @@ function App() {
   const presenceProjectionGuardRef = useRef(new SessionPresenceProjectionGuard());
   const sessionOpenGenerationRef = useRef(0);
   const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
+  const enterSessionsRef = useRef<(replace?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
   const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
 
@@ -660,6 +666,12 @@ function App() {
     if (message.type === "provider.event") {
       const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
       if (Array.isArray(nextProviders)) {
+        sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
+        const enabled = new Set(
+          nextProviders
+            .filter((provider) => providerEnabled(provider) && isProviderId(provider.id))
+            .map(({ id }) => id),
+        );
         const openable = new Set(
           nextProviders
             .filter((provider) => providerEnabled(provider) && provider.available && isProviderId(provider.id))
@@ -675,7 +687,7 @@ function App() {
         setCurrent((previous) => previous && openable.has(sessionProvider(previous)) ? previous : null);
         const hostId = activeHostIdRef.current;
         const remembered = loadRememberedSession(hostId);
-        if (remembered && !openable.has(remembered.provider)) clearRememberedSession(hostId);
+        if (remembered && !enabled.has(remembered.provider)) clearRememberedSession(hostId);
         if (viewRef.current === "detail" && !openable.has(selectedProviderRef.current)) {
           sessionOpenGenerationRef.current += 1;
           selectedIdRef.current = null;
@@ -860,6 +872,7 @@ function App() {
     focusedSessionsRef.current = new Set();
     publishedPresenceRef.current = undefined;
     sessionsRef.current = [];
+    sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
     currentRef.current = null;
     selectedIdRef.current = null;
     selectedProviderRef.current = "codex";
@@ -970,7 +983,7 @@ function App() {
       const claudeAvailable = providerResult.providers.some(
         (provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available,
       );
-      const [approvalResult, inputResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
+      const [approvalResult, inputResult, codexSessionRequest, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
         codexAvailable
           ? client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list")
           : Promise.resolve({ approvals: [] as ApprovalRequest[] }),
@@ -979,7 +992,9 @@ function App() {
           : Promise.resolve({ inputs: [] as InputRequest[] }),
         codexAvailable
           ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })
-          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+            .then((result) => ({ result, authoritative: true }))
+            .catch(() => ({ result: { sessions: [] as SessionSummary[] }, authoritative: false }))
+          : Promise.resolve({ result: { sessions: [] as SessionSummary[] }, authoritative: false }),
         codexAvailable
           ? client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list")
           : Promise.resolve({ models: [] as ModelInfo[] }),
@@ -992,20 +1007,32 @@ function App() {
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
-      const [claudeSessionResult, claudeModelResult, claudePermissionResult] = claudeAvailable
+      const [claudeSessionRequest, claudeModelResult, claudePermissionResult] = claudeAvailable
         ? await Promise.all([
-          client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" }),
+          client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" })
+            .then((result) => ({ result, authoritative: true }))
+            .catch(() => ({ result: { sessions: [] as SessionSummary[] }, authoritative: false })),
           client.request<{ models: Array<{ id: string; displayName: string; description?: string }> } & Record<string, unknown>>("provider.model.list", { provider: "claude-code" }),
           client.request<{ modes: PermissionModeInfo[] } & Record<string, unknown>>("provider.permission.list", { provider: "claude-code" }),
         ])
-        : [{ sessions: [] as SessionSummary[] }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
+        : [{ result: { sessions: [] as SessionSummary[] }, authoritative: false }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
       if (activeHostIdRef.current !== hostId) return;
+      sessionListAuthoritativeRef.current = {
+        codex: codexSessionRequest.authoritative,
+        "claude-code": claudeSessionRequest.authoritative,
+      };
       setApprovals(approvalResult.approvals);
       setInputs(inputResult.inputs);
       setProviders(providerResult.providers);
       const incoming = [
-        ...codexSessionResult.sessions.map((session) => ({ ...session, provider: "codex" as const })),
-        ...claudeSessionResult.sessions.map((session) => ({ ...session, provider: "claude-code" as const })),
+        ...(codexSessionRequest.authoritative
+          ? codexSessionRequest.result.sessions
+          : sessionsRef.current.filter((session) => sessionProvider(session) === "codex"))
+          .map((session) => ({ ...session, provider: "codex" as const })),
+        ...(claudeSessionRequest.authoritative
+          ? claudeSessionRequest.result.sessions
+          : sessionsRef.current.filter((session) => sessionProvider(session) === "claude-code"))
+          .map((session) => ({ ...session, provider: "claude-code" as const })),
       ];
       const reconciled = reconcileSessionSummaries(sessionsRef.current, incoming);
       sessionsRef.current = reconciled;
@@ -1094,14 +1121,21 @@ function App() {
           setView("sessions");
           updateRoute({ view: "sessions" }, true);
         };
-        const providerAvailable = providerResult.providers.some(
-          (provider) => provider.id === reopenProvider && providerEnabled(provider) && provider.available,
-        );
+        const provider = providerResult.providers.find((candidate) => candidate.id === reopenProvider);
+        const providerStillEnabled = provider !== undefined && providerEnabled(provider);
+        const providerAvailable = providerStillEnabled && provider.available;
+        const sessionListAuthoritative = reopenProvider === "codex"
+          ? codexSessionRequest.authoritative
+          : claudeSessionRequest.authoritative;
         const summary = reconciled.find(
           (session) => session.id === reopenId && sessionProvider(session) === reopenProvider,
         );
-        if (!providerAvailable || !summary) {
+        if (!providerStillEnabled || (providerAvailable && sessionListAuthoritative && !summary)) {
           fallbackFromReopen(true);
+          return;
+        }
+        if (!providerAvailable || !sessionListAuthoritative || !summary) {
+          fallbackFromReopen(false);
           return;
         }
         try {
@@ -1275,10 +1309,10 @@ function App() {
   const activateHost = useCallback((hostId: string, route?: WebRoute, replace = false, filtersSearch?: string) => {
     const registry = hostRegistryRef.current;
     if (!registry.hosts.some((host) => host.id === hostId)) return;
-    const rememberedSession = route ? null : loadRememberedSession(hostId);
-    const destination: WebRoute = route ?? (rememberedSession
+    const rememberedSession = !route || route.view === "sessions" ? loadRememberedSession(hostId) : null;
+    const destination: WebRoute = rememberedSession
       ? { view: "detail", provider: rememberedSession.provider, sessionId: rememberedSession.sessionId }
-      : { view: "sessions" });
+      : route ?? { view: "sessions" };
     const switching = activeHostIdRef.current !== hostId;
     if (switching) {
       client.disconnect();
@@ -1317,6 +1351,7 @@ function App() {
       const route = parseWebRoute(window.location.pathname);
       const hostId = hostIdFromUrl();
       if (hostId) activateHost(hostId, route, true, window.location.search);
+      else if (route.view === "sessions") enterSessionsRef.current(true);
       else restoreView(route, connectedRef.current);
     };
     window.addEventListener("popstate", restoreRoute);
@@ -1345,14 +1380,21 @@ function App() {
       return;
     }
     const authoritative = connectedRef.current && providers.length > 0;
-    const providerAvailable = providers.some(
-      (provider) => provider.id === remembered.provider && providerEnabled(provider) && provider.available,
-    );
+    const provider = providers.find((candidate) => candidate.id === remembered.provider);
+    const providerStillEnabled = provider !== undefined && providerEnabled(provider);
+    const providerAvailable = providerStillEnabled && provider.available;
     const sessionAvailable = sessionsRef.current.some(
       (session) => session.id === remembered.sessionId && sessionProvider(session) === remembered.provider,
     );
-    if (authoritative && (!providerAvailable || !sessionAvailable)) {
+    if (authoritative && (
+      !providerStillEnabled ||
+      (providerAvailable && sessionListAuthoritativeRef.current[remembered.provider] && !sessionAvailable)
+    )) {
       clearRememberedSession(hostId);
+      showSessionList(replace);
+      return;
+    }
+    if (authoritative && (!providerAvailable || !sessionAvailable)) {
       showSessionList(replace);
       return;
     }
@@ -1364,6 +1406,7 @@ function App() {
     restoreView(route, connectedRef.current);
     updateRoute(route, replace);
   };
+  enterSessionsRef.current = enterSessions;
 
   const showSettings = () => {
     viewRef.current = "settings";
