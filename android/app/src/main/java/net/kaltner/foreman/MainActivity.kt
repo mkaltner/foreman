@@ -478,6 +478,14 @@ internal fun rememberedSessionForEntry(
         )
     }
 
+internal fun retainedSessionPreferenceIds(
+    listedSessionIds: Set<String>,
+    persistedSessionIds: Set<String>,
+    nonAuthoritativeProviders: Set<String>,
+): Set<String> = listedSessionIds + persistedSessionIds.filterTo(mutableSetOf()) { key ->
+    parseProviderSessionKey(key)?.first in nonAuthoritativeProviders
+}
+
 internal fun shouldStopMonitoringForNotificationPermission(
     monitoringEnabled: Boolean,
     permissionGranted: Boolean,
@@ -3204,7 +3212,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             ) clearRememberedSession()
             synchronizedHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
         }
-        val validIds = sessions.mapTo(mutableSetOf()) { it.providerKey() }
+        val validIds = retainedSessionPreferenceIds(
+            listedSessionIds = sessions.mapTo(mutableSetOf()) { it.providerKey() },
+            persistedSessionIds = state.value.pinnedSessionIds + state.value.hiddenSessionIds,
+            nonAuthoritativeProviders = snapshot.nonAuthoritativeSessionProviders,
+        )
         preferences.retainSessionIds(validIds)
         state.update {
             it.copy(

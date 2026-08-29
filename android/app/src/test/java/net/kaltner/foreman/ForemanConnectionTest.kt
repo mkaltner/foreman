@@ -369,6 +369,22 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun failedProviderListsDoNotEraseItsPersistedSessionPreferences() {
+        val listedCodex = providerSessionKey(PROVIDER_CODEX, "listed")
+        val staleCodex = providerSessionKey(PROVIDER_CODEX, "stale")
+        val retainedClaude = providerSessionKey(PROVIDER_CLAUDE_CODE, "retry")
+
+        assertEquals(
+            setOf(listedCodex, retainedClaude),
+            retainedSessionPreferenceIds(
+                listedSessionIds = setOf(listedCodex),
+                persistedSessionIds = setOf(staleCodex, retainedClaude),
+                nonAuthoritativeProviders = setOf(PROVIDER_CLAUDE_CODE),
+            ),
+        )
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),
