@@ -28,6 +28,11 @@ data class VisibleSession(
     val hidden: Boolean,
 )
 
+data class RepositorySessionGroup(
+    val repository: SessionRepositoryOption,
+    val sessions: List<VisibleSession>,
+)
+
 internal fun sessionRepositoryIdentity(
     path: String,
     repositories: List<RepositoryInfo>,
@@ -56,6 +61,28 @@ internal fun sessionRepositoryOptions(
     sessions.map { sessionRepositoryIdentity(it.repository, repositories, repositoryRoot) }
         .distinctBy { it.id }
         .sortedBy { it.label.lowercase() }
+
+internal fun repositorySessionGroups(
+    sessions: List<VisibleSession>,
+    repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
+): List<RepositorySessionGroup> {
+    val groups = linkedMapOf<String, Pair<SessionRepositoryOption, MutableList<VisibleSession>>>()
+    sessions.forEach { session ->
+        val repository = sessionRepositoryIdentity(session.session.repository, repositories, repositoryRoot)
+        groups.getOrPut(repository.id) { repository to mutableListOf() }.second += session
+    }
+    return groups.values.map { (repository, groupedSessions) ->
+        RepositorySessionGroup(
+            repository,
+            groupedSessions.withIndex().sortedWith(
+                compareBy<IndexedValue<VisibleSession>> { repositoryActivityRank(it.value.session) }
+                    .thenByDescending { it.value.pinned }
+                    .thenBy { it.index },
+            ).map { it.value },
+        )
+    }
+}
 
 internal fun filterSessions(
     sessions: List<SessionSummary>,
@@ -159,6 +186,12 @@ private fun sessionStatusMatches(actual: String, selected: SessionSearchStatus):
     SessionSearchStatus.Completed -> actual == "completed" || actual == "idle"
     SessionSearchStatus.Failed -> actual == "failed"
     SessionSearchStatus.Interrupted -> actual == "interrupted"
+}
+
+private fun repositoryActivityRank(session: SessionSummary): Int = when {
+    session.status == "working" && !session.attention && session.source != "external" -> 0
+    session.status == "waiting" || session.attention -> 1
+    else -> 2
 }
 
 private fun parseLocalDate(value: String, end: Boolean): Long? {

@@ -510,6 +510,7 @@ class ForemanConnectionTest {
         assertEquals(true, composerKeyboardOptions.autoCorrectEnabled)
         assertEquals(KeyboardType.Text, composerKeyboardOptions.keyboardType)
         assertTrue(UiPreferences().hapticsEnabled)
+        assertTrue(UiPreferences().groupSessionsByRepository)
     }
 
     @Test
@@ -1528,6 +1529,28 @@ class ForemanConnectionTest {
             "",
         )
         assertEquals(listOf("waiting"), hidden.map { it.session.id })
+    }
+
+    @Test
+    fun repositoryGroupsBubbleActiveSessionsAheadOfPinnedHistory() {
+        val repositories = listOf(RepositoryInfo("foreman", "foreman", "foreman", "main", false))
+        val sessions = listOf(
+            SessionSummary("done", "/projects/foreman", "Done", "idle", 300),
+            SessionSummary("active", "/projects/foreman/src", "Active", "working", 200),
+            SessionSummary("other", "/workspace/other", "Other", "idle", 100),
+        )
+        val visible = filterSessions(
+            sessions,
+            SessionSearchFilters(),
+            setOf("done"),
+            emptySet(),
+            emptyList(),
+            repositories,
+            "/projects",
+        )
+        val groups = repositorySessionGroups(visible, repositories, "/projects")
+        assertEquals(listOf("Repository: foreman", "Workspace: /workspace/other"), groups.map { it.repository.label })
+        assertEquals(listOf("active", "done"), groups.first().sessions.map { it.session.id })
     }
 
     @Test

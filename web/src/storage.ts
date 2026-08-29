@@ -43,6 +43,7 @@ export interface Appearance {
   theme: ThemeMode;
   accent: AccentColor;
   activityDetail: ActivityDetail;
+  groupSessionsByRepository: boolean;
 }
 
 const LEGACY_HOST_KEY = "foreman.host.v1";
@@ -65,6 +66,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   theme: "system",
   accent: "purple",
   activityDetail: "focused",
+  groupSessionsByRepository: true,
 };
 export const ACCENTS: AccentColor[] = [
   "purple",
@@ -197,6 +199,7 @@ export function loadAppearance(hostId?: string | null, storage: Storage = localS
         ? (parsed?.accent as AccentColor)
         : DEFAULT_APPEARANCE.accent,
       activityDetail: parsed?.activityDetail === "full" ? "full" : "focused",
+      groupSessionsByRepository: parsed?.groupSessionsByRepository !== false,
     };
   } catch {
     return DEFAULT_APPEARANCE;

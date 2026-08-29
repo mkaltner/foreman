@@ -93,11 +93,11 @@ describe("storage, appearance, and interaction helpers", () => {
   });
 
   it("persists theme and accent with safe defaults", () => {
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
-    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full" });
-    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
+    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
+    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
     localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
   });
 
   it("persists bounded browser-local dashboard presentation choices", () => {

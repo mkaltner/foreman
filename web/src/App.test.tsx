@@ -215,6 +215,11 @@ describe("Claude session deletion", () => {
     expect(onHide).toHaveBeenCalledWith("claude-code", "claude-session");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(onAction).toHaveBeenCalledWith("delete", session);
+    const repositoryGroup = screen.getByRole("button", { name: /Workspace: \/projects\/foreman/ });
+    expect(repositoryGroup).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(repositoryGroup);
+    expect(repositoryGroup).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 });
 

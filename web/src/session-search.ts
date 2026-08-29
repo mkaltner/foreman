@@ -29,6 +29,11 @@ export interface VisibleSession {
   hidden: boolean;
 }
 
+export interface RepositorySessionGroup {
+  repository: RepositoryFilterOption;
+  sessions: VisibleSession[];
+}
+
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
   repository: "",
@@ -70,6 +75,30 @@ export function repositoryFilterOptions(
     options.set(option.id, option);
   });
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+export function repositorySessionGroups(
+  sessions: VisibleSession[],
+  repositories: RepositoryInfo[],
+  repositoryRoot: string,
+): RepositorySessionGroup[] {
+  const groups = new Map<string, RepositorySessionGroup>();
+  sessions.forEach((session) => {
+    const repository = repositoryIdentity(session.session.repository, repositories, repositoryRoot);
+    const group = groups.get(repository.id);
+    if (group) group.sessions.push(session);
+    else groups.set(repository.id, { repository, sessions: [session] });
+  });
+  return [...groups.values()].map((group) => ({
+    ...group,
+    sessions: group.sessions
+      .map((session, index) => ({ session, index }))
+      .sort((left, right) =>
+        repositoryActivityRank(left.session.session) - repositoryActivityRank(right.session.session)
+        || Number(right.session.pinned) - Number(left.session.pinned)
+        || left.index - right.index)
+      .map(({ session }) => session),
+  }));
 }
 
 export function dateBounds(
@@ -204,6 +233,12 @@ function compareVisible(
   const attention = (item: VisibleSession) => item.session.status === "waiting" || item.session.attention
     ? 0 : item.session.status === "working" ? 1 : 2;
   return attention(left) - attention(right) || recent(left, right) || left.session.id.localeCompare(right.session.id);
+}
+
+function repositoryActivityRank(session: SessionSummary): number {
+  if (session.status === "working" && !session.attention && session.source !== "external") return 0;
+  if (session.status === "waiting" || session.attention) return 1;
+  return 2;
 }
 
 function identitySetHas(values: ReadonlySet<string>, session: SessionSummary): boolean {

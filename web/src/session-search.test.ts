@@ -6,6 +6,7 @@ import {
   filterSessions,
   parseSessionFilters,
   repositoryFilterOptions,
+  repositorySessionGroups,
   sessionFiltersSearch,
 } from "./session-search";
 
@@ -59,6 +60,16 @@ describe("session discovery semantics", () => {
   it("sorts pins before attention, active work, and recency", () => {
     const visible = filterSessions(sessions, DEFAULT_SESSION_FILTERS, new Set(["done"]), new Set(), [], repositories, "/projects");
     expect(visible.map(({ session }) => session.id)).toEqual(["done", "waiting", "active"]);
+  });
+
+  it("groups repositories while bubbling active sessions ahead of pinned history", () => {
+    const visible = filterSessions(sessions, DEFAULT_SESSION_FILTERS, new Set(["done"]), new Set(), [], repositories, "/projects");
+    const groups = repositorySessionGroups(visible, repositories, "/projects");
+    expect(groups.map(({ repository }) => repository.label)).toEqual([
+      "Repository: foreman",
+      "Workspace: /home/operator",
+    ]);
+    expect(groups[0].sessions.map(({ session }) => session.id)).toEqual(["active", "done"]);
   });
 
   it("maps Completed to idle and identifies canonical repositories and workspaces", () => {
