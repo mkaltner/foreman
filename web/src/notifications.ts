@@ -25,6 +25,11 @@ export interface TurnObservation {
   waitType?: "approval" | "input" | null;
 }
 
+export interface TurnNotificationDecision {
+  notification: TurnNotification | null;
+  clearTag?: string;
+}
+
 export type BrowserNotificationState =
   | "unsupported"
   | "insecure"
@@ -69,7 +74,6 @@ export class TurnNotificationMonitor {
   private attentionTurns = new Set<string>();
   private preferences = DEFAULT_NOTIFICATION_PREFERENCES;
   private emitLongRunning: LongRunningEmitter = () => undefined;
-  private clearDisplayed: (tag: string) => void = () => undefined;
 
   constructor(
     private readonly now: () => number = () => Date.now(),
@@ -82,11 +86,9 @@ export class TurnNotificationMonitor {
   configure(
     preferences: NotificationPreferences,
     emitLongRunning: LongRunningEmitter,
-    clearDisplayed: (tag: string) => void = () => undefined,
   ): void {
     this.preferences = preferences;
     this.emitLongRunning = emitLongRunning;
-    this.clearDisplayed = clearDisplayed;
     for (const active of this.active.values()) this.scheduleLongRunning(active);
   }
 
@@ -97,37 +99,45 @@ export class TurnNotificationMonitor {
   }
 
   observe(observation: TurnObservation): TurnNotification | null {
+    return this.observeDecision(observation).notification;
+  }
+
+  observeDecision(observation: TurnObservation): TurnNotificationDecision {
     if (observation.status === "working") {
       this.trackWorking(observation);
-      return null;
+      return { notification: null };
     }
     const active = this.active.get(observation.sessionId);
-    if (!active) return null;
+    if (!active) return { notification: null };
     if (observation.status === "waiting") {
       this.clearTimer(active);
       const attentionKey = active.turnKey;
-      if (this.attentionTurns.has(attentionKey)) return null;
+      if (this.attentionTurns.has(attentionKey)) return { notification: null };
       this.attentionTurns.add(attentionKey);
-      if (!shouldNotify("approval", this.preferences, observation.repositoryId, new Date(this.now()))) return null;
-      return attentionNotification(observation, attentionKey);
+      if (!shouldNotify("approval", this.preferences, observation.repositoryId, new Date(this.now()))) {
+        return { notification: null };
+      }
+      return { notification: attentionNotification(observation, attentionKey) };
     }
     const outcome = OUTCOMES[observation.status];
-    if (!outcome) return null;
+    if (!outcome) return { notification: null };
     this.clearTimer(active);
     this.active.delete(observation.sessionId);
     this.attentionTurns.delete(active.turnKey);
     const terminalTag = `foreman-turn-${observation.hostId}-${observation.sessionId}`;
-    this.clearDisplayed(terminalTag);
     if (!shouldNotify(outcome.event, this.preferences, active.observation.repositoryId, new Date(this.now()))) {
-      return null;
+      return { notification: null, clearTag: terminalTag };
     }
     return {
-      hostId: observation.hostId,
-      sessionId: observation.sessionId,
-      title: outcome.title,
-      body: outcome.detail,
-      tag: terminalTag,
-      event: outcome.event,
+      clearTag: terminalTag,
+      notification: {
+        hostId: observation.hostId,
+        sessionId: observation.sessionId,
+        title: outcome.title,
+        body: outcome.detail,
+        tag: terminalTag,
+        event: outcome.event,
+      },
     };
   }
 
@@ -236,6 +246,35 @@ export async function requestBrowserNotifications(): Promise<boolean> {
 
 const displayedNotifications = new Map<string, Notification>();
 
+export type NotificationDeliveryMethod = "page" | "service-worker";
+
+async function displayBrowserNotification(
+  title: string,
+  options: NotificationOptions,
+  onClick: () => void,
+): Promise<NotificationDeliveryMethod> {
+  const tag = options.tag ?? title;
+  try {
+    displayedNotifications.get(tag)?.close();
+    const displayed = new Notification(title, options);
+    displayedNotifications.set(tag, displayed);
+    displayed.onclick = () => {
+      onClick();
+      displayed.close();
+      displayedNotifications.delete(tag);
+    };
+    return "page";
+  } catch (pageError) {
+    const registration = await navigator.serviceWorker?.getRegistration();
+    if (registration && typeof registration.showNotification === "function") {
+      await registration.showNotification(title, options);
+      return "service-worker";
+    }
+    if (pageError instanceof Error) throw pageError;
+    throw new Error("The browser rejected both notification delivery methods.");
+  }
+}
+
 export async function showTurnNotification(notification: TurnNotification): Promise<void> {
   if (browserNotificationState() !== "granted") return;
   const options: NotificationOptions = {
@@ -243,22 +282,28 @@ export async function showTurnNotification(notification: TurnNotification): Prom
     tag: notification.tag,
     data: { hostId: notification.hostId, sessionId: notification.sessionId },
   };
-  const registration = await navigator.serviceWorker?.getRegistration();
-  if (registration) {
-    await registration.showNotification(notification.title, options);
-    return;
-  }
-  displayedNotifications.get(notification.tag)?.close();
-  const displayed = new Notification(notification.title, options);
-  displayedNotifications.set(notification.tag, displayed);
-  displayed.onclick = () => {
+  await displayBrowserNotification(notification.title, options, () => {
     window.focus();
     window.dispatchEvent(new CustomEvent("foreman.notification.open", {
       detail: { hostId: notification.hostId, sessionId: notification.sessionId },
     }));
-    displayed.close();
-    displayedNotifications.delete(notification.tag);
+  });
+}
+
+export async function showBrowserTestNotification(): Promise<NotificationDeliveryMethod> {
+  if (browserNotificationState() !== "granted") {
+    throw new Error("Browser notification permission is not granted.");
+  }
+  const title = "Foreman notifications are working";
+  const tag = "foreman-notification-test";
+  const options: NotificationOptions = {
+    body: "This test bypasses session-event and background-tab checks.",
+    tag,
+    requireInteraction: true,
   };
+  return displayBrowserNotification(title, options, () => {
+    window.focus();
+  });
 }
 
 export async function clearTurnNotification(tag: string): Promise<void> {
