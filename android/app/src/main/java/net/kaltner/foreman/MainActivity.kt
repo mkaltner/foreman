@@ -4283,7 +4283,7 @@ private fun DashboardHealthCard(state: UiState) {
         when {
             !state.runtimeConnected -> "Runtime unavailable"
             state.runtimeMode == "shared" -> "Shared Desktop runtime"
-            state.runtimeMode == "fallback" -> "Fallback runtime"
+            state.runtimeMode == "fallback" -> "Foreman-managed runtime"
             else -> "Runtime connected"
         }
     Card(Modifier.fillMaxWidth()) {
@@ -4415,7 +4415,7 @@ private fun HostOverviewCard(
             }
             if (!live) Text("STALE · Last connected ${overviewAge(host.lastConnectedAt)} · checked ${overviewAge(snapshot?.observedAt)}", color = Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             Text("Foreman ${snapshot?.foremanVersion ?: "—"} · Codex ${snapshot?.codexVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
-            Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Fallback runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
+            Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Foreman-managed runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
             Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
             Text(
                 "Codex ${snapshot?.codexActive ?: 0} · Claude ${snapshot?.claudeActive ?: 0}" +

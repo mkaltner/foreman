@@ -5,6 +5,23 @@ export interface SessionPresence {
   sessionId: string;
 }
 
+export class SessionPresenceProjectionGuard {
+  private version = 0;
+
+  invalidate(): void {
+    this.version += 1;
+  }
+
+  beginRequest(): number {
+    this.version += 1;
+    return this.version;
+  }
+
+  isCurrent(requestVersion: number): boolean {
+    return requestVersion === this.version;
+  }
+}
+
 export function sessionPresenceKey(provider: ProviderId, sessionId: string): string {
   return `${provider}:${sessionId}`;
 }

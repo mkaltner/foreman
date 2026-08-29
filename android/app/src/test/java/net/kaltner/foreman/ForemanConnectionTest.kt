@@ -55,6 +55,24 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun suppressedApprovalsRemainPendingUntilTheSessionLosesFocus() {
+        val session = providerSessionKey(PROVIDER_CODEX, "same")
+        val ledger = ApprovalNotificationLedger()
+
+        ledger.record("approval-1", session)
+        assertFalse(ledger.shouldDisplay("approval-1", setOf(session)))
+
+        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
+        ledger.markDisplayed("approval-1")
+        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+
+        assertEquals(listOf("approval-1"), ledger.hideSession(session))
+        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
+        assertEquals(listOf("approval-1"), ledger.clearSession(session))
+        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+    }
+
+    @Test
     fun focusedSessionProjectionRejectsMalformedOrUnknownEntries() {
         val sessions =
             buildJsonArray {
