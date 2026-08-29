@@ -46,6 +46,15 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun presencePublisherKeepsAQueuedBackgroundClearPending() {
+        val focused = providerSessionKey(PROVIDER_CODEX, "same")
+
+        assertFalse(sessionPresenceSyncPending(true, focused, focused))
+        assertTrue(sessionPresenceSyncPending(true, focused, null))
+        assertTrue(sessionPresenceSyncPending(false, null, null))
+    }
+
+    @Test
     fun focusedSessionProjectionRejectsMalformedOrUnknownEntries() {
         val sessions =
             buildJsonArray {

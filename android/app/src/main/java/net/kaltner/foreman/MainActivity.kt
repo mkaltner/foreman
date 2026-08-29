@@ -442,6 +442,12 @@ internal fun focusedSessionPresenceKey(
         ?.takeIf { focused && screen == Screen.Detail }
         ?.let { providerSessionKey(sessionProvider(it), it.id) }
 
+internal fun sessionPresenceSyncPending(
+    initialized: Boolean,
+    published: String?,
+    desired: String?,
+): Boolean = !initialized || published != desired
+
 internal fun dashboardBackDestination(): Screen = Screen.Overview
 
 internal data class OverviewReturnTarget(
@@ -2110,9 +2116,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (presenceSyncJob?.isActive == true) return
         presenceSyncJob =
             viewModelScope.launch {
+                var requestFailed = false
                 while (true) {
                     val target = desiredPresenceKey
-                    if (presenceInitialized && publishedPresenceKey == target) break
+                    if (!sessionPresenceSyncPending(presenceInitialized, publishedPresenceKey, target)) break
                     val identity = target?.let(::parseProviderSessionKey)
                     val payload =
                         if (identity == null) {
@@ -2125,12 +2132,24 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         }
                     if (runCatching { client.request("session.presence", payload) }.isFailure) {
                         presenceInitialized = false
+                        requestFailed = true
                         break
                     }
                     publishedPresenceKey = target
                     presenceInitialized = true
                 }
                 presenceSyncJob = null
+                // A focus/background transition can arrive after the loop's final
+                // comparison but before this job clears itself. Recheck after
+                // releasing the job slot so that update cannot be lost.
+                if (!requestFailed && sessionPresenceSyncPending(
+                        presenceInitialized,
+                        publishedPresenceKey,
+                        desiredPresenceKey,
+                    )
+                ) {
+                    synchronizeSessionPresence()
+                }
             }
     }
 
