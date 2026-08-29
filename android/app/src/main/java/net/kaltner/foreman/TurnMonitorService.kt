@@ -117,6 +117,55 @@ internal fun shouldEnrollGlobalTurn(
 ): Boolean =
     monitorAllTurns && provider in enabledProviders && status in setOf("working", "waiting")
 
+internal fun focusedSessionKeys(sessions: Iterable<JsonElement>): Set<String> =
+    sessions.mapNotNullTo(linkedSetOf()) { raw ->
+        val presence = raw.jsonObject
+        val provider = presence["provider"]?.jsonPrimitive?.content ?: return@mapNotNullTo null
+        val sessionId = presence["sessionId"]?.jsonPrimitive?.content ?: return@mapNotNullTo null
+        providerSessionKey(provider, sessionId).takeIf {
+            provider in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) && sessionId.isNotBlank()
+        }
+    }
+
+internal class ApprovalNotificationLedger {
+    private val pending = linkedMapOf<String, String>()
+    private val displayed = linkedSetOf<String>()
+
+    fun record(approvalId: String, sessionId: String) {
+        pending[approvalId] = sessionId
+    }
+
+    fun shouldDisplay(approvalId: String, focusedSessions: Set<String>): Boolean {
+        val sessionId = pending[approvalId] ?: return false
+        return approvalId !in displayed && sessionId !in focusedSessions
+    }
+
+    fun markDisplayed(approvalId: String) {
+        if (approvalId in pending) displayed.add(approvalId)
+    }
+
+    fun containsSession(sessionId: String): Boolean = pending.containsValue(sessionId)
+
+    fun pendingForSession(sessionId: String): List<String> =
+        pending.filterValues { it == sessionId }.keys.toList()
+
+    fun hideSession(sessionId: String): List<String> =
+        pendingForSession(sessionId).also(displayed::removeAll)
+
+    fun clear(approvalId: String) {
+        pending.remove(approvalId)
+        displayed.remove(approvalId)
+    }
+
+    fun clearSession(sessionId: String): List<String> =
+        pendingForSession(sessionId).also { ids -> ids.forEach(::clear) }
+
+    fun clearAll() {
+        pending.clear()
+        displayed.clear()
+    }
+}
+
 internal class MonitorLifecycle(
     private val initialReconnectDelay: Long = 2_000L,
     private val maximumReconnectDelay: Long = 30_000L,
@@ -191,7 +240,7 @@ class TurnMonitorService : Service() {
     private val lifecycle = MonitorLifecycle()
     private lateinit var client: ForemanClient
     private var reconnectJob: Job? = null
-    private val approvalNotifications = linkedMapOf<String, String>()
+    private val approvalNotifications = ApprovalNotificationLedger()
     private val repositoryIdentities = linkedMapOf<String, String>()
     private val activeTurns = linkedMapOf<String, ActiveTurn>()
     private val longRunningJobs = linkedMapOf<String, Job>()
@@ -200,6 +249,7 @@ class TurnMonitorService : Service() {
     private var monitoredHostId: String? = null
     @Volatile private var monitorAllTurns = false
     @Volatile private var connected = false
+    @Volatile private var focusedSessions: Set<String> = emptySet()
 
     private data class ActiveTurn(
         val turnKey: String,
@@ -261,7 +311,7 @@ class TurnMonitorService : Service() {
 
         if (monitoredHostId != null && monitoredHostId != hostId) {
             lifecycle.clear()
-            approvalNotifications.clear()
+            approvalNotifications.clearAll()
             clearLongRunningState()
             client.close()
             connected = false
@@ -319,6 +369,13 @@ class TurnMonitorService : Service() {
                 }
                 client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
                 connected = true
+            }
+
+            if ("sessionPresence" in client.capabilities) {
+                val presence = client.request("session.presence")
+                updateFocusedSessions(presence.payload["sessions"]?.jsonArray.orEmpty())
+            } else {
+                focusedSessions = emptySet()
             }
 
             if (monitorAllTurns) discoverActiveTurns()
@@ -414,6 +471,10 @@ class TurnMonitorService : Service() {
     }
 
     private fun handleEvent(message: WireMessage) {
+        if (message.type == "session.presence.event") {
+            updateFocusedSessions(message.payload["sessions"]?.jsonArray.orEmpty())
+            return
+        }
         if (message.type == "provider.event") {
             message.payload["providers"]?.jsonArray?.let { providers ->
                 enabledProviders = enabledMonitorProviders(providers)
@@ -425,7 +486,7 @@ class TurnMonitorService : Service() {
             val approvalId = approval["id"]?.jsonPrimitive?.content ?: return
             val sessionId = approval["sessionId"]?.jsonPrimitive?.content ?: return
             if (message.type == "approval.resolved" || approval["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
-                approvalNotifications.remove(approvalId)
+                approvalNotifications.clear(approvalId)
                 monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, approvalId)) }
             } else {
                 notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), approvalId)
@@ -437,7 +498,7 @@ class TurnMonitorService : Service() {
             val inputId = input["id"]?.jsonPrimitive?.content ?: return
             val sessionId = input["sessionId"]?.jsonPrimitive?.content ?: return
             if (message.type == "input.resolved" || input["status"]?.jsonPrimitive?.content in setOf("resolved", "expired")) {
-                approvalNotifications.remove(inputId)
+                approvalNotifications.clear(inputId)
                 monitoredHostId?.let { notificationManager.cancel(approvalNotificationId(it, inputId)) }
             } else {
                 notifyApproval(providerSessionKey(PROVIDER_CODEX, sessionId), inputId)
@@ -498,13 +559,13 @@ class TurnMonitorService : Service() {
         val repositoryId = repositoryIdentities[sessionId].orEmpty()
         if (outcome.event == NotificationEvent.Approval) {
             longRunningJobs.remove(sessionId)?.cancel()
-            if (approvalNotifications.containsValue(sessionId)) return
+            if (approvalNotifications.containsSession(sessionId)) return
         } else {
             clearTurnState(sessionId)
         }
         val preferences = NotificationPreferenceStore(this).load(hostId)
         var replacedForegroundWatcher = false
-        if (preferences.shouldNotify(outcome.event, repositoryId)) {
+        if (sessionId !in focusedSessions && preferences.shouldNotify(outcome.event, repositoryId)) {
             replacedForegroundWatcher = monitorAllTurns && outcome.event != NotificationEvent.Approval
             val notification = resultNotification(
                 hostId,
@@ -529,9 +590,10 @@ class TurnMonitorService : Service() {
 
     @Synchronized
     private fun notifyApproval(sessionId: String, approvalId: String) {
-        if (!lifecycle.contains(sessionId) || approvalId in approvalNotifications) return
+        if (!lifecycle.contains(sessionId)) return
         val hostId = monitoredHostId ?: return
-        approvalNotifications[approvalId] = sessionId
+        approvalNotifications.record(approvalId, sessionId)
+        if (!approvalNotifications.shouldDisplay(approvalId, focusedSessions)) return
         val preferences = NotificationPreferenceStore(this).load(hostId)
         if (!preferences.shouldNotify(NotificationEvent.Approval, repositoryIdentities[sessionId].orEmpty())) return
         notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
@@ -549,13 +611,19 @@ class TurnMonitorService : Service() {
                 .setAutoCancel(true)
                 .build()
         notificationManager.notify(approvalNotificationId(hostId, approvalId), notification)
+        approvalNotifications.markDisplayed(approvalId)
     }
 
     @Synchronized
     private fun clearApprovalNotifications(sessionId: String) {
-        val ids = approvalNotifications.filterValues { it == sessionId }.keys.toList()
-        ids.forEach {
-            approvalNotifications.remove(it)
+        approvalNotifications.clearSession(sessionId).forEach {
+            monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
+        }
+    }
+
+    @Synchronized
+    private fun hideApprovalNotifications(sessionId: String) {
+        approvalNotifications.hideSession(sessionId).forEach {
             monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
         }
     }
@@ -602,6 +670,7 @@ class TurnMonitorService : Service() {
                 longRunningNotified.add(active.turnKey)
             }
             val current = NotificationPreferenceStore(this@TurnMonitorService).load(hostId)
+            if (sessionId in focusedSessions) return@launch
             if (!current.shouldNotify(NotificationEvent.LongRunning, repositoryId)) return@launch
             notificationManager.notify(
                 longRunningNotificationId(hostId, sessionId),
@@ -625,6 +694,26 @@ class TurnMonitorService : Service() {
         activeTurns.clear()
         longRunningNotified.clear()
         repositoryIdentities.clear()
+    }
+
+    @Synchronized
+    private fun updateFocusedSessions(sessions: Iterable<JsonElement>) {
+        val next = focusedSessionKeys(sessions)
+        val newlyFocused = next - focusedSessions
+        val newlyUnfocused = focusedSessions - next
+        focusedSessions = next
+        val hostId = monitoredHostId ?: return
+        newlyFocused.forEach { sessionId ->
+            notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
+            notificationManager.cancel(longRunningNotificationId(hostId, sessionId))
+            hideApprovalNotifications(sessionId)
+        }
+        newlyUnfocused.forEach { sessionId ->
+            approvalNotifications.pendingForSession(sessionId).forEach { approvalId ->
+                notifyApproval(sessionId, approvalId)
+            }
+        }
+        if (newlyFocused.isNotEmpty() && monitorAllTurns) showForeground(reconnecting = false)
     }
 
     private fun failMonitoring(sessionId: String, detail: String) {
