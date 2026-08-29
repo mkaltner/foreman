@@ -5105,23 +5105,15 @@ private fun SessionDetailScreen(
                 },
                 actions = {
                     if (selected != null) SessionContextUsageAction(selected, state)
-                    if (selected != null && providerInterruptEligible(selected)) {
-                        IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
-                            Icon(Icons.Default.Stop, contentDescription = "Interrupt")
-                        }
-                    }
-                    if (selected != null) {
-                        SessionActionsMenu(
-                            enabled =
-                                sessionCanBeManaged(selected.status) && !state.submitting,
-                            archiveSupported =
-                                sessionActionSupported(selected, state.capabilities, SessionAction.Archive),
-                            deleteSupported =
-                                sessionActionSupported(selected, state.capabilities, SessionAction.Delete),
-                            onAction = { viewModel.requestSessionAction(selected, it) },
-                        )
-                    }
-                    UiSettingsMenu(state, viewModel, requestTurnMonitoring)
+                    UiSettingsMenu(
+                        state = state,
+                        viewModel = viewModel,
+                        requestTurnMonitoring = requestTurnMonitoring,
+                        session = selected,
+                        onSessionAction = { action ->
+                            selected?.let { viewModel.requestSessionAction(it, action) }
+                        },
+                    )
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(
@@ -5138,6 +5130,7 @@ private fun SessionDetailScreen(
                 provider = selectedProvider,
                 resumableExternal = selected.source == "external",
                 working = selected.status in setOf("working", "waiting"),
+                interruptible = providerInterruptEligible(selected),
                 routeEnabled = state.connected && !state.submitting,
                 enabled = state.connected && !state.submitting &&
                     !(selectedProvider == PROVIDER_CLAUDE_CODE && selected.status in setOf("working", "waiting")) &&
@@ -5165,6 +5158,7 @@ private fun SessionDetailScreen(
                         viewModel.setComposerDraft(hostId, selected.id, text, selectedProvider)
                     }
                 },
+                interrupt = viewModel::interrupt,
                 send = viewModel::send,
             )
         },
@@ -5521,6 +5515,7 @@ private fun PromptBox(
     provider: String,
     resumableExternal: Boolean,
     working: Boolean,
+    interruptible: Boolean,
     routeEnabled: Boolean,
     enabled: Boolean,
     accessLevels: List<AccessLevelInfo>,
@@ -5534,6 +5529,7 @@ private fun PromptBox(
     selectEffort: (String) -> Unit,
     showError: (String) -> Unit,
     onTextChange: (String) -> Unit,
+    interrupt: () -> Unit,
     send: (String, List<ImagePayload>, () -> Unit) -> Unit,
 ) {
     var images by remember { mutableStateOf(emptyList<ImagePayload>()) }
@@ -5648,6 +5644,21 @@ private fun PromptBox(
                         }
                     },
                 )
+                if (interruptible) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ) {
+                        IconButton(
+                            onClick = interrupt,
+                            enabled = routeEnabled,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = "Stop current turn")
+                        }
+                    }
+                }
                 Button(
                     onClick = {
                         if (hapticsEnabled) {
@@ -6153,6 +6164,8 @@ private fun UiSettingsMenu(
     viewModel: ForemanViewModel,
     requestTurnMonitoring: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    session: SessionSummary? = null,
+    onSessionAction: ((SessionAction) -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showingAccentColors by remember { mutableStateOf(false) }
@@ -6459,6 +6472,50 @@ private fun UiSettingsMenu(
                     )
                 }
             } else {
+                if (session != null && onSessionAction != null) {
+                    val canManage = sessionCanBeManaged(session.status) && !state.submitting
+                    val archiveSupported =
+                        sessionActionSupported(session, state.capabilities, SessionAction.Archive)
+                    val deleteSupported =
+                        sessionActionSupported(session, state.capabilities, SessionAction.Delete)
+                    if (archiveSupported || deleteSupported) {
+                        Text(
+                            "Session",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                        if (archiveSupported) {
+                            DropdownMenuItem(
+                                text = { Text("Archive session") },
+                                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                enabled = canManage,
+                                onClick = {
+                                    expanded = false
+                                    onSessionAction(SessionAction.Archive)
+                                },
+                            )
+                        }
+                        if (deleteSupported) {
+                            DropdownMenuItem(
+                                text = { Text("Delete session permanently", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                    )
+                                },
+                                enabled = canManage,
+                                onClick = {
+                                    expanded = false
+                                    onSessionAction(SessionAction.Delete)
+                                },
+                            )
+                        }
+                        HorizontalDivider()
+                    }
+                }
                 Text(
                     "Theme",
                     style = MaterialTheme.typography.labelLarge,
