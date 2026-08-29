@@ -77,6 +77,14 @@ class CodexError(RuntimeError):
     pass
 
 
+def is_unmaterialized_thread_history_error(error: CodexError) -> bool:
+    message = str(error).lower()
+    return (
+        "not materialized yet" in message
+        and "before first user message" in message
+    )
+
+
 class Codex:
     def __init__(
         self,
@@ -885,7 +893,16 @@ class Codex:
                 "thread/read", {"threadId": thread_id, "includeTurns": False}
             )
             thread = result["thread"]
-            thread["turns"] = await self._list_thread_turns(thread_id)
+            try:
+                thread["turns"] = await self._list_thread_turns(thread_id)
+            except CodexError as error:
+                # Codex exposes a newly started thread through thread/list and
+                # thread/read before its first user message creates the rollout.
+                # Such a thread is a valid empty Foreman session even though the
+                # paginated history endpoint cannot read it yet.
+                if not is_unmaterialized_thread_history_error(error):
+                    raise
+                thread["turns"] = []
             return self._with_route(thread)
         try:
             result = await self.request(

@@ -22,6 +22,7 @@ from websockets.asyncio.client import connect  # noqa: E402
 from websockets.exceptions import ConnectionClosedError, InvalidStatus  # noqa: E402
 from codex import (  # noqa: E402
     Codex,
+    CodexError,
     access_level,
     access_params,
     bound_message_images,
@@ -2302,6 +2303,39 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(turn_requests), 2)
         self.assertTrue(all(call.args[1]["itemsView"] == "full" for call in turn_requests))
         self.assertEqual(turn_requests[1].args[1]["cursor"], "next-page")
+
+    async def test_reads_new_unmaterialized_thread_as_empty_session(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._supported_methods = {"thread/turns/list"}
+        adapter.ensure_resumed = AsyncMock()
+        adapter.request = AsyncMock(
+            side_effect=[
+                {"thread": {**THREAD, "turns": []}},
+                CodexError(
+                    "thread thread-1 is not materialized yet; "
+                    "thread/turns/list is unavailable before first user message"
+                ),
+            ]
+        )
+
+        thread = await adapter.read_thread("thread-1")
+
+        self.assertEqual(thread["turns"], [])
+        adapter.ensure_resumed.assert_awaited_once_with("thread-1")
+
+    async def test_does_not_hide_other_turn_history_failures(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._supported_methods = {"thread/turns/list"}
+        adapter.ensure_resumed = AsyncMock()
+        adapter.request = AsyncMock(
+            side_effect=[
+                {"thread": {**THREAD, "turns": []}},
+                CodexError("Codex app-server disconnected"),
+            ]
+        )
+
+        with self.assertRaisesRegex(CodexError, "disconnected"):
+            await adapter.read_thread("thread-1")
 
     async def test_reconciled_status_includes_stored_thread_recency(self) -> None:
         events: list[dict[str, Any]] = []
