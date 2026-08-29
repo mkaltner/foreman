@@ -385,6 +385,28 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun unavailableEnabledProvidersHaveNoAuthoritativeSessionList() {
+        val providers = listOf(
+            ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true),
+            ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", enabled = true, available = false),
+        )
+
+        assertEquals(
+            setOf(PROVIDER_CLAUDE_CODE),
+            sessionProvidersWithoutAuthoritativeLists(providers, emptySet()),
+        )
+        assertEquals(
+            setOf(PROVIDER_CODEX),
+            sessionProvidersWithoutAuthoritativeLists(
+                providers.map {
+                    if (it.id == PROVIDER_CLAUDE_CODE) it.copy(enabled = false) else it
+                },
+                setOf(PROVIDER_CODEX),
+            ),
+        )
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),

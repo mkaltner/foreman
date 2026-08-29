@@ -486,6 +486,13 @@ internal fun retainedSessionPreferenceIds(
     parseProviderSessionKey(key)?.first in nonAuthoritativeProviders
 }
 
+internal fun sessionProvidersWithoutAuthoritativeLists(
+    providers: List<ProviderInfo>,
+    failedProviders: Set<String>,
+): Set<String> = failedProviders + providers
+    .filter { supportedProvider(it.id) && it.enabled && !it.available }
+    .map { it.id }
+
 internal fun shouldStopMonitoringForNotificationPermission(
     monitoringEnabled: Boolean,
     permissionGranted: Boolean,
@@ -3065,10 +3072,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val codexSessionsResult = codexSessionsRequest.await()
                 val sessions = codexSessionsResult.getOrDefault(emptyList()) +
                     claudeSessionsResult.getOrDefault(emptyList())
-                val nonAuthoritativeSessionProviders = buildSet {
+                val failedSessionProviders = buildSet {
                     if (codexAvailable && codexSessionsResult.isFailure) add(PROVIDER_CODEX)
                     if (claudeAvailable && claudeSessionsResult.isFailure) add(PROVIDER_CLAUDE_CODE)
                 }
+                val nonAuthoritativeSessionProviders = sessionProvidersWithoutAuthoritativeLists(
+                    providers,
+                    failedSessionProviders,
+                )
                 val claudeModels =
                     if (claudeAvailable) {
                         runCatching {
