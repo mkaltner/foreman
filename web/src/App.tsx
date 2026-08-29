@@ -191,6 +191,26 @@ export function sessionActionRequest(
 }
 type PairingSettings = Omit<NewStoredHost, "deviceToken"> & { deviceName: string };
 
+export function reconcileSessionPending<T extends { id: string; sessionId: string }>(
+  current: T[],
+  refreshed: T[],
+  sessionId: string,
+  baseline: T[],
+): T[] {
+  const baselineById = new Map(
+    baseline.filter((item) => item.sessionId === sessionId).map((item) => [item.id, item]),
+  );
+  const newer = current.filter((item) =>
+    item.sessionId === sessionId && baselineById.get(item.id) !== item
+  );
+  const newerIds = new Set(newer.map((item) => item.id));
+  return [
+    ...current.filter((item) => item.sessionId !== sessionId),
+    ...refreshed.filter((item) => item.sessionId === sessionId && !newerIds.has(item.id)),
+    ...newer,
+  ];
+}
+
 function App() {
   const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
   const initialRegistry = useRef(loadHostRegistry()).current;
@@ -1040,6 +1060,8 @@ function App() {
 
   const openSession = useCallback(
     async (provider: ProviderId, id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
+      const approvalsAtOpen = approvals.filter((approval) => approval.sessionId === id);
+      const inputsAtOpen = inputs.filter((input) => input.sessionId === id);
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
@@ -1053,13 +1075,32 @@ function App() {
       if (updateHistory) updateRoute({ view: "detail", provider, sessionId: id });
       try {
         const summary = sessionsRef.current.find((session) => session.id === id && sessionProvider(session) === provider);
-        const result = await client.request<
-          { session: SessionSummary } & Record<string, unknown>
-        >("provider.session.read", {
-          provider,
-          sessionId: id,
-          ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
-        });
+        const [result, pending] = await Promise.all([
+          client.request<
+            { session: SessionSummary } & Record<string, unknown>
+          >("provider.session.read", {
+            provider,
+            sessionId: id,
+            ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
+          }),
+          provider === "codex"
+            ? Promise.all([
+              client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
+              client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
+                .catch(() => ({ inputs: null as InputRequest[] | null })),
+            ]).then(([approvalResult, inputResult]) => ({
+              approvals: approvalResult.approvals,
+              inputs: inputResult.inputs,
+            }))
+            : Promise.resolve({ approvals: [] as ApprovalRequest[], inputs: null as InputRequest[] | null }),
+        ]);
+        if (provider === "codex") {
+          setApprovals((current) => reconcileSessionPending(current, pending.approvals, id, approvalsAtOpen));
+          const refreshedInputs = pending.inputs;
+          if (refreshedInputs !== null) {
+            setInputs((current) => reconcileSessionPending(current, refreshedInputs, id, inputsAtOpen));
+          }
+        }
         setCurrent({ ...result.session, provider });
         await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
@@ -1068,7 +1109,7 @@ function App() {
         setBusy(false);
       }
     },
-    [client, updateRoute],
+    [approvals, client, inputs, updateRoute],
   );
   openSessionRef.current = (provider, id, updateHistory = true) => { void openSession(provider, id, updateHistory); };
 

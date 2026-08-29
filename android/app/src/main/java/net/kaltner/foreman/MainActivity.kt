@@ -893,6 +893,56 @@ internal fun updateComposerDraft(
     return if (text.isEmpty()) drafts - key else drafts + (key to text)
 }
 
+private fun <T> reconcileSessionPendingItems(
+    current: List<T>,
+    refreshed: List<T>,
+    sessionId: String,
+    baseline: List<T>,
+    itemId: (T) -> String,
+    itemSessionId: (T) -> String,
+): List<T> {
+    val baselineById =
+        baseline.filter { itemSessionId(it) == sessionId }.associateBy(itemId)
+    val newer =
+        current.filter { item ->
+            itemSessionId(item) == sessionId && baselineById[itemId(item)] != item
+        }
+    val newerIds = newer.mapTo(mutableSetOf(), itemId)
+    return current.filter { itemSessionId(it) != sessionId } +
+        refreshed.filter { itemSessionId(it) == sessionId && itemId(it) !in newerIds } +
+        newer
+}
+
+internal fun reconcileSessionApprovals(
+    current: List<ApprovalRequest>,
+    refreshed: List<ApprovalRequest>,
+    sessionId: String,
+    baseline: List<ApprovalRequest>,
+): List<ApprovalRequest> =
+    reconcileSessionPendingItems(
+        current,
+        refreshed,
+        sessionId,
+        baseline,
+        ApprovalRequest::id,
+        ApprovalRequest::sessionId,
+    )
+
+internal fun reconcileSessionInputs(
+    current: List<InputRequest>,
+    refreshed: List<InputRequest>,
+    sessionId: String,
+    baseline: List<InputRequest>,
+): List<InputRequest> =
+    reconcileSessionPendingItems(
+        current,
+        refreshed,
+        sessionId,
+        baseline,
+        InputRequest::id,
+        InputRequest::sessionId,
+    )
+
 internal fun storedComposerDrafts(
     hostId: String?,
     drafts: Map<String, String>,
@@ -2400,15 +2450,66 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         focusedApprovalId: String? = null,
         provider: String = PROVIDER_CODEX,
     ) {
+        val approvalsAtOpen = state.value.approvals.filter { it.sessionId == id }
+        val inputsAtOpen = state.value.inputs.filter { it.sessionId == id }
         restorationProvider = provider
         restorationSessionId = id
         preferences.setSelectedSession(provider, id)
         viewModelScope.launch {
             state.update { it.copy(screen = Screen.Detail, loading = true, error = null, highlightedItemId = highlightedItemId, focusedApprovalId = focusedApprovalId) }
             runCatching {
-                val selected = readSession(provider, id)
+                val (selected, refreshedApprovals, refreshedInputs) =
+                    coroutineScope {
+                        val selectedRequest = async { readSession(provider, id) }
+                        val approvalsRequest =
+                            async {
+                                if (provider == PROVIDER_CODEX) {
+                                    client.request("approval.list").payload.getValue("approvals").jsonArray
+                                        .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
+                                } else {
+                                    emptyList()
+                                }
+                            }
+                        val inputsRequest =
+                            async {
+                                if (provider == PROVIDER_CODEX) {
+                                    runCatching {
+                                        client.request("input.list").payload.getValue("inputs").jsonArray
+                                            .map { json.decodeFromJsonElement<InputRequest>(it) }
+                                    }.getOrNull()
+                                } else {
+                                    null
+                                }
+                            }
+                        Triple(selectedRequest.await(), approvalsRequest.await(), inputsRequest.await())
+                    }
                 state.update {
-                    it.copy(selected = selected, loading = false).withProviderRoute(selected)
+                    it.copy(
+                        selected = selected,
+                        loading = false,
+                        approvals =
+                            if (provider == PROVIDER_CODEX) {
+                                reconcileSessionApprovals(
+                                    it.approvals,
+                                    refreshedApprovals,
+                                    id,
+                                    approvalsAtOpen,
+                                )
+                            } else {
+                                it.approvals
+                            },
+                        inputs =
+                            if (provider == PROVIDER_CODEX && refreshedInputs != null) {
+                                reconcileSessionInputs(
+                                    it.inputs,
+                                    refreshedInputs,
+                                    id,
+                                    inputsAtOpen,
+                                )
+                            } else {
+                                it.inputs
+                            },
+                    ).withProviderRoute(selected)
                 }
                 synchronizeSessionPresence()
                 monitorIfActive(selected)
