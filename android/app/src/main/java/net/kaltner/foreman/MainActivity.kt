@@ -5105,7 +5105,6 @@ private fun SessionDetailScreen(
                 },
                 actions = {
                     if (selected != null) SessionContextUsageAction(selected, state)
-                    HostSelectorMenu(state, viewModel, compact = true)
                     if (selected != null && providerInterruptEligible(selected)) {
                         IconButton(onClick = viewModel::interrupt, enabled = !state.submitting) {
                             Icon(Icons.Default.Stop, contentDescription = "Interrupt")
