@@ -636,6 +636,48 @@ class StateTests(unittest.TestCase):
             self.assertNotIn("thread-1", restored.session_settings("codex"))
             self.assertIn("thread-1", restored.session_settings("claude-code"))
 
+    def test_session_timestamps_are_durable_provider_isolated_and_conservative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            codex = state.remember_session_timestamps(
+                "codex",
+                "shared-id",
+                last_activity=1_700_000_100,
+                terminal_at=1_700_000_090,
+            )
+            claude = state.remember_session_timestamps(
+                "claude-code",
+                "shared-id",
+                last_activity=1_600_000_100,
+                terminal_at=1_600_000_090,
+            )
+            advanced = state.remember_session_timestamps(
+                "codex",
+                "shared-id",
+                last_activity=1_699_000_000,
+            )
+
+            restored = State(directory)
+            self.assertEqual(advanced, codex)
+            self.assertEqual(restored.session_timestamps("codex")["shared-id"], codex)
+            self.assertEqual(
+                restored.session_timestamps("claude-code")["shared-id"], claude
+            )
+            self.assertNotIn(
+                "observedAt",
+                Path(directory, "state.json").read_text(encoding="utf-8"),
+            )
+
+            active = state.remember_session_timestamps(
+                "codex",
+                "shared-id",
+                clear_terminal=True,
+            )
+            self.assertEqual(active, {"lastActivity": 1_700_000_100})
+            state.forget_session_timestamps("codex", "shared-id")
+            self.assertNotIn("shared-id", restored.session_timestamps("codex"))
+            self.assertIn("shared-id", restored.session_timestamps("claude-code"))
+
     def test_provider_account_usage_can_restore_a_bounded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
@@ -1170,14 +1212,15 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(interrupted["accepted"])
             self.assertEqual(claude.interrupts, ["external-session"])
 
-            await app.claude_event(
-                {
-                    "provider": "claude-code",
-                    "kind": "query.interrupted",
-                    "sessionId": "external-session",
-                    "runId": "run-resume",
-                }
-            )
+            with patch("foreman_service.time.time", return_value=1_900_004_000):
+                await app.claude_event(
+                    {
+                        "provider": "claude-code",
+                        "kind": "query.interrupted",
+                        "sessionId": "external-session",
+                        "runId": "run-resume",
+                    }
+                )
             self.assertEqual(
                 app.claude_session_overlays["external-session"]["state"],
                 "interrupted",
@@ -1218,6 +1261,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["secondary"]["usedPercent"],
                 28,
             )
+            await app.flush_session_timestamp_persistence()
             restored = Foreman(
                 "127.0.0.1",
                 0,
@@ -1230,6 +1274,16 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 restored.account_usage_projection()["providers"]["claude-code"]["rateLimits"]["primary"]["usedPercent"],
                 15,
             )
+            restored_claude = restored.project_claude_session(
+                {
+                    "sessionId": "external-session",
+                    "cwd": str(root),
+                    "classification": "managed",
+                    "active": False,
+                }
+            )
+            self.assertEqual(restored_claude["lastActivity"], 1_900_004_000)
+            self.assertEqual(restored_claude["terminalAt"], 1_900_004_000)
             await app.claude_event(
                 {
                     "provider": "claude-code",
@@ -1503,6 +1557,7 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         if self.app.restart_task is not None:
             await asyncio.gather(self.app.restart_task, return_exceptions=True)
+        await self.app.flush_session_timestamp_persistence()
         self.temporary.cleanup()
 
     async def test_enabled_restart_flushes_ack_before_exact_runner(self) -> None:
@@ -1624,7 +1679,7 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
                     "threadId": "thread-1",
                     "status": {"type": "idle"},
                     "_foremanReconciled": True,
-                    "_foremanObservedAt": 124,
+                    "_foremanActivityAt": 124,
                 },
             }
         )
@@ -1643,6 +1698,298 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
+
+    async def test_distinct_session_times_survive_service_recreation_with_partial_provider_data(
+        self,
+    ) -> None:
+        for thread_id, activity_at, completed_at in (
+            ("thread-older", 1_700_000_100, 1_700_000_090),
+            ("thread-newer", 1_700_003_700, 1_700_003_690),
+        ):
+            self.app.remember_session_event(
+                thread_id,
+                {
+                    "kind": "status",
+                    "status": "completed",
+                    "activityAt": activity_at,
+                    "observedAt": 1_900_000_000,
+                    "completedAt": completed_at,
+                },
+            )
+        await self.app.flush_session_timestamp_persistence()
+
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        projections = [
+            restored.projected_session(
+                {
+                    **THREAD,
+                    "id": thread_id,
+                    "updatedAt": None,
+                    "recencyAt": None,
+                    "turns": [],
+                }
+            )
+            for thread_id in ("thread-older", "thread-newer")
+        ]
+
+        self.assertEqual(
+            [item["lastActivity"] for item in projections],
+            [1_700_000_100, 1_700_003_700],
+        )
+        self.assertEqual(
+            [item["terminalAt"] for item in projections],
+            [1_700_000_090, 1_700_003_690],
+        )
+        self.assertTrue(
+            all(item["observedAt"] > item["lastActivity"] for item in projections)
+        )
+
+        async def partial_threads() -> list[dict[str, Any]]:
+            return [
+                {
+                    **THREAD,
+                    "id": thread_id,
+                    "updatedAt": None,
+                    "recencyAt": None,
+                    "turns": [],
+                }
+                for thread_id in ("thread-older", "thread-newer")
+            ]
+
+        restored.codex.list_threads = partial_threads  # type: ignore[method-assign]
+        listed = await restored.dispatch(
+            Client(None, "test", authenticated=True),
+            {"type": "session.list", "payload": {}},
+        )
+        self.assertEqual(
+            [item["id"] for item in listed["sessions"]],
+            ["thread-newer", "thread-older"],
+        )
+
+    async def test_approval_and_input_activity_survive_service_recreation(
+        self,
+    ) -> None:
+        with patch("foreman_service.time.time", return_value=1_700_000_100):
+            await self.app.codex_event(
+                {
+                    "method": "foreman/approval/requested",
+                    "params": {
+                        "approval": {
+                            "id": "approval-1",
+                            "sessionId": "thread-approval",
+                            "turnId": "turn-approval",
+                            "type": "command",
+                        }
+                    },
+                },
+            )
+        with patch("foreman_service.time.time", return_value=1_700_003_700):
+            await self.app.codex_event(
+                {
+                    "method": "foreman/input/requested",
+                    "params": {
+                        "input": {
+                            "id": "input-1",
+                            "sessionId": "thread-input",
+                            "turnId": "turn-input",
+                            "supported": True,
+                        }
+                    },
+                },
+            )
+        await self.app.flush_session_timestamp_persistence()
+
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        projections = [
+            restored.projected_session(
+                {
+                    **THREAD,
+                    "id": thread_id,
+                    "updatedAt": None,
+                    "recencyAt": None,
+                    "turns": [],
+                }
+            )
+            for thread_id in ("thread-approval", "thread-input")
+        ]
+
+        self.assertEqual(
+            [item["lastActivity"] for item in projections],
+            [1_700_000_100, 1_700_003_700],
+        )
+        self.assertEqual(
+            [item["id"] for item in restored.sort_session_projections(projections)],
+            ["thread-input", "thread-approval"],
+        )
+
+    async def test_provider_restoration_is_isolated_and_missing_timestamps_stay_old(
+        self,
+    ) -> None:
+        self.app.state.remember_session_timestamps(
+            "codex", "shared-id", last_activity=1_700_000_100
+        )
+        self.app.state.remember_session_timestamps(
+            "claude-code", "shared-id", last_activity=1_600_000_100
+        )
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+            claude_factory=FakeClaude,
+        )
+
+        codex = restored.projected_session(
+            {
+                **THREAD,
+                "id": "shared-id",
+                "updatedAt": None,
+                "recencyAt": None,
+                "turns": [],
+            }
+        )
+        claude = restored.project_claude_session(
+            {
+                "sessionId": "shared-id",
+                "cwd": self.temporary.name,
+                "classification": "resumable",
+                "active": False,
+            }
+        )
+        unknown = restored.project_claude_session(
+            {
+                "sessionId": "missing-time",
+                "cwd": self.temporary.name,
+                "classification": "resumable",
+                "active": False,
+            }
+        )
+        created = restored.project_claude_session(
+            {
+                "sessionId": "created-only",
+                "cwd": self.temporary.name,
+                "classification": "resumable",
+                "active": False,
+                "createdAt": 1_500_000_000,
+            }
+        )
+
+        self.assertEqual(codex["lastActivity"], 1_700_000_100)
+        self.assertEqual(claude["lastActivity"], 1_600_000_100)
+        self.assertIsNone(unknown["lastActivity"])
+        self.assertNotEqual(unknown["lastActivity"], unknown["observedAt"])
+        self.assertEqual(created["lastActivity"], 1_500_000_000)
+        bubbled = restored.sort_session_projections(
+            [
+                {
+                    **created,
+                    "id": "newer-idle",
+                    "status": "idle",
+                    "lastActivity": 1_950_000_000,
+                },
+                {**codex, "id": "older-active", "status": "working"},
+            ]
+        )
+        self.assertEqual([item["id"] for item in bubbled], ["older-active", "newer-idle"])
+        self.assertEqual(bubbled[0]["lastActivity"], 1_700_000_100)
+        await restored.flush_session_timestamp_persistence()
+
+    async def test_high_frequency_timestamps_are_coalesced_off_the_event_loop(
+        self,
+    ) -> None:
+        with patch.object(
+            self.app.state,
+            "remember_session_timestamp_batch",
+            wraps=self.app.state.remember_session_timestamp_batch,
+        ) as remember:
+            for activity_at in range(1_700_000_000, 1_700_000_020):
+                self.app.remember_session_event(
+                    "thread-streaming",
+                    {
+                        "kind": "activity",
+                        "label": "Responding",
+                        "activityAt": activity_at,
+                        "observedAt": 1_900_000_000,
+                    },
+                )
+
+            self.assertEqual(remember.call_count, 0)
+            await self.app.flush_session_timestamp_persistence()
+            self.assertEqual(remember.call_count, 1)
+            self.assertEqual(
+                self.app.state.session_timestamps("codex")["thread-streaming"][
+                    "lastActivity"
+                ],
+                1_700_000_019,
+            )
+
+    async def test_failed_timestamp_batch_is_retried_before_restart(self) -> None:
+        remember = self.app.state.remember_session_timestamp_batch
+        attempts = 0
+
+        def fail_once(entries: list[dict[str, Any]]) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("temporary state write failure")
+            remember(entries)
+
+        with patch.object(
+            self.app.state,
+            "remember_session_timestamp_batch",
+            side_effect=fail_once,
+        ):
+            self.app.remember_session_event(
+                "thread-retry",
+                {
+                    "kind": "activity",
+                    "label": "Responding",
+                    "activityAt": 1_700_000_321,
+                    "observedAt": 1_900_000_000,
+                },
+            )
+            await self.app.flush_session_timestamp_persistence()
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(self.app.timestamp_persistence_pending, set())
+        self.assertEqual(
+            self.app.diagnostics.entries()[0]["category"],
+            "state.timestamp_persist_failed",
+        )
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        projected = restored.projected_session(
+            {
+                **THREAD,
+                "id": "thread-retry",
+                "updatedAt": None,
+                "recencyAt": None,
+                "turns": [],
+            }
+        )
+        self.assertEqual(projected["lastActivity"], 1_700_000_321)
 
     async def test_session_context_snapshot_survives_service_recreation(self) -> None:
         await self.app.codex_event(
@@ -2337,7 +2684,7 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(CodexError, "disconnected"):
             await adapter.read_thread("thread-1")
 
-    async def test_reconciled_status_includes_stored_thread_recency(self) -> None:
+    async def test_reconciled_status_distinguishes_activity_from_observation(self) -> None:
         events: list[dict[str, Any]] = []
 
         async def on_event(event: dict[str, Any]) -> None:
@@ -2347,7 +2694,7 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapter._emit_reconciled(THREAD)
 
         self.assertTrue(events[0]["params"]["_foremanReconciled"])
-        self.assertEqual(events[0]["params"]["_foremanObservedAt"], 124)
+        self.assertEqual(events[0]["params"]["_foremanActivityAt"], 124)
 
     async def test_server_request_params_are_bounded_before_storage(self) -> None:
         params = bounded_approval_params(

@@ -329,7 +329,7 @@ class Codex:
                     "activeTurnId": active_turn_id,
                     "latestTurn": latest_turn,
                     "_foremanReconciled": True,
-                    "_foremanObservedAt": thread.get("recencyAt") or thread.get("updatedAt"),
+                    "_foremanActivityAt": thread.get("recencyAt") or thread.get("updatedAt"),
                 },
             }
         )

@@ -95,6 +95,18 @@ never enter routes. Provider-aware events retain the existing event envelope:
 {"version":1,"type":"session.event","payload":{"provider":"claude-code","sessionId":"…","event":{"kind":"assistant.delta","text":"Hello"}}}
 ```
 
+Session summaries keep three timestamp meanings separate. `lastActivity` is
+provider/session activity, `terminalAt` is the latest terminal turn boundary,
+and `observedAt` is only when Foreman produced the summary. Live events use
+`activityAt` for the activity being applied and `observedAt` for receipt by
+Foreman. The service durably retains known activity and terminal values per
+provider/session and merges them monotonically across restart restoration;
+observation time never replaces either historical value. When partial provider
+data has no activity timestamp, Foreman retains a known value, otherwise falls
+back only to a provider terminal or creation timestamp, and finally leaves the
+activity unavailable. Web and Android sort the restored server values while
+placing waiting and working sessions ahead of inactive work.
+
 `provider.event` publishes a refreshed bounded provider catalog when Claude's
 bridge availability changes. Claude session events cover status, assistant
 deltas, conservative tool cards, permission-required/denied state, completion,

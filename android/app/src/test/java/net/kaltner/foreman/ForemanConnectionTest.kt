@@ -1161,6 +1161,38 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun relaunchConsumesRestoredServerTimesWithoutUsingObservationTime() {
+        val json = Json { ignoreUnknownKeys = true }
+        val payload =
+            """
+            [
+              {"id":"older","repository":"/repo","title":"Older","status":"idle","lastActivity":1700000100,"observedAt":1900000000},
+              {"id":"newer","repository":"/repo","title":"Newer","status":"idle","lastActivity":1700003700,"observedAt":1900000000}
+            ]
+            """.trimIndent()
+        val restored = json.decodeFromString<List<SessionSummary>>(payload)
+        val relaunched = json.decodeFromString<List<SessionSummary>>(payload)
+
+        fun ordered(sessions: List<SessionSummary>) =
+            filterSessions(
+                sessions,
+                SessionSearchFilters(),
+                emptySet(),
+                emptySet(),
+                emptyList(),
+                emptyList(),
+                "",
+            ).map { it.session.id }
+
+        assertEquals(listOf("newer", "older"), ordered(restored))
+        assertEquals(listOf("newer", "older"), ordered(relaunched))
+        assertEquals(
+            listOf(1_700_003_700L, 1_700_000_100L),
+            relaunched.mapNotNull { it.lastActivity }.sortedDescending(),
+        )
+    }
+
+    @Test
     fun sessionDisplayTitleUsesTheCodexTitleInsteadOfTheRepositoryName() {
         val session =
             SessionSummary(

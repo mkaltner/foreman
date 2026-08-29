@@ -5,6 +5,7 @@ import {
   groupSessions,
   liveActivityLabel,
   liveActivityMessage,
+  reconcileSessionSummaries,
   reconcileSessionSettings,
   routeForSession,
   type AccessLevelInfo,
@@ -30,6 +31,46 @@ describe("session mapping and live events", () => {
     expect(grouped.waiting.map((entry) => entry.id)).toEqual(["waiting"]);
     expect(grouped.active.map((entry) => entry.id)).toEqual(["active"]);
     expect(grouped.recent.map((entry) => entry.id)).toEqual(["recent"]);
+  });
+
+  it("keeps restored activity ordering across reloads without using observation time", () => {
+    const restored = [
+      { ...session, id: "older", lastActivity: 1_700_000_100, observedAt: 1_900_000_000 },
+      { ...session, id: "newer", lastActivity: 1_700_003_700, observedAt: 1_900_000_000 },
+    ];
+    const firstLoad = groupSessions(restored).recent;
+    const reopened = groupSessions(reconcileSessionSummaries([], restored)).recent;
+
+    expect(firstLoad.map((entry) => entry.id)).toEqual(["newer", "older"]);
+    expect(reopened.map((entry) => entry.id)).toEqual(["newer", "older"]);
+    expect(reopened.map((entry) => entry.lastActivity)).toEqual([
+      1_700_003_700,
+      1_700_000_100,
+    ]);
+  });
+
+  it("keeps activity, terminal, and Foreman observation timestamps distinct", () => {
+    const completed = applySessionEvent(session, {
+      kind: "status",
+      status: "completed",
+      activityAt: 1_700_000_100,
+      completedAt: 1_700_000_090,
+      observedAt: 1_900_000_000,
+    });
+    const observedOnly = applySessionEvent(completed, {
+      kind: "status",
+      status: "completed",
+      activityAt: null,
+      observedAt: 1_900_000_100,
+    });
+
+    expect(completed).toEqual(expect.objectContaining({
+      lastActivity: 1_700_000_100,
+      terminalAt: 1_700_000_090,
+      statusChangedAt: 1_700_000_100,
+    }));
+    expect(observedOnly.lastActivity).toBe(1_700_000_100);
+    expect(observedOnly.terminalAt).toBe(1_700_000_090);
   });
 
   it("coalesces assistant deltas and applies item, activity, status, and route updates", () => {
