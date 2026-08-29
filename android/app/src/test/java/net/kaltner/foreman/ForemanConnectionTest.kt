@@ -28,6 +28,55 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun reopeningSessionRestoresPendingRequestsWithoutOverwritingLiveEvents() {
+        val stale =
+            ApprovalRequest(
+                id = "stale",
+                sessionId = "target",
+                type = "command",
+                title = "Stale",
+                createdAt = 1,
+                status = "pending",
+            )
+        val removedAfterResolution = stale.copy(id = "removed", title = "Removed")
+        val changed = stale.copy(id = "changed", title = "Changed")
+        val resolvedDuringRefresh = changed.copy(status = "resolved")
+        val arrivedDuringRefresh = stale.copy(id = "new-live", title = "New live")
+        val otherSession = stale.copy(id = "other", sessionId = "other-session")
+        val restored = stale.copy(id = "restored", title = "Restored")
+
+        assertEquals(
+            listOf(otherSession, restored, resolvedDuringRefresh, arrivedDuringRefresh),
+            reconcileSessionApprovals(
+                current = listOf(otherSession, stale, resolvedDuringRefresh, arrivedDuringRefresh),
+                refreshed = listOf(removedAfterResolution, restored, changed),
+                sessionId = "target",
+                baseline = listOf(removedAfterResolution, stale, changed),
+            ),
+        )
+
+        val input =
+            InputRequest(
+                id = "input",
+                sessionId = "target",
+                source = "codex",
+                title = "Choose",
+                supported = true,
+                createdAt = 1,
+                status = "pending",
+            )
+        assertEquals(
+            listOf(input),
+            reconcileSessionInputs(
+                current = emptyList(),
+                refreshed = listOf(input),
+                sessionId = "target",
+                baseline = emptyList(),
+            ),
+        )
+    }
+
+    @Test
     fun collapsedRepositoriesRemainScopedByHostAcrossNavigation() {
         var collapsed = toggleCollapsedRepository(emptyMap(), "home", "/projects/foreman")
         collapsed = toggleCollapsedRepository(collapsed, "work", "/projects/other")

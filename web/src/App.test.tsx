@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, ProviderSettings, RouteSelect, SessionList, SetupView, sessionActionRequest, workspaceFileTarget } from "./App";
-import type { SessionSummary } from "./protocol";
+import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserText, Markdown, NewSessionDialog, ProviderSettings, RouteSelect, SessionList, SetupView, reconcileSessionPending, sessionActionRequest, workspaceFileTarget } from "./App";
+import type { ApprovalRequest, SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
 import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
@@ -119,6 +119,106 @@ describe("host navigation history", () => {
       hosts: [{ id: home.id }],
     });
   });
+
+  it("restores an approval from the server when a conversation is reopened", async () => {
+    const session: SessionSummary = {
+      id: "thread-1",
+      repository: "/projects/foreman",
+      title: "Approval session",
+      status: "waiting",
+      attention: true,
+      activeTurnId: "turn-1",
+      messages: [],
+    };
+    const approval: ApprovalRequest = {
+      id: "approval-1",
+      sessionId: session.id,
+      turnId: session.activeTurnId,
+      type: "command",
+      title: "Command requires approval",
+      createdAt: 1,
+      status: "pending",
+      availableDecisions: [{ type: "accept", label: "Allow" }, { type: "decline", label: "Deny" }],
+    };
+    let approvalReads = 0;
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    clientMock.start.mockImplementation(async (
+      _endpoint: unknown,
+      _token: string,
+      onReady: (reconnected: boolean) => Promise<void>,
+    ) => onReady(false));
+    clientMock.request.mockImplementation(async (type: string) => {
+      switch (type) {
+        case "provider.list": return { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] }] };
+        case "approval.list": return { approvals: approvalReads++ === 0 ? [] : [approval] };
+        case "input.list": return { inputs: [] };
+        case "provider.session.list": return { sessions: [session] };
+        case "provider.session.read": return { session };
+        case "model.list": return { models: [] };
+        case "access.list": return { levels: [] };
+        case "service.status": return { repositoryRoot: "/projects" };
+        case "usage.status": return { providers: {} };
+        case "repository.list": return { repositories: [] };
+        case "client.list": return { clients: [] };
+        default: return {};
+      }
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: "‹ Sessions" });
+    expect(screen.queryByText(approval.title)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "‹ Sessions" }));
+    fireEvent.click(await screen.findByRole("heading", { name: session.title }));
+
+    expect(await screen.findByText(approval.title)).toBeInTheDocument();
+    expect(approvalReads).toBe(2);
+  });
+
+  it("does not let an obsolete session open overwrite newer navigation", async () => {
+    const first: SessionSummary = {
+      id: "thread-a",
+      repository: "/projects/foreman",
+      title: "Session A",
+      status: "idle",
+      messages: [],
+    };
+    const second: SessionSummary = { ...first, id: "thread-b", title: "Session B" };
+    let resolveFirst!: (value: { session: SessionSummary }) => void;
+    const firstRead = new Promise<{ session: SessionSummary }>((resolve) => { resolveFirst = resolve; });
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    clientMock.start.mockImplementation(async (
+      _endpoint: unknown,
+      _token: string,
+      onReady: (reconnected: boolean) => Promise<void>,
+    ) => onReady(false));
+    clientMock.request.mockImplementation(async (type: string, payload?: Record<string, unknown>) => {
+      switch (type) {
+        case "provider.list": return { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] }] };
+        case "approval.list": return { approvals: [] };
+        case "input.list": return { inputs: [] };
+        case "provider.session.list": return { sessions: [first, second] };
+        case "provider.session.read": return payload?.sessionId === first.id ? firstRead : { session: second };
+        case "model.list": return { models: [] };
+        case "access.list": return { levels: [] };
+        case "service.status": return { repositoryRoot: "/projects" };
+        case "usage.status": return { providers: {} };
+        case "repository.list": return { repositories: [] };
+        case "client.list": return { clients: [] };
+        default: return {};
+      }
+    });
+
+    render(<App />);
+    fireEvent.click((await screen.findAllByRole("heading", { name: first.title }))[0]);
+    fireEvent.click(screen.getAllByRole("heading", { name: second.title })[0]);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(second.title));
+
+    await act(async () => { resolveFirst({ session: first }); });
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(second.title));
+  });
 });
 
 describe("Foreman setup", () => {
@@ -156,6 +256,30 @@ describe("page scrolling", () => {
     expect(appShellClassName("dashboard")).toBe("app-shell");
     expect(appShellClassName("sessions")).toBe("app-shell");
     expect(appShellClassName("detail")).toBe("app-shell");
+  });
+});
+
+describe("pending request restoration", () => {
+  it("replaces stale session state while preserving newer live events", () => {
+    const stale = { id: "stale", sessionId: "target", status: "pending" };
+    const removedAfterResolution = { id: "removed", sessionId: "target", status: "pending" };
+    const changed = { id: "changed", sessionId: "target", status: "pending" };
+    const resolvedDuringRefresh = { ...changed, status: "resolved" };
+    const arrivedDuringRefresh = { id: "new-live", sessionId: "target", status: "pending" };
+    const otherSession = { id: "other", sessionId: "other-session", status: "pending" };
+    const restored = { id: "restored", sessionId: "target", status: "pending" };
+
+    expect(reconcileSessionPending(
+      [otherSession, stale, resolvedDuringRefresh, arrivedDuringRefresh],
+      [removedAfterResolution, restored, changed],
+      "target",
+      [removedAfterResolution, stale, changed],
+    )).toEqual([
+      otherSession,
+      restored,
+      resolvedDuringRefresh,
+      arrivedDuringRefresh,
+    ]);
   });
 });
 

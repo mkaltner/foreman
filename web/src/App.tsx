@@ -191,6 +191,32 @@ export function sessionActionRequest(
 }
 type PairingSettings = Omit<NewStoredHost, "deviceToken"> & { deviceName: string };
 
+export function reconcileSessionPending<T extends { id: string; sessionId: string }>(
+  current: T[],
+  refreshed: T[],
+  sessionId: string,
+  baseline: T[],
+): T[] {
+  const baselineById = new Map(
+    baseline.filter((item) => item.sessionId === sessionId).map((item) => [item.id, item]),
+  );
+  const currentSessionIds = new Set(
+    current.filter((item) => item.sessionId === sessionId).map((item) => item.id),
+  );
+  const removedIds = new Set(
+    [...baselineById.keys()].filter((id) => !currentSessionIds.has(id)),
+  );
+  const newer = current.filter((item) =>
+    item.sessionId === sessionId && baselineById.get(item.id) !== item
+  );
+  const protectedIds = new Set([...removedIds, ...newer.map((item) => item.id)]);
+  return [
+    ...current.filter((item) => item.sessionId !== sessionId),
+    ...refreshed.filter((item) => item.sessionId === sessionId && !protectedIds.has(item.id)),
+    ...newer,
+  ];
+}
+
 function App() {
   const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
   const initialRegistry = useRef(loadHostRegistry()).current;
@@ -287,6 +313,7 @@ function App() {
   const focusedSessionsRef = useRef<Set<string>>(new Set());
   const publishedPresenceRef = useRef<string | null | undefined>(undefined);
   const presenceProjectionGuardRef = useRef(new SessionPresenceProjectionGuard());
+  const sessionOpenGenerationRef = useRef(0);
   const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
   const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
@@ -764,6 +791,7 @@ function App() {
   }, [queueDashboardEvent, shouldDisplayTurnNotification]);
 
   const clearHostProjections = useCallback(() => {
+    sessionOpenGenerationRef.current += 1;
     searchGeneration.current += 1;
     if (dashboardFrame.current !== null) cancelAnimationFrame(dashboardFrame.current);
     dashboardFrame.current = null;
@@ -989,22 +1017,35 @@ function App() {
             : Promise.resolve();
         }),
       ]);
+      const reopenGeneration = sessionOpenGenerationRef.current;
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
+        const reopenProvider = selectedProviderRef.current;
         try {
-          const provider = selectedProviderRef.current;
-          const summary = reconciled.find((session) => session.id === reopenId && sessionProvider(session) === provider);
+          const summary = reconciled.find((session) => session.id === reopenId && sessionProvider(session) === reopenProvider);
           if (!summary) throw new Error("Session is no longer available");
           const result = await client.request<
             { session: SessionSummary } & Record<string, unknown>
           >("provider.session.read", {
-            provider,
+            provider: reopenProvider,
             sessionId: reopenId,
-            ...(provider === "claude-code" ? { repositoryId: summary.repositoryId ?? "." } : {}),
+            ...(reopenProvider === "claude-code" ? { repositoryId: summary.repositoryId ?? "." } : {}),
           });
-          setCurrent({ ...result.session, provider });
-          await client.request("provider.session.subscribe", { provider, sessionId: reopenId });
+          if (
+            reopenGeneration !== sessionOpenGenerationRef.current ||
+            viewRef.current !== "detail" ||
+            selectedIdRef.current !== reopenId ||
+            selectedProviderRef.current !== reopenProvider
+          ) return;
+          setCurrent({ ...result.session, provider: reopenProvider });
+          await client.request("provider.session.subscribe", { provider: reopenProvider, sessionId: reopenId });
         } catch {
+          if (
+            reopenGeneration !== sessionOpenGenerationRef.current ||
+            viewRef.current !== "detail" ||
+            selectedIdRef.current !== reopenId ||
+            selectedProviderRef.current !== reopenProvider
+          ) return;
           selectedIdRef.current = null;
           selectedProviderRef.current = "codex";
           setSelectedId(null);
@@ -1040,6 +1081,9 @@ function App() {
 
   const openSession = useCallback(
     async (provider: ProviderId, id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
+      const generation = ++sessionOpenGenerationRef.current;
+      const approvalsAtOpen = approvals.filter((approval) => approval.sessionId === id);
+      const inputsAtOpen = inputs.filter((input) => input.sessionId === id);
       setError("");
       setBusy(true);
       selectedIdRef.current = id;
@@ -1053,26 +1097,55 @@ function App() {
       if (updateHistory) updateRoute({ view: "detail", provider, sessionId: id });
       try {
         const summary = sessionsRef.current.find((session) => session.id === id && sessionProvider(session) === provider);
-        const result = await client.request<
-          { session: SessionSummary } & Record<string, unknown>
-        >("provider.session.read", {
-          provider,
-          sessionId: id,
-          ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
-        });
+        const [result, pending] = await Promise.all([
+          client.request<
+            { session: SessionSummary } & Record<string, unknown>
+          >("provider.session.read", {
+            provider,
+            sessionId: id,
+            ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
+          }),
+          provider === "codex"
+            ? Promise.all([
+              client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
+              client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
+                .catch(() => ({ inputs: null as InputRequest[] | null })),
+            ]).then(([approvalResult, inputResult]) => ({
+              approvals: approvalResult.approvals,
+              inputs: inputResult.inputs,
+            }))
+            : Promise.resolve({ approvals: [] as ApprovalRequest[], inputs: null as InputRequest[] | null }),
+        ]);
+        if (
+          generation !== sessionOpenGenerationRef.current ||
+          viewRef.current !== "detail" ||
+          selectedIdRef.current !== id ||
+          selectedProviderRef.current !== provider
+        ) return;
+        if (provider === "codex") {
+          setApprovals((current) => reconcileSessionPending(current, pending.approvals, id, approvalsAtOpen));
+          const refreshedInputs = pending.inputs;
+          if (refreshedInputs !== null) {
+            setInputs((current) => reconcileSessionPending(current, refreshedInputs, id, inputsAtOpen));
+          }
+        }
         setCurrent({ ...result.session, provider });
         await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Session could not be loaded");
+        if (generation === sessionOpenGenerationRef.current) {
+          setError(caught instanceof Error ? caught.message : "Session could not be loaded");
+        }
       } finally {
-        setBusy(false);
+        if (generation === sessionOpenGenerationRef.current) setBusy(false);
       }
     },
-    [client, updateRoute],
+    [approvals, client, inputs, updateRoute],
   );
   openSessionRef.current = (provider, id, updateHistory = true) => { void openSession(provider, id, updateHistory); };
 
   const closeSelectedSession = useCallback(() => {
+    sessionOpenGenerationRef.current += 1;
+    setBusy(false);
     const sessionId = selectedIdRef.current;
     const provider = selectedProviderRef.current;
     const key = sessionId ? providerSessionKey(provider, sessionId) : "";
@@ -1090,6 +1163,8 @@ function App() {
     viewRef.current = route.view;
     setView(route.view);
     if (route.view !== "detail") {
+      sessionOpenGenerationRef.current += 1;
+      setBusy(false);
       selectedIdRef.current = null;
       selectedProviderRef.current = "codex";
       setSelectedId(null);
