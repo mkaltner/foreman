@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#53 Restore the last-opened session across navigation and
-  relaunch](https://github.com/mkaltner/foreman/issues/53).
 - [ ] [#54 Hide provider UI when only one provider is
   enabled](https://github.com/mkaltner/foreman/issues/54).
 - [ ] [#55 Add About information to web and
@@ -65,6 +63,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Remember the last-opened session per host across navigation and relaunch
+  ([PR #66](https://github.com/mkaltner/foreman/pull/66)).
 - [x] Preserve provider session activity and terminal timestamps across
   service restarts
   ([PR #64](https://github.com/mkaltner/foreman/pull/64)).

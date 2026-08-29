@@ -315,6 +315,98 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun rememberedSessionSurvivesRecreationAndValidatesAfterSynchronization() {
+        val target = rememberedSessionTarget(PROVIDER_CLAUDE_CODE, "claude-thread")
+        val session = SessionSummary(
+            id = "claude-thread",
+            repository = "/repo",
+            title = "Claude thread",
+            status = "idle",
+            provider = PROVIDER_CLAUDE_CODE,
+        )
+        val providers = listOf(
+            ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true),
+            ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", enabled = true, available = true),
+        )
+
+        assertEquals(Screen.Detail, restorationDestination(target))
+        assertEquals(session, restorableSessionSummary(requireNotNull(target), providers, listOf(session)))
+        assertEquals(target, rememberedSessionForEntry(target, true, providers, listOf(session)))
+        assertNull(restorableSessionSummary(target, providers, emptyList()))
+        assertNull(rememberedSessionForEntry(target, true, providers, emptyList()))
+        assertEquals(target, rememberedSessionForEntry(target, false, emptyList(), emptyList()))
+        assertNull(restorableSessionSummary(target, providers.map {
+            if (it.id == PROVIDER_CLAUDE_CODE) it.copy(enabled = false) else it
+        }, listOf(session)))
+        val unavailableProviders = providers.map {
+            if (it.id == PROVIDER_CLAUDE_CODE) it.copy(available = false) else it
+        }
+        assertEquals(
+            target,
+            rememberedSessionForEntry(target, true, unavailableProviders, emptyList()),
+        )
+        assertEquals(
+            target,
+            rememberedSessionForEntry(
+                target,
+                true,
+                providers,
+                emptyList(),
+                setOf(PROVIDER_CLAUDE_CODE),
+            ),
+        )
+        assertNull(rememberedSessionTarget("future-provider", "thread"))
+    }
+
+    @Test
+    fun rememberedTargetsRemainProviderAndHostSpecific() {
+        val home = rememberedSessionTarget(PROVIDER_CODEX, "same")
+        val work = rememberedSessionTarget(PROVIDER_CLAUDE_CODE, "same")
+
+        assertEquals(RememberedSessionTarget(PROVIDER_CODEX, "same"), home)
+        assertEquals(RememberedSessionTarget(PROVIDER_CLAUDE_CODE, "same"), work)
+        assertFalse(home == work)
+    }
+
+    @Test
+    fun failedProviderListsDoNotEraseItsPersistedSessionPreferences() {
+        val listedCodex = providerSessionKey(PROVIDER_CODEX, "listed")
+        val staleCodex = providerSessionKey(PROVIDER_CODEX, "stale")
+        val retainedClaude = providerSessionKey(PROVIDER_CLAUDE_CODE, "retry")
+
+        assertEquals(
+            setOf(listedCodex, retainedClaude),
+            retainedSessionPreferenceIds(
+                listedSessionIds = setOf(listedCodex),
+                persistedSessionIds = setOf(staleCodex, retainedClaude),
+                nonAuthoritativeProviders = setOf(PROVIDER_CLAUDE_CODE),
+            ),
+        )
+    }
+
+    @Test
+    fun unavailableEnabledProvidersHaveNoAuthoritativeSessionList() {
+        val providers = listOf(
+            ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true),
+            ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", enabled = true, available = false),
+        )
+
+        assertEquals(
+            setOf(PROVIDER_CLAUDE_CODE),
+            sessionProvidersWithoutAuthoritativeLists(providers, emptySet()),
+        )
+        assertEquals(
+            setOf(PROVIDER_CODEX),
+            sessionProvidersWithoutAuthoritativeLists(
+                providers.map {
+                    if (it.id == PROVIDER_CLAUDE_CODE) it.copy(enabled = false) else it
+                },
+                setOf(PROVIDER_CODEX),
+            ),
+        )
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),

@@ -63,6 +63,7 @@ import {
   liveActivityLabel,
   liveActivityMessage,
   providerEnabled,
+  isProviderId,
   routeForSession,
   providerSessionKey,
   reconcileSessionSummaries,
@@ -105,8 +106,11 @@ import {
   saveAppearance,
   saveCollapsedRepositories,
   clearHostNotificationOverride,
+  clearRememberedSession,
+  loadRememberedSession,
   saveHostRegistry,
   saveNotificationPreferences,
+  saveRememberedSession,
   saveSessionSearch,
   saveSessionOrganization,
   selectStoredHost,
@@ -219,12 +223,23 @@ export function reconcileSessionPending<T extends { id: string; sessionId: strin
 }
 
 function App() {
-  const initialRoute = useRef(parseWebRoute(window.location.pathname)).current;
+  const requestedRoute = useRef(parseWebRoute(window.location.pathname)).current;
   const initialRegistry = useRef(loadHostRegistry()).current;
   const requestedHostId = hostIdFromUrl();
   const initialHostId = initialRegistry.hosts.some(({ id }) => id === requestedHostId)
     ? requestedHostId
     : initialRegistry.activeHostId;
+  const rememberedAtLaunch = loadRememberedSession(initialHostId);
+  const normalizedLaunchPath = window.location.pathname.replace(/\/+$/, "") || "/";
+  const initialRoute = useRef<WebRoute>(
+    (normalizedLaunchPath === "/" || normalizedLaunchPath === "/sessions") && rememberedAtLaunch
+      ? {
+        view: "detail",
+        provider: rememberedAtLaunch.provider,
+        sessionId: rememberedAtLaunch.sessionId,
+      }
+      : requestedRoute,
+  ).current;
   const initialFilters = useRef(parseSessionFilters(
     window.location.search || (initialHostId ? loadSessionSearch(initialHostId) : ""),
   )).current;
@@ -300,6 +315,10 @@ function App() {
   const lastBackendSearchKey = useRef("");
   const searchGeneration = useRef(0);
   const sessionsRef = useRef<SessionSummary[]>([]);
+  const sessionListAuthoritativeRef = useRef<Record<ProviderId, boolean>>({
+    codex: false,
+    "claude-code": false,
+  });
   const repositoriesRef = useRef<RepositoryInfo[]>([]);
   const repositoryRootRef = useRef("");
   const currentRef = useRef<SessionSummary | null>(null);
@@ -316,6 +335,7 @@ function App() {
   const presenceProjectionGuardRef = useRef(new SessionPresenceProjectionGuard());
   const sessionOpenGenerationRef = useRef(0);
   const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
+  const enterSessionsRef = useRef<(replace?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
   const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
 
@@ -646,15 +666,40 @@ function App() {
     if (message.type === "provider.event") {
       const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
       if (Array.isArray(nextProviders)) {
-        const enabled = new Set(nextProviders.filter(providerEnabled).map(({ id }) => id));
+        sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
+        const enabled = new Set(
+          nextProviders
+            .filter((provider) => providerEnabled(provider) && isProviderId(provider.id))
+            .map(({ id }) => id),
+        );
+        const openable = new Set(
+          nextProviders
+            .filter((provider) => providerEnabled(provider) && provider.available && isProviderId(provider.id))
+            .map(({ id }) => id),
+        );
         setProviders(nextProviders);
         setSessions((previous) => {
-          const next = previous.filter((session) => enabled.has(sessionProvider(session)));
+          const next = previous.filter((session) => openable.has(sessionProvider(session)));
           sessionsRef.current = next;
           return next;
         });
-        setSearchResults((previous) => previous.filter(({ session }) => enabled.has(sessionProvider(session))));
-        setCurrent((previous) => previous && enabled.has(sessionProvider(previous)) ? previous : null);
+        setSearchResults((previous) => previous.filter(({ session }) => openable.has(sessionProvider(session))));
+        setCurrent((previous) => previous && openable.has(sessionProvider(previous)) ? previous : null);
+        const hostId = activeHostIdRef.current;
+        const remembered = loadRememberedSession(hostId);
+        if (remembered && !enabled.has(remembered.provider)) clearRememberedSession(hostId);
+        if (viewRef.current === "detail" && !openable.has(selectedProviderRef.current)) {
+          sessionOpenGenerationRef.current += 1;
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
+          currentRef.current = null;
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
+          setCurrent(null);
+          setView("sessions");
+          updateRoute({ view: "sessions" }, true);
+        }
       }
       return;
     }
@@ -666,6 +711,7 @@ function App() {
     const payload = message.payload as unknown as SessionEventPayload;
     if (!payload.sessionId || !payload.event) return;
     const provider = payload.provider ?? "codex";
+    if (!isProviderId(provider)) return;
     const identityKey = providerSessionKey(provider, payload.sessionId);
     const feedSession = payload.event.session ?? sessionsRef.current.find(
       (session) => session.id === payload.sessionId && sessionProvider(session) === provider,
@@ -685,6 +731,11 @@ function App() {
     }
     if (payload.event.kind === "lifecycle") {
       if (payload.event.action === "removed") {
+        const hostId = activeHostIdRef.current;
+        const remembered = loadRememberedSession(hostId);
+        if (remembered?.provider === provider && remembered.sessionId === payload.sessionId) {
+          clearRememberedSession(hostId);
+        }
         setSessions((previous) => {
           const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
           sessionsRef.current = next;
@@ -699,6 +750,18 @@ function App() {
           if (activeHostIdRef.current) saveSessionOrganization(next, activeHostIdRef.current);
           return next;
         });
+        if (selectedIdRef.current === payload.sessionId && selectedProviderRef.current === provider) {
+          sessionOpenGenerationRef.current += 1;
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
+          currentRef.current = null;
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
+          setCurrent(null);
+          setView("sessions");
+          updateRoute({ view: "sessions" }, true);
+        }
       } else if (payload.event.session) {
         setSessions((previous) => {
           const projected = { ...payload.event.session!, provider };
@@ -809,6 +872,7 @@ function App() {
     focusedSessionsRef.current = new Set();
     publishedPresenceRef.current = undefined;
     sessionsRef.current = [];
+    sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
     currentRef.current = null;
     selectedIdRef.current = null;
     selectedProviderRef.current = "codex";
@@ -919,7 +983,7 @@ function App() {
       const claudeAvailable = providerResult.providers.some(
         (provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available,
       );
-      const [approvalResult, inputResult, codexSessionResult, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
+      const [approvalResult, inputResult, codexSessionRequest, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
         codexAvailable
           ? client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list")
           : Promise.resolve({ approvals: [] as ApprovalRequest[] }),
@@ -928,7 +992,9 @@ function App() {
           : Promise.resolve({ inputs: [] as InputRequest[] }),
         codexAvailable
           ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })
-          : Promise.resolve({ sessions: [] as SessionSummary[] }),
+            .then((result) => ({ result, authoritative: true }))
+            .catch(() => ({ result: { sessions: [] as SessionSummary[] }, authoritative: false }))
+          : Promise.resolve({ result: { sessions: [] as SessionSummary[] }, authoritative: false }),
         codexAvailable
           ? client.request<{ models: ModelInfo[] } & Record<string, unknown>>("model.list")
           : Promise.resolve({ models: [] as ModelInfo[] }),
@@ -941,20 +1007,32 @@ function App() {
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
-      const [claudeSessionResult, claudeModelResult, claudePermissionResult] = claudeAvailable
+      const [claudeSessionRequest, claudeModelResult, claudePermissionResult] = claudeAvailable
         ? await Promise.all([
-          client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" }),
+          client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "claude-code" })
+            .then((result) => ({ result, authoritative: true }))
+            .catch(() => ({ result: { sessions: [] as SessionSummary[] }, authoritative: false })),
           client.request<{ models: Array<{ id: string; displayName: string; description?: string }> } & Record<string, unknown>>("provider.model.list", { provider: "claude-code" }),
           client.request<{ modes: PermissionModeInfo[] } & Record<string, unknown>>("provider.permission.list", { provider: "claude-code" }),
         ])
-        : [{ sessions: [] as SessionSummary[] }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
+        : [{ result: { sessions: [] as SessionSummary[] }, authoritative: false }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
       if (activeHostIdRef.current !== hostId) return;
+      sessionListAuthoritativeRef.current = {
+        codex: codexSessionRequest.authoritative,
+        "claude-code": claudeSessionRequest.authoritative,
+      };
       setApprovals(approvalResult.approvals);
       setInputs(inputResult.inputs);
       setProviders(providerResult.providers);
       const incoming = [
-        ...codexSessionResult.sessions.map((session) => ({ ...session, provider: "codex" as const })),
-        ...claudeSessionResult.sessions.map((session) => ({ ...session, provider: "claude-code" as const })),
+        ...(codexSessionRequest.authoritative
+          ? codexSessionRequest.result.sessions
+          : sessionsRef.current.filter((session) => sessionProvider(session) === "codex"))
+          .map((session) => ({ ...session, provider: "codex" as const })),
+        ...(claudeSessionRequest.authoritative
+          ? claudeSessionRequest.result.sessions
+          : sessionsRef.current.filter((session) => sessionProvider(session) === "claude-code"))
+          .map((session) => ({ ...session, provider: "claude-code" as const })),
       ];
       const reconciled = reconcileSessionSummaries(sessionsRef.current, incoming);
       sessionsRef.current = reconciled;
@@ -1018,13 +1096,49 @@ function App() {
             : Promise.resolve();
         }),
       ]);
+      if (activeHostIdRef.current !== hostId) return;
       const reopenGeneration = sessionOpenGenerationRef.current;
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
         const reopenProvider = selectedProviderRef.current;
+        const fallbackFromReopen = (clearStaleMemory: boolean) => {
+          if (
+            reopenGeneration !== sessionOpenGenerationRef.current ||
+            activeHostIdRef.current !== hostId ||
+            viewRef.current !== "detail" ||
+            selectedIdRef.current !== reopenId ||
+            selectedProviderRef.current !== reopenProvider
+          ) return;
+          if (clearStaleMemory) clearRememberedSession(hostId);
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
+          currentRef.current = null;
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
+          setCurrent(null);
+          setBusy(false);
+          setView("sessions");
+          updateRoute({ view: "sessions" }, true);
+        };
+        const provider = providerResult.providers.find((candidate) => candidate.id === reopenProvider);
+        const providerStillEnabled = provider !== undefined && providerEnabled(provider);
+        const providerAvailable = providerStillEnabled && provider.available;
+        const sessionListAuthoritative = reopenProvider === "codex"
+          ? codexSessionRequest.authoritative
+          : claudeSessionRequest.authoritative;
+        const summary = reconciled.find(
+          (session) => session.id === reopenId && sessionProvider(session) === reopenProvider,
+        );
+        if (!providerStillEnabled || (providerAvailable && sessionListAuthoritative && !summary)) {
+          fallbackFromReopen(true);
+          return;
+        }
+        if (!providerAvailable || !sessionListAuthoritative || !summary) {
+          fallbackFromReopen(false);
+          return;
+        }
         try {
-          const summary = reconciled.find((session) => session.id === reopenId && sessionProvider(session) === reopenProvider);
-          if (!summary) throw new Error("Session is no longer available");
           const result = await client.request<
             { session: SessionSummary } & Record<string, unknown>
           >("provider.session.read", {
@@ -1034,26 +1148,16 @@ function App() {
           });
           if (
             reopenGeneration !== sessionOpenGenerationRef.current ||
+            activeHostIdRef.current !== hostId ||
             viewRef.current !== "detail" ||
             selectedIdRef.current !== reopenId ||
             selectedProviderRef.current !== reopenProvider
           ) return;
           setCurrent((previous) => reconcileSessionSettings(previous, { ...result.session, provider: reopenProvider }));
+          saveRememberedSession({ hostId, provider: reopenProvider, sessionId: reopenId });
           await client.request("provider.session.subscribe", { provider: reopenProvider, sessionId: reopenId });
         } catch {
-          if (
-            reopenGeneration !== sessionOpenGenerationRef.current ||
-            viewRef.current !== "detail" ||
-            selectedIdRef.current !== reopenId ||
-            selectedProviderRef.current !== reopenProvider
-          ) return;
-          selectedIdRef.current = null;
-          selectedProviderRef.current = "codex";
-          setSelectedId(null);
-          setSelectedProvider("codex");
-          setCurrent(null);
-          setView("dashboard");
-          updateRoute({ view: "dashboard" }, true);
+          fallbackFromReopen(false);
         }
       }
     },
@@ -1083,6 +1187,7 @@ function App() {
   const openSession = useCallback(
     async (provider: ProviderId, id: string, updateHistory = true, matchedItemId: string | null = null, approvalId: string | null = null) => {
       const generation = ++sessionOpenGenerationRef.current;
+      const hostId = activeHostIdRef.current;
       const approvalsAtOpen = approvals.filter((approval) => approval.sessionId === id);
       const inputsAtOpen = inputs.filter((input) => input.sessionId === id);
       setError("");
@@ -1119,6 +1224,7 @@ function App() {
         ]);
         if (
           generation !== sessionOpenGenerationRef.current ||
+          activeHostIdRef.current !== hostId ||
           viewRef.current !== "detail" ||
           selectedIdRef.current !== id ||
           selectedProviderRef.current !== provider
@@ -1131,10 +1237,26 @@ function App() {
           }
         }
         setCurrent((previous) => reconcileSessionSettings(previous, { ...result.session, provider }));
+        if (hostId) saveRememberedSession({ hostId, provider, sessionId: id });
         await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
-        if (generation === sessionOpenGenerationRef.current) {
+        if (
+          generation === sessionOpenGenerationRef.current &&
+          activeHostIdRef.current === hostId &&
+          viewRef.current === "detail" &&
+          selectedIdRef.current === id &&
+          selectedProviderRef.current === provider
+        ) {
           setError(caught instanceof Error ? caught.message : "Session could not be loaded");
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
+          currentRef.current = null;
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
+          setCurrent(null);
+          setView("sessions");
+          updateRoute({ view: "sessions" }, true);
         }
       } finally {
         if (generation === sessionOpenGenerationRef.current) setBusy(false);
@@ -1155,6 +1277,7 @@ function App() {
     }
     selectedIdRef.current = null;
     selectedProviderRef.current = "codex";
+    currentRef.current = null;
     setSelectedId(null);
     setSelectedProvider("codex");
     setCurrent(null);
@@ -1168,6 +1291,7 @@ function App() {
       setBusy(false);
       selectedIdRef.current = null;
       selectedProviderRef.current = "codex";
+      currentRef.current = null;
       setSelectedId(null);
       setSelectedProvider("codex");
       setCurrent(null);
@@ -1182,9 +1306,13 @@ function App() {
     }
   }, []);
 
-  const activateHost = useCallback((hostId: string, route: WebRoute = { view: "dashboard" }, replace = false, filtersSearch?: string) => {
+  const activateHost = useCallback((hostId: string, route?: WebRoute, replace = false, filtersSearch?: string) => {
     const registry = hostRegistryRef.current;
     if (!registry.hosts.some((host) => host.id === hostId)) return;
+    const rememberedSession = !route || route.view === "sessions" ? loadRememberedSession(hostId) : null;
+    const destination: WebRoute = rememberedSession
+      ? { view: "detail", provider: rememberedSession.provider, sessionId: rememberedSession.sessionId }
+      : route ?? { view: "sessions" };
     const switching = activeHostIdRef.current !== hostId;
     if (switching) {
       client.disconnect();
@@ -1208,9 +1336,9 @@ function App() {
     const filters = parseSessionFilters(filtersSearch ?? loadSessionSearch(hostId));
     searchFiltersRef.current = filters;
     setSearchFilters(filters);
-    restoreView(route, !switching && connectedRef.current);
+    restoreView(destination, !switching && connectedRef.current);
     const search = withHostInSearch(sessionFiltersSearch(filters), hostId);
-    const path = webRoutePath(route);
+    const path = webRoutePath(destination);
     window.history[replace ? "replaceState" : "pushState"](null, "", `${path}${search}`);
   }, [clearHostProjections, client, persistRegistry, restoreView]);
 
@@ -1223,6 +1351,7 @@ function App() {
       const route = parseWebRoute(window.location.pathname);
       const hostId = hostIdFromUrl();
       if (hostId) activateHost(hostId, route, true, window.location.search);
+      else if (route.view === "sessions") enterSessionsRef.current(true);
       else restoreView(route, connectedRef.current);
     };
     window.addEventListener("popstate", restoreRoute);
@@ -1236,12 +1365,48 @@ function App() {
     updateRoute({ view: "dashboard" }, replace);
   };
 
-  const showSessions = (replace = false) => {
+  const showSessionList = (replace = false) => {
     viewRef.current = "sessions";
     setView("sessions");
     closeSelectedSession();
     updateRoute({ view: "sessions" }, replace);
   };
+
+  const enterSessions = (replace = false) => {
+    const hostId = activeHostIdRef.current;
+    const remembered = loadRememberedSession(hostId);
+    if (!hostId || !remembered) {
+      showSessionList(replace);
+      return;
+    }
+    const authoritative = connectedRef.current && providers.length > 0;
+    const provider = providers.find((candidate) => candidate.id === remembered.provider);
+    const providerStillEnabled = provider !== undefined && providerEnabled(provider);
+    const providerAvailable = providerStillEnabled && provider.available;
+    const sessionAvailable = sessionsRef.current.some(
+      (session) => session.id === remembered.sessionId && sessionProvider(session) === remembered.provider,
+    );
+    if (authoritative && (
+      !providerStillEnabled ||
+      (providerAvailable && sessionListAuthoritativeRef.current[remembered.provider] && !sessionAvailable)
+    )) {
+      clearRememberedSession(hostId);
+      showSessionList(replace);
+      return;
+    }
+    if (authoritative && (!providerAvailable || !sessionAvailable)) {
+      showSessionList(replace);
+      return;
+    }
+    const route: WebRoute = {
+      view: "detail",
+      provider: remembered.provider,
+      sessionId: remembered.sessionId,
+    };
+    restoreView(route, connectedRef.current);
+    updateRoute(route, replace);
+  };
+  enterSessionsRef.current = enterSessions;
 
   const showSettings = () => {
     viewRef.current = "settings";
@@ -1310,7 +1475,7 @@ function App() {
     setError("");
     restoreView({ view: "sessions" }, false);
     const search = next.activeHostId ? withHostInSearch("", next.activeHostId) : "";
-    window.history.replaceState(null, "", `/${search}`);
+    window.history.replaceState(null, "", `/sessions${search}`);
   };
 
   const pairHost = async (settings: PairingSettings, pairingKey: string) => {
@@ -1342,7 +1507,7 @@ function App() {
       setSearchFilters(filters);
       setHostSetupOpen(false);
       restoreView({ view: "sessions" }, false);
-      window.history.pushState(null, "", `/${withHostInSearch("", saved.id)}`);
+      window.history.pushState(null, "", `/sessions${withHostInSearch("", saved.id)}`);
     } catch (caught) {
       setError(setupError(caught));
     } finally {
@@ -1482,14 +1647,21 @@ function App() {
           activeHostId={activeHost.id}
           activeState={connection}
           detail={connectionDetail}
-          onSelect={(hostId) => activateHost(hostId)}
+          onSelect={(hostId) => activateHost(
+            hostId,
+            viewRef.current === "dashboard"
+              ? { view: "dashboard" }
+              : viewRef.current === "settings"
+                ? { view: "settings" }
+                : undefined,
+          )}
           onAdd={() => setHostSetupOpen(true)}
         />
         <nav>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => showDashboard()}>
             Dashboard
           </button>
-          <button className={view === "sessions" || view === "detail" ? "active" : ""} onClick={() => showSessions()}>
+          <button className={view === "sessions" || view === "detail" ? "active" : ""} onClick={() => enterSessions()}>
             Sessions
           </button>
           <button className={view === "settings" ? "active" : ""} onClick={showSettings}>
@@ -1644,6 +1816,10 @@ function App() {
                 await client.request(request.type, request.payload);
                 const provider = sessionProvider(session);
                 const identityKey = providerSessionKey(provider, session.id);
+                const remembered = loadRememberedSession(activeHostIdRef.current);
+                if (remembered?.provider === provider && remembered.sessionId === session.id) {
+                  clearRememberedSession(remembered.hostId);
+                }
                 setSessions((previous) => {
                   const next = previous.filter((item) => providerSessionKey(sessionProvider(item), item.id) !== identityKey);
                   sessionsRef.current = next;
@@ -1666,7 +1842,7 @@ function App() {
                   setSelectedId(null);
                   setSelectedProvider("codex");
                   setCurrent(null);
-                  showSessions(true);
+                  showSessionList(true);
                 }
               } catch (caught) {
                 setError(caught instanceof Error ? caught.message : `${action} failed`);
@@ -1692,7 +1868,7 @@ function App() {
                 onDraftChange={(text) => setMessageDrafts((previous) =>
                   updateMessageDraft(previous, activeHost.id, sessionProvider(current), current.id, text)
                 )}
-                onBack={() => showSessions()}
+                onBack={() => showSessionList()}
                 onRequest={requestAndReconcile}
                 onError={setError}
               />
@@ -1747,6 +1923,8 @@ function App() {
               setSelectedId(result.session.id);
               setSelectedProvider(settings.provider);
               setCurrent(created);
+              const hostId = activeHostIdRef.current;
+              if (hostId) saveRememberedSession({ hostId, provider: settings.provider, sessionId: result.session.id });
               viewRef.current = "detail";
               setView("detail");
               updateRoute({ view: "detail", provider: settings.provider, sessionId: result.session.id });

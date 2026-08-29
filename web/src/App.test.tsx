@@ -4,13 +4,15 @@ import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserT
 import type { ApprovalRequest, SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
-import { loadHostRegistry, saveHostRegistry, type StoredHost } from "./storage";
+import { loadHostRegistry, loadRememberedSession, saveHostRegistry, saveRememberedSession, type StoredHost } from "./storage";
 
 const clientMock = vi.hoisted(() => ({
   pair: vi.fn(),
   start: vi.fn(),
   request: vi.fn(),
   disconnect: vi.fn(),
+  onState: undefined as undefined | ((state: "connected") => void),
+  onEvent: undefined as undefined | ((message: unknown) => void),
 }));
 
 vi.mock("./client", async (importOriginal) => {
@@ -18,6 +20,10 @@ vi.mock("./client", async (importOriginal) => {
   return {
     ...actual,
     ForemanWebClient: class {
+      constructor(options: { onState: (state: "connected") => void; onEvent: (message: unknown) => void }) {
+        clientMock.onState = options.onState;
+        clientMock.onEvent = options.onEvent;
+      }
       pair = clientMock.pair;
       start = clientMock.start;
       request = clientMock.request;
@@ -58,6 +64,60 @@ function forgetButton(displayName: string): HTMLButtonElement {
   return within(card).getByRole("button", { name: "Forget" });
 }
 
+function mockConnectedState(
+  sessions: SessionSummary[],
+  providers: Array<{ id: "codex" | "claude-code"; displayName: string; enabled: boolean; available: boolean }> = [
+    { id: "codex", displayName: "Codex", enabled: true, available: true },
+  ],
+  read: (session: SessionSummary) => Promise<{ session: SessionSummary }> = async (session) => ({ session }),
+  failedSessionLists: ReadonlySet<"codex" | "claude-code"> = new Set(),
+): void {
+  clientMock.start.mockImplementation(async (
+    _endpoint: unknown,
+    _token: string,
+    onReady: (reconnected: boolean) => Promise<void>,
+  ) => {
+    clientMock.onState?.("connected");
+    return onReady(false);
+  });
+  clientMock.request.mockImplementation(async (type: string, payload?: Record<string, unknown>) => {
+    switch (type) {
+      case "provider.list":
+        return { providers: providers.map((provider) => ({ ...provider, capabilities: [], limitations: [] })) };
+      case "approval.list": return { approvals: [] };
+      case "input.list": return { inputs: [] };
+      case "provider.session.list":
+        if (failedSessionLists.has(payload?.provider as "codex" | "claude-code")) {
+          throw new Error("Provider session list is temporarily unavailable");
+        }
+        return { sessions: sessions.filter((session) => (session.provider ?? "codex") === payload?.provider) };
+      case "provider.session.read": {
+        const session = sessions.find((candidate) =>
+          candidate.id === payload?.sessionId && (candidate.provider ?? "codex") === payload?.provider
+        );
+        if (!session) throw new Error("Session is missing");
+        return read(session);
+      }
+      case "model.list": return { models: [] };
+      case "access.list": return { levels: [] };
+      case "provider.model.list": return { models: [] };
+      case "provider.permission.list": return { modes: [] };
+      case "service.status": return {
+        foremanVersion: "test",
+        connected: true,
+        uptimeSeconds: 1,
+        repositoryRoot: "/projects",
+        codex: { connected: true, mode: "shared", runtimeStatus: "ready" },
+        listeners: { tcpPort: 8765, webPort: 8766 },
+      };
+      case "usage.status": return { providers: {} };
+      case "repository.list": return { repositories: [] };
+      case "client.list": return { clients: [] };
+      default: return {};
+    }
+  });
+}
+
 describe("host navigation history", () => {
   const home = storedHost("home", "Home", true);
   const work = storedHost("work", "Work", false);
@@ -69,6 +129,8 @@ describe("host navigation history", () => {
     clientMock.start.mockReset().mockResolvedValue(undefined);
     clientMock.request.mockReset().mockResolvedValue({});
     clientMock.disconnect.mockReset();
+    clientMock.onState = undefined;
+    clientMock.onEvent = undefined;
   });
 
   afterEach(() => {
@@ -85,7 +147,7 @@ describe("host navigation history", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/sessions");
     expect(new URLSearchParams(window.location.search).get("host")).toBe(loadHostRegistry().activeHostId);
   });
 
@@ -98,9 +160,228 @@ describe("host navigation history", () => {
     fireEvent.click(forgetButton(home.displayName));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/sessions");
     expect(window.location.search).toBe(`?host=${work.id}`);
     expect(loadHostRegistry().activeHostId).toBe(work.id);
+  });
+
+  it("resumes the last session when Sessions is entered from Settings", async () => {
+    const session: SessionSummary = {
+      provider: "claude-code",
+      id: "claude-thread",
+      repositoryId: "repo",
+      repository: "/projects/foreman",
+      title: "Claude thread",
+      status: "idle",
+      messages: [],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/claude-code/${session.id}?host=${home.id}`);
+    mockConnectedState([session], [
+      { id: "codex", displayName: "Codex", enabled: true, available: true },
+      { id: "claude-code", displayName: "Claude Code", enabled: true, available: true },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+    expect(window.location.pathname).toBe(`/sessions/claude-code/${session.id}`);
+  });
+
+  it("resumes the last session when Sessions is entered from Dashboard", async () => {
+    const session: SessionSummary = { id: "dashboard-return", repository: "/repo", title: "Dashboard return", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    mockConnectedState([session]);
+
+    render(<App />);
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    fireEvent.click(within(document.querySelector(".topbar nav")!).getByRole("button", { name: "Dashboard" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/dashboard"));
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+  });
+
+  it("restores the last session after a reload or fresh root launch", async () => {
+    const session: SessionSummary = { id: "thread-reopen", repository: "/repo", title: "Remember me", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    mockConnectedState([session]);
+
+    const first = render(<App />);
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    first.unmount();
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    render(<App />);
+
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+    expect(window.location.pathname).toBe(`/sessions/codex/${session.id}`);
+  });
+
+  it("keeps last sessions isolated while switching hosts", async () => {
+    const homeSession: SessionSummary = { id: "home-thread", repository: "/home", title: "Home session", status: "idle", messages: [] };
+    const workSession: SessionSummary = { id: "work-thread", provider: "claude-code", repositoryId: "work", repository: "/work", title: "Work session", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home, work], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: homeSession.id });
+    saveRememberedSession({ hostId: work.id, provider: "claude-code", sessionId: workSession.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    mockConnectedState([homeSession, workSession], [
+      { id: "codex", displayName: "Codex", enabled: true, available: true },
+      { id: "claude-code", displayName: "Claude Code", enabled: true, available: true },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(homeSession.title));
+    fireEvent.change(screen.getByLabelText("Saved host"), { target: { value: work.id } });
+
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(workSession.title));
+    expect(window.location.search).toContain(`host=${work.id}`);
+  });
+
+  it("clears a missing session after an authoritative synchronization", async () => {
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: "gone" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([]);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    await waitFor(() => expect(loadRememberedSession(home.id)).toBeNull());
+    expect(window.location.pathname).toBe("/sessions");
+  });
+
+  it("clears memory when its provider is disabled", async () => {
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "claude-code", sessionId: "disabled" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([], [
+      { id: "codex", displayName: "Codex", enabled: true, available: true },
+      { id: "claude-code", displayName: "Claude Code", enabled: false, available: true },
+    ]);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    await waitFor(() => expect(loadRememberedSession(home.id)).toBeNull());
+  });
+
+  it("keeps valid memory after transient read failure", async () => {
+    const session: SessionSummary = { id: "retry", repository: "/repo", title: "Retry", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: session.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    mockConnectedState([session], undefined, async () => { throw new Error("Connection closed"); });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id);
+  });
+
+  it("does not erase memory during temporary provider unavailability", async () => {
+    const session: SessionSummary = { id: "outage", repository: "/repo", title: "Outage", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    mockConnectedState([session]);
+
+    render(<App />);
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "provider.event",
+      payload: { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: false }] },
+    }));
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id);
+  });
+
+  it("keeps other providers synchronized when one session list temporarily fails", async () => {
+    const codex: SessionSummary = { id: "codex-ok", repository: "/repo", title: "Codex remains", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "claude-code", sessionId: "claude-retry" });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([codex], [
+      { id: "codex", displayName: "Codex", enabled: true, available: true },
+      { id: "claude-code", displayName: "Claude Code", enabled: true, available: true },
+    ], async (session) => ({ session }), new Set(["claude-code"]));
+
+    render(<App />);
+
+    await screen.findByText(codex.title);
+    expect(loadRememberedSession(home.id)?.sessionId).toBe("claude-retry");
+  });
+
+  it("clears remembered identity when the authoritative lifecycle removes the session", async () => {
+    const session: SessionSummary = { id: "deleted", repository: "/repo", title: "Deleted", status: "idle", messages: [] };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    mockConnectedState([session]);
+
+    render(<App />);
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: {
+        provider: "codex",
+        sessionId: session.id,
+        event: { kind: "lifecycle", action: "removed" },
+      },
+    }));
+
+    await screen.findByRole("heading", { name: "Sessions" });
+    expect(loadRememberedSession(home.id)).toBeNull();
+    expect(window.location.pathname).toBe("/sessions");
+  });
+
+  it("resumes memory from /sessions while Dashboard and detail URLs remain explicit", async () => {
+    const remembered: SessionSummary = { id: "remembered", repository: "/repo", title: "Remembered", status: "idle", messages: [] };
+    const linked: SessionSummary = { ...remembered, id: "linked", title: "Linked" };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: remembered.id });
+    mockConnectedState([remembered, linked]);
+
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    const resumedView = render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(remembered.title));
+    resumedView.unmount();
+
+    window.history.replaceState(null, "", `/dashboard?host=${home.id}`);
+    const dashboardView = render(<App />);
+    await waitFor(() => expect(window.location.pathname).toBe("/dashboard"));
+    dashboardView.unmount();
+
+    window.history.replaceState(null, "", `/sessions/codex/${linked.id}?host=${home.id}`);
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(linked.title));
+    expect(loadRememberedSession(home.id)?.sessionId).toBe(linked.id);
+  });
+
+  it("does not let an older restore override a newer Dashboard choice", async () => {
+    const session: SessionSummary = { id: "slow", repository: "/repo", title: "Slow", status: "idle", messages: [] };
+    let resolveRead!: (value: { session: SessionSummary }) => void;
+    const read = new Promise<{ session: SessionSummary }>((resolve) => { resolveRead = resolve; });
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: session.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    mockConnectedState([session], undefined, () => read);
+
+    render(<App />);
+    await waitFor(() => expect(clientMock.request).toHaveBeenCalledWith(
+      "provider.session.read",
+      expect.objectContaining({ sessionId: session.id }),
+    ));
+    fireEvent.click(within(document.querySelector(".topbar nav")!).getByRole("button", { name: "Dashboard" }));
+    await act(async () => resolveRead({ session }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/dashboard"));
+    expect(document.querySelector(".conversation-header h1")).toBeNull();
   });
 
   it("keeps the active host while opening the sessions root after forgetting another host", async () => {
@@ -112,7 +393,7 @@ describe("host navigation history", () => {
     fireEvent.click(forgetButton(work.displayName));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument());
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/sessions");
     expect(window.location.search).toBe(`?host=${home.id}`);
     expect(loadHostRegistry()).toMatchObject({
       activeHostId: home.id,

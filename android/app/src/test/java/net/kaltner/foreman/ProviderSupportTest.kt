@@ -32,6 +32,15 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun unknownProvidersAreNotSilentlyTreatedAsCodexOrClaude() {
+        val session = SessionSummary("thread", "/repo", "Future", "idle", provider = "future-provider")
+
+        assertFalse(supportedProvider("future-provider"))
+        assertEquals("future-provider", sessionProvider(session))
+        assertEquals("Provider", providerDisplayName("future-provider"))
+    }
+
+    @Test
     fun contextUsageCalculatesRemainingWindow() {
         val usage = contextUsageView(
             ThreadTokenUsage(

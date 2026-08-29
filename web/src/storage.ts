@@ -1,4 +1,5 @@
 import type { ActivityDetail } from "./activity-detail";
+import { isProviderId, type ProviderId } from "./protocol";
 
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
@@ -55,6 +56,7 @@ const DASHBOARD_KEY = "foreman.dashboard.v1";
 const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 const SESSION_SEARCH_KEY = "foreman.session-search.v1";
 const COLLAPSED_REPOSITORIES_KEY = "foreman.collapsed-repositories.v1";
+const LAST_SESSION_KEY = "foreman.last-session.v1";
 const HOST_SCOPED_KEYS = [
   APPEARANCE_KEY,
   NOTIFICATIONS_KEY,
@@ -63,6 +65,7 @@ const HOST_SCOPED_KEYS = [
   SESSION_ORGANIZATION_KEY,
   SESSION_SEARCH_KEY,
   COLLAPSED_REPOSITORIES_KEY,
+  LAST_SESSION_KEY,
 ];
 export const DEFAULT_APPEARANCE: Appearance = {
   theme: "system",
@@ -378,6 +381,56 @@ export function loadSessionSearch(hostId: string, storage: Storage = localStorag
 
 export function saveSessionSearch(hostId: string, search: string, storage: Storage = localStorage): void {
   storage.setItem(scopedKey(SESSION_SEARCH_KEY, hostId), search.slice(0, 4000));
+}
+
+export interface RememberedSession {
+  hostId: string;
+  provider: ProviderId;
+  sessionId: string;
+}
+
+export function loadRememberedSession(
+  hostId: string | null | undefined,
+  storage: Storage = localStorage,
+): RememberedSession | null {
+  if (!hostId) return null;
+  try {
+    const parsed = JSON.parse(storage.getItem(scopedKey(LAST_SESSION_KEY, hostId)) ?? "null") as
+      Partial<RememberedSession> | null;
+    if (
+      parsed?.hostId !== hostId ||
+      !isProviderId(parsed.provider) ||
+      typeof parsed.sessionId !== "string" ||
+      !parsed.sessionId ||
+      parsed.sessionId.length > 1000
+    ) return null;
+    return { hostId, provider: parsed.provider, sessionId: parsed.sessionId };
+  } catch {
+    return null;
+  }
+}
+
+export function saveRememberedSession(
+  remembered: RememberedSession,
+  storage: Storage = localStorage,
+): void {
+  if (
+    !remembered.hostId ||
+    !isProviderId(remembered.provider) ||
+    !remembered.sessionId ||
+    remembered.sessionId.length > 1000
+  ) return;
+  storage.setItem(
+    scopedKey(LAST_SESSION_KEY, remembered.hostId),
+    JSON.stringify(remembered),
+  );
+}
+
+export function clearRememberedSession(
+  hostId: string | null | undefined,
+  storage: Storage = localStorage,
+): void {
+  if (hostId) storage.removeItem(scopedKey(LAST_SESSION_KEY, hostId));
 }
 
 function parseRegistry(raw: string | null): HostRegistry | null {
