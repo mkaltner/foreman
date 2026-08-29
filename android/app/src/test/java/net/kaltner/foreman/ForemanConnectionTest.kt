@@ -38,6 +38,7 @@ class ForemanConnectionTest {
                 createdAt = 1,
                 status = "pending",
             )
+        val removedAfterResolution = stale.copy(id = "removed", title = "Removed")
         val changed = stale.copy(id = "changed", title = "Changed")
         val resolvedDuringRefresh = changed.copy(status = "resolved")
         val arrivedDuringRefresh = stale.copy(id = "new-live", title = "New live")
@@ -48,9 +49,9 @@ class ForemanConnectionTest {
             listOf(otherSession, restored, resolvedDuringRefresh, arrivedDuringRefresh),
             reconcileSessionApprovals(
                 current = listOf(otherSession, stale, resolvedDuringRefresh, arrivedDuringRefresh),
-                refreshed = listOf(restored, changed),
+                refreshed = listOf(removedAfterResolution, restored, changed),
                 sessionId = "target",
-                baseline = listOf(stale, changed),
+                baseline = listOf(removedAfterResolution, stale, changed),
             ),
         )
 

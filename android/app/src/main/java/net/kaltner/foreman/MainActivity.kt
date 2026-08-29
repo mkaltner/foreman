@@ -903,13 +903,16 @@ private fun <T> reconcileSessionPendingItems(
 ): List<T> {
     val baselineById =
         baseline.filter { itemSessionId(it) == sessionId }.associateBy(itemId)
+    val currentSessionIds =
+        current.filter { itemSessionId(it) == sessionId }.mapTo(mutableSetOf(), itemId)
+    val removedIds = baselineById.keys.filterTo(mutableSetOf()) { it !in currentSessionIds }
     val newer =
         current.filter { item ->
             itemSessionId(item) == sessionId && baselineById[itemId(item)] != item
         }
-    val newerIds = newer.mapTo(mutableSetOf(), itemId)
+    val protectedIds = removedIds.apply { newer.mapTo(this, itemId) }
     return current.filter { itemSessionId(it) != sessionId } +
-        refreshed.filter { itemSessionId(it) == sessionId && itemId(it) !in newerIds } +
+        refreshed.filter { itemSessionId(it) == sessionId && itemId(it) !in protectedIds } +
         newer
 }
 
@@ -1105,6 +1108,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var notificationApprovalId: String? = null
     private var restorationProvider: String = savedPreferences.selectedSessionProvider
     private var restorationSessionId: String? = savedPreferences.selectedSessionId
+    private var sessionOpenGeneration = 0L
     private var searchJob: Job? = null
     private var workspaceFileJob: Job? = null
     private var lastSearchRequestKey = ""
@@ -1228,7 +1232,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun showOverview() {
-        state.update { it.copy(screen = dashboardBackDestination(), selected = null, error = null) }
+        sessionOpenGeneration += 1
+        state.update { it.copy(screen = dashboardBackDestination(), selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
 
@@ -1245,12 +1250,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun showDashboard() {
-        state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
+        sessionOpenGeneration += 1
+        state.update { it.copy(screen = Screen.Dashboard, selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
 
     fun showSessions() {
-        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
+        sessionOpenGeneration += 1
+        state.update { it.copy(screen = Screen.Sessions, selected = null, loading = false, error = null) }
         synchronizeSessionPresence()
     }
 
@@ -2450,6 +2457,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         focusedApprovalId: String? = null,
         provider: String = PROVIDER_CODEX,
     ) {
+        val generation = ++sessionOpenGeneration
         val approvalsAtOpen = state.value.approvals.filter { it.sessionId == id }
         val inputsAtOpen = state.value.inputs.filter { it.sessionId == id }
         restorationProvider = provider
@@ -2483,6 +2491,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             }
                         Triple(selectedRequest.await(), approvalsRequest.await(), inputsRequest.await())
                     }
+                if (
+                    generation != sessionOpenGeneration ||
+                    state.value.screen != Screen.Detail ||
+                    restorationSessionId != id ||
+                    restorationProvider != provider
+                ) return@runCatching
                 state.update {
                     it.copy(
                         selected = selected,
@@ -2513,7 +2527,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
                 synchronizeSessionPresence()
                 monitorIfActive(selected)
-            }.onFailure(::fail)
+            }.onFailure { error ->
+                if (generation == sessionOpenGeneration) fail(error)
+            }
         }
     }
 
@@ -2788,9 +2804,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun backToSessions() {
+        sessionOpenGeneration += 1
         restorationSessionId = null
         preferences.setSelectedSession(PROVIDER_CODEX, null)
-        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null, focusedApprovalId = null) }
+        state.update { it.copy(screen = Screen.Sessions, selected = null, loading = false, error = null, highlightedItemId = null, focusedApprovalId = null) }
         synchronizeSessionPresence()
         refresh()
     }

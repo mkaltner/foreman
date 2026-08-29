@@ -175,6 +175,50 @@ describe("host navigation history", () => {
     expect(await screen.findByText(approval.title)).toBeInTheDocument();
     expect(approvalReads).toBe(2);
   });
+
+  it("does not let an obsolete session open overwrite newer navigation", async () => {
+    const first: SessionSummary = {
+      id: "thread-a",
+      repository: "/projects/foreman",
+      title: "Session A",
+      status: "idle",
+      messages: [],
+    };
+    const second: SessionSummary = { ...first, id: "thread-b", title: "Session B" };
+    let resolveFirst!: (value: { session: SessionSummary }) => void;
+    const firstRead = new Promise<{ session: SessionSummary }>((resolve) => { resolveFirst = resolve; });
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/?host=${home.id}`);
+    clientMock.start.mockImplementation(async (
+      _endpoint: unknown,
+      _token: string,
+      onReady: (reconnected: boolean) => Promise<void>,
+    ) => onReady(false));
+    clientMock.request.mockImplementation(async (type: string, payload?: Record<string, unknown>) => {
+      switch (type) {
+        case "provider.list": return { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] }] };
+        case "approval.list": return { approvals: [] };
+        case "input.list": return { inputs: [] };
+        case "provider.session.list": return { sessions: [first, second] };
+        case "provider.session.read": return payload?.sessionId === first.id ? firstRead : { session: second };
+        case "model.list": return { models: [] };
+        case "access.list": return { levels: [] };
+        case "service.status": return { repositoryRoot: "/projects" };
+        case "usage.status": return { providers: {} };
+        case "repository.list": return { repositories: [] };
+        case "client.list": return { clients: [] };
+        default: return {};
+      }
+    });
+
+    render(<App />);
+    fireEvent.click((await screen.findAllByRole("heading", { name: first.title }))[0]);
+    fireEvent.click(screen.getAllByRole("heading", { name: second.title })[0]);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(second.title));
+
+    await act(async () => { resolveFirst({ session: first }); });
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(second.title));
+  });
 });
 
 describe("Foreman setup", () => {
@@ -218,6 +262,7 @@ describe("page scrolling", () => {
 describe("pending request restoration", () => {
   it("replaces stale session state while preserving newer live events", () => {
     const stale = { id: "stale", sessionId: "target", status: "pending" };
+    const removedAfterResolution = { id: "removed", sessionId: "target", status: "pending" };
     const changed = { id: "changed", sessionId: "target", status: "pending" };
     const resolvedDuringRefresh = { ...changed, status: "resolved" };
     const arrivedDuringRefresh = { id: "new-live", sessionId: "target", status: "pending" };
@@ -226,9 +271,9 @@ describe("pending request restoration", () => {
 
     expect(reconcileSessionPending(
       [otherSession, stale, resolvedDuringRefresh, arrivedDuringRefresh],
-      [restored, changed],
+      [removedAfterResolution, restored, changed],
       "target",
-      [stale, changed],
+      [removedAfterResolution, stale, changed],
     )).toEqual([
       otherSession,
       restored,
