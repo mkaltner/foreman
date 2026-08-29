@@ -232,6 +232,35 @@ export async function requestBrowserNotifications(): Promise<boolean> {
 
 const displayedNotifications = new Map<string, Notification>();
 
+export type NotificationDeliveryMethod = "page" | "service-worker";
+
+async function displayBrowserNotification(
+  title: string,
+  options: NotificationOptions,
+  onClick: () => void,
+): Promise<NotificationDeliveryMethod> {
+  const tag = options.tag ?? title;
+  try {
+    displayedNotifications.get(tag)?.close();
+    const displayed = new Notification(title, options);
+    displayedNotifications.set(tag, displayed);
+    displayed.onclick = () => {
+      onClick();
+      displayed.close();
+      displayedNotifications.delete(tag);
+    };
+    return "page";
+  } catch (pageError) {
+    const registration = await navigator.serviceWorker?.getRegistration();
+    if (registration && typeof registration.showNotification === "function") {
+      await registration.showNotification(title, options);
+      return "service-worker";
+    }
+    if (pageError instanceof Error) throw pageError;
+    throw new Error("The browser rejected both notification delivery methods.");
+  }
+}
+
 export async function showTurnNotification(notification: TurnNotification): Promise<void> {
   if (browserNotificationState() !== "granted") return;
   const options: NotificationOptions = {
@@ -239,25 +268,15 @@ export async function showTurnNotification(notification: TurnNotification): Prom
     tag: notification.tag,
     data: { hostId: notification.hostId, sessionId: notification.sessionId },
   };
-  const registration = await navigator.serviceWorker?.getRegistration();
-  if (registration) {
-    await registration.showNotification(notification.title, options);
-    return;
-  }
-  displayedNotifications.get(notification.tag)?.close();
-  const displayed = new Notification(notification.title, options);
-  displayedNotifications.set(notification.tag, displayed);
-  displayed.onclick = () => {
+  await displayBrowserNotification(notification.title, options, () => {
     window.focus();
     window.dispatchEvent(new CustomEvent("foreman.notification.open", {
       detail: { hostId: notification.hostId, sessionId: notification.sessionId },
     }));
-    displayed.close();
-    displayedNotifications.delete(notification.tag);
-  };
+  });
 }
 
-export async function showBrowserTestNotification(): Promise<void> {
+export async function showBrowserTestNotification(): Promise<NotificationDeliveryMethod> {
   if (browserNotificationState() !== "granted") {
     throw new Error("Browser notification permission is not granted.");
   }
@@ -266,20 +285,11 @@ export async function showBrowserTestNotification(): Promise<void> {
   const options: NotificationOptions = {
     body: "This test bypasses session-event and background-tab checks.",
     tag,
+    requireInteraction: true,
   };
-  const registration = await navigator.serviceWorker?.getRegistration();
-  if (registration) {
-    await registration.showNotification(title, options);
-    return;
-  }
-  displayedNotifications.get(tag)?.close();
-  const displayed = new Notification(title, options);
-  displayedNotifications.set(tag, displayed);
-  displayed.onclick = () => {
+  return displayBrowserNotification(title, options, () => {
     window.focus();
-    displayed.close();
-    displayedNotifications.delete(tag);
-  };
+  });
 }
 
 export async function clearTurnNotification(tag: string): Promise<void> {

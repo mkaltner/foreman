@@ -138,7 +138,7 @@ describe("web turn notification lifecycle", () => {
       value: { getRegistration: vi.fn().mockResolvedValue({ showNotification }) },
     });
     try {
-      await showBrowserTestNotification();
+      await expect(showBrowserTestNotification()).resolves.toBe("service-worker");
       expect(showNotification).toHaveBeenCalledWith(
         "Foreman notifications are working",
         expect.objectContaining({ tag: "foreman-notification-test" }),
@@ -150,6 +150,32 @@ describe("web turn notification lifecycle", () => {
       else Reflect.deleteProperty(window, "Notification");
       if (serviceWorker) Object.defineProperty(navigator, "serviceWorker", serviceWorker);
       else Reflect.deleteProperty(navigator, "serviceWorker");
+    }
+  });
+
+  it("prefers the page notification API for an explicit desktop test", async () => {
+    const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    const browserNotification = Object.getOwnPropertyDescriptor(window, "Notification");
+    const displayed = { close: vi.fn(), onclick: null as (() => void) | null };
+    const calls: Array<[string, NotificationOptions]> = [];
+    function NotificationMock(title: string, options: NotificationOptions) {
+      calls.push([title, options]);
+      return displayed;
+    }
+    Object.assign(NotificationMock, { permission: "granted" });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    Object.defineProperty(window, "Notification", { configurable: true, value: NotificationMock });
+    try {
+      await expect(showBrowserTestNotification()).resolves.toBe("page");
+      expect(calls).toContainEqual([
+        "Foreman notifications are working",
+        expect.objectContaining({ requireInteraction: true }),
+      ]);
+    } finally {
+      if (secure) Object.defineProperty(window, "isSecureContext", secure);
+      else Reflect.deleteProperty(window, "isSecureContext");
+      if (browserNotification) Object.defineProperty(window, "Notification", browserNotification);
+      else Reflect.deleteProperty(window, "Notification");
     }
   });
 
