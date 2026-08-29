@@ -2782,7 +2782,7 @@ function setupError(caught: unknown): string {
   if (/pairing key is invalid or expired/i.test(message)) return "Pairing code is invalid or expired. Run foreman pair again.";
   if (/unauthorized|token/i.test(message)) return "Authentication failed. Pair this browser again.";
   if (/incompatible/i.test(message)) return "This browser and Foreman service use incompatible protocols.";
-  if (/fallback/i.test(message)) return "Foreman is using its fallback Codex runtime.";
+  if (/fallback/i.test(message)) return "Foreman is using the Foreman-managed Codex runtime.";
   return message;
 }
 

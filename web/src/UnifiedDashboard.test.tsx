@@ -25,6 +25,8 @@ describe("unified dashboard", () => {
     render(<UnifiedDashboard hosts={hosts} activeHostId="one" snapshots={new Map([["two", snapshot]])} onOpenHost={vi.fn()} onOpenSession={open} onReconnect={reconnect} onEdit={vi.fn()} onForget={vi.fn()} />);
     expect(screen.getAllByText(/Stale snapshot/)).toHaveLength(5);
     expect(screen.getByText("0/5")).toBeInTheDocument();
+    expect(screen.getByText("Foreman-managed Codex runtime")).toBeInTheDocument();
+    expect(screen.queryByText("Fallback")).not.toBeInTheDocument();
     const attentionOpen = screen.getAllByRole("button", { name: "Open" }).at(-1)!;
     fireEvent.click(attentionOpen);
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ hostId: "two", sessionId: "same" }));
