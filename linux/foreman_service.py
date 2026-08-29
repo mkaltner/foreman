@@ -236,6 +236,8 @@ class Foreman:
         for thread_id, raw_usage in self.state.session_token_usage().items():
             if usage := thread_token_usage(raw_usage):
                 self.session_overlays.setdefault(thread_id, {})["tokenUsage"] = usage
+        for thread_id, timestamps in self.state.session_timestamps("codex").items():
+            self.session_overlays.setdefault(thread_id, {}).update(timestamps)
         self.provider_enabled = {
             provider: self.state.provider_enabled(provider) for provider in PROVIDERS
         }
@@ -271,6 +273,10 @@ class Foreman:
                 "claude-code"
             ).items()
         }
+        for session_id, timestamps in self.state.session_timestamps(
+            "claude-code"
+        ).items():
+            self.claude_session_overlays.setdefault(session_id, {}).update(timestamps)
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
         self.remote_restart_enabled = remote_restart_enabled
@@ -372,7 +378,6 @@ class Foreman:
                             "attention": False,
                             "waitType": None,
                             "waitDescription": None,
-                            "lastActivity": observed_at,
                         }
                     )
                     outgoing = {
@@ -384,6 +389,9 @@ class Foreman:
                             "event": {
                                 "kind": "status",
                                 "status": "resumable",
+                                "activityAt": self.timestamp(
+                                    overlay.get("lastActivity")
+                                ),
                                 "observedAt": observed_at,
                             },
                         },
@@ -663,6 +671,10 @@ class Foreman:
         else:
             return
 
+        if outgoing_event.get("kind") not in ("route", "usage", "lifecycle"):
+            outgoing_event.setdefault("activityAt", observed_at)
+        self.persist_overlay_timestamps("claude-code", session_id, overlay)
+
         outgoing = {
             "version": VERSION,
             "type": "session.event",
@@ -932,27 +944,15 @@ class Foreman:
                     discovered[key] = item
                 self.claude_session_cwds[session_id] = item_cwd
         projected = [self.project_claude_session(item) for item in discovered.values()]
-        rank = {
-            ("managed", "working"): 0,
-            ("managed", "completed"): 1,
-            ("managed", "failed"): 1,
-            ("managed", "interrupted"): 1,
-            ("managed", "resumable"): 1,
-            ("external", "resumable"): 2,
-        }
-        return sorted(
-            projected,
-            key=lambda item: (
-                rank.get((item.get("source"), item.get("state")), 3),
-                -(item.get("lastActivity") or 0),
-            ),
-        )
+        return self.sort_session_projections(projected)
 
     def project_claude_session(
         self, item: dict[str, Any], include_messages: bool = False
     ) -> dict[str, Any]:
         session_id = str(item.get("sessionId", ""))
         cwd = str(item.get("cwd", ""))
+        provider_activity = item.get("lastSeenAt")
+        provider_created = item.get("createdAt")
         overlay = self.claude_session_overlays.get(session_id, {})
         discovered = {
             key: item[key]
@@ -1012,7 +1012,14 @@ class Foreman:
                 if message.get("id") not in existing_ids
             )
             projected["messages"] = messages[-500:]
-        return projected
+        return self.restore_session_timestamps(
+            "claude-code",
+            session_id,
+            projected,
+            provider_activity=provider_activity,
+            provider_terminal=item.get("terminalAt"),
+            provider_created=provider_created,
+        )
 
     def remember_claude_query_started(
         self,
@@ -1043,6 +1050,7 @@ class Foreman:
                 **route_settings,
             }
         )
+        self.persist_overlay_timestamps("claude-code", session_id, overlay)
         self.claude_session_messages.setdefault(session_id, []).append(
             {
                 "id": f"user-{run_id or int(time.time() * 1000)}",
@@ -1152,20 +1160,32 @@ class Foreman:
             return
         params = message.get("params") or {}
         reconciled = params.get("_foremanReconciled") is True
-        reconciled_at = params.get("_foremanObservedAt")
-        if reconciled and isinstance(reconciled_at, (int, float)) and not isinstance(reconciled_at, bool):
-            event["observedAt"] = reconciled_at
-        elif not reconciled:
-            event["observedAt"] = int(time.time())
+        observed_at = int(time.time())
+        reconciled_activity = params.get(
+            "_foremanActivityAt", params.get("_foremanObservedAt")
+        )
+        if self.timestamp(reconciled_activity) is not None:
+            event["activityAt"] = reconciled_activity
+        elif reconciled:
+            event["activityAt"] = None
+        elif not reconciled and event.get("kind") not in ("route", "usage", "lifecycle"):
+            event_activity = self.timestamp(event.get("completedAt"))
+            if event_activity is None:
+                event_activity = self.timestamp(event.get("startedAt"))
+            event["activityAt"] = (
+                event_activity if event_activity is not None else observed_at
+            )
+        event["observedAt"] = observed_at
         if (
             event.get("type") == "turn/started"
             and event.get("kind") == "status"
             and event.get("status") == "working"
             and not event.get("startedAt")
+            and self.timestamp(event.get("activityAt")) is not None
         ):
             # The notification itself is the authoritative start signal even
             # when this app-server version omits the optional timestamp.
-            event["startedAt"] = event["observedAt"]
+            event["startedAt"] = event["activityAt"]
         self.remember_session_event(thread_id, event)
         outgoing = {
             "version": VERSION,
@@ -1372,14 +1392,14 @@ class Foreman:
     def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
-        observed_at = event.get("observedAt")
-        if kind not in ("route", "usage") and isinstance(observed_at, (int, float)):
-            overlay["lastActivity"] = observed_at
+        activity_at = event.get("activityAt", event.get("observedAt"))
+        if kind not in ("route", "usage") and self.timestamp(activity_at) is not None:
+            overlay["lastActivity"] = activity_at
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
                 if projected_status != overlay.get("status"):
-                    overlay["statusChangedAt"] = observed_at
+                    overlay["statusChangedAt"] = activity_at
                 overlay["status"] = projected_status
                 overlay["attention"] = projected_status == "waiting"
             if projected_status in ("working", "waiting"):
@@ -1392,7 +1412,7 @@ class Foreman:
                 overlay["activeTurnId"] = None
                 overlay["activeTurnStartedAt"] = None
             if projected_status in ("completed", "failed", "interrupted"):
-                overlay["terminalAt"] = event.get("completedAt") or observed_at
+                overlay["terminalAt"] = event.get("completedAt") or activity_at
                 overlay["turnDurationMs"] = event.get("durationMs")
                 overlay["failureSummary"] = event.get("failureSummary")
             if event.get("waitType") in ("approval", "input"):
@@ -1460,11 +1480,14 @@ class Foreman:
             ):
                 overlay["tokenUsage"] = usage
                 self.state.remember_session_token_usage(thread_id, usage)
+        self.persist_overlay_timestamps("codex", thread_id, overlay)
 
     def projected_session(
         self, thread: dict[str, Any], include_messages: bool = False
     ) -> dict[str, Any]:
         projected = session(thread, include_messages)
+        provider_activity = projected.get("lastActivity")
+        provider_terminal = projected.get("terminalAt")
         known = self.session_overlays.get(projected["id"], {})
         discovered = {
             key: projected[key]
@@ -1477,7 +1500,128 @@ class Foreman:
             self.remember_session_settings(
                 "codex", projected["id"], discovered
             )
-        return {**projected, **self.session_overlays.get(projected["id"], {})}
+        merged = {**projected, **self.session_overlays.get(projected["id"], {})}
+        return self.restore_session_timestamps(
+            "codex",
+            projected["id"],
+            merged,
+            provider_activity=provider_activity,
+            provider_terminal=provider_terminal,
+        )
+
+    @staticmethod
+    def timestamp(value: Any) -> int | float | None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value < 0
+            or value != value
+            or value in (float("inf"), float("-inf"))
+        ):
+            return None
+        return value
+
+    @classmethod
+    def sort_session_projections(
+        cls, sessions: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        def rank(item: dict[str, Any]) -> tuple[int, float, str, str]:
+            status = item.get("status")
+            state_rank = (
+                0
+                if status == "waiting" or item.get("attention")
+                else 1 if status == "working" else 2
+            )
+            activity = cls.timestamp(item.get("lastActivity"))
+            if activity is None:
+                activity = cls.timestamp(item.get("terminalAt"))
+            return (
+                state_rank,
+                -(activity if activity is not None else 0),
+                str(item.get("provider", "codex")),
+                str(item.get("id", "")),
+            )
+
+        return sorted(sessions, key=rank)
+
+    def restore_session_timestamps(
+        self,
+        provider: str,
+        session_id: str,
+        projected: dict[str, Any],
+        *,
+        provider_activity: Any = None,
+        provider_terminal: Any = None,
+        provider_created: Any = None,
+    ) -> dict[str, Any]:
+        overlays = (
+            self.session_overlays
+            if provider == "codex"
+            else self.claude_session_overlays
+        )
+        overlay = overlays.setdefault(session_id, {})
+        active = projected.get("status") in ("working", "waiting")
+        activity_candidates = [
+            value
+            for value in (
+                self.timestamp(overlay.get("lastActivity")),
+                self.timestamp(provider_activity),
+                self.timestamp(provider_terminal),
+                self.timestamp(provider_created),
+            )
+            if value is not None
+        ]
+        terminal_candidates = [
+            value
+            for value in (
+                self.timestamp(overlay.get("terminalAt")),
+                self.timestamp(provider_terminal),
+            )
+            if value is not None
+        ]
+        desired: dict[str, int | float] = {}
+        if activity_candidates:
+            desired["lastActivity"] = max(activity_candidates)
+        if terminal_candidates and not active:
+            desired["terminalAt"] = max(terminal_candidates)
+        known = {
+            key: value
+            for key in ("lastActivity", "terminalAt")
+            if (value := self.timestamp(overlay.get(key))) is not None
+        }
+        timestamps = (
+            known
+            if desired == known
+            else self.state.remember_session_timestamps(
+                provider,
+                session_id,
+                last_activity=desired.get("lastActivity"),
+                terminal_at=desired.get("terminalAt"),
+                clear_terminal=active,
+            )
+        )
+        overlay.pop("terminalAt", None)
+        overlay.update(timestamps)
+        return {
+            **projected,
+            "lastActivity": timestamps.get("lastActivity"),
+            "terminalAt": timestamps.get("terminalAt"),
+            "observedAt": int(time.time()),
+        }
+
+    def persist_overlay_timestamps(
+        self, provider: str, session_id: str, overlay: dict[str, Any]
+    ) -> None:
+        active = overlay.get("status") in ("working", "waiting")
+        timestamps = self.state.remember_session_timestamps(
+            provider,
+            session_id,
+            last_activity=self.timestamp(overlay.get("lastActivity")),
+            terminal_at=self.timestamp(overlay.get("terminalAt")),
+            clear_terminal=active,
+        )
+        overlay.pop("terminalAt", None)
+        overlay.update(timestamps)
 
     def remember_session_settings(
         self, provider: str, session_id: str, settings: dict[str, Any]
@@ -2089,18 +2233,21 @@ class Foreman:
             provider = self.required_provider(payload)
             self.require_provider_enabled(provider)
             if provider == "codex":
-                return {
-                    "provider": provider,
-                    "sessions": [
+                sessions = []
+                for item in await self.codex.list_threads():
+                    projected = self.projected_session(item)
+                    sessions.append(
                         {
-                            **self.projected_session(item),
+                            **projected,
                             "provider": "codex",
                             "sessionId": item["id"],
                             "source": "managed",
-                            "state": self.projected_session(item).get("status", "idle"),
+                            "state": projected.get("status", "idle"),
                         }
-                        for item in await self.codex.list_threads()
-                    ],
+                    )
+                return {
+                    "provider": provider,
+                    "sessions": self.sort_session_projections(sessions),
                 }
             return {
                 "provider": provider,
@@ -2324,6 +2471,7 @@ class Foreman:
                 self.claude_session_cwds.pop(session_id, None)
                 self.claude_session_messages.pop(session_id, None)
                 self.state.forget_session_settings(provider, session_id)
+                self.state.forget_session_timestamps(provider, session_id)
             subscription = self.provider_subscription(provider, session_id)
             for connected in self.clients:
                 connected.subscriptions.discard(subscription)
@@ -2406,10 +2554,12 @@ class Foreman:
             return {"accepted": True, "input": pending}
         if message_type == "session.list":
             return {
-                "sessions": [
-                    self.projected_session(item)
-                    for item in await self.codex.list_threads()
-                ]
+                "sessions": self.sort_session_projections(
+                    [
+                        self.projected_session(item)
+                        for item in await self.codex.list_threads()
+                    ]
+                )
             }
         if message_type == "session.search":
             previous = client.search_task
@@ -2476,6 +2626,7 @@ class Foreman:
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
+            self.state.forget_session_timestamps("codex", thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
@@ -2489,6 +2640,7 @@ class Foreman:
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
+            self.state.forget_session_timestamps("codex", thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "session.settings":

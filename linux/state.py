@@ -23,6 +23,18 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _timestamp(value: Any) -> int | float | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or value < 0
+        or value != value
+        or value in (float("inf"), float("-inf"))
+    ):
+        return None
+    return value
+
+
 class State:
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory).expanduser()
@@ -145,6 +157,134 @@ class State:
             stored = data.get("sessionTokenUsage")
             if isinstance(stored, dict):
                 stored.pop(thread_id, None)
+
+        self._locked(update)
+
+    def session_timestamps(self, provider: str) -> dict[str, dict[str, Any]]:
+        if provider not in {"codex", "claude-code"}:
+            return {}
+
+        def update(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            stored = data.get("sessionTimestamps")
+            by_provider = stored.get(provider) if isinstance(stored, dict) else None
+            if not isinstance(by_provider, dict):
+                if not isinstance(stored, dict):
+                    stored = {}
+                    data["sessionTimestamps"] = stored
+                stored[provider] = {}
+                return {}
+            valid: list[tuple[str, dict[str, Any]]] = []
+            for session_id, item in by_provider.items():
+                if (
+                    not isinstance(session_id, str)
+                    or not session_id
+                    or len(session_id) > 160
+                    or not isinstance(item, dict)
+                ):
+                    continue
+                projected = {
+                    key: value
+                    for key in ("lastActivity", "terminalAt")
+                    if (value := _timestamp(item.get(key))) is not None
+                }
+                recorded_at = _timestamp(item.get("recordedAt")) or 0
+                if projected:
+                    valid.append(
+                        (session_id, {**projected, "recordedAt": recorded_at})
+                    )
+            valid.sort(key=lambda pair: pair[1]["recordedAt"], reverse=True)
+            bounded = dict(valid[:500])
+            data["sessionTimestamps"][provider] = bounded
+            return {
+                session_id: {
+                    key: value
+                    for key, value in item.items()
+                    if key != "recordedAt"
+                }
+                for session_id, item in bounded.items()
+            }
+
+        return self._locked(update)
+
+    def remember_session_timestamps(
+        self,
+        provider: str,
+        session_id: str,
+        *,
+        last_activity: int | float | None = None,
+        terminal_at: int | float | None = None,
+        clear_terminal: bool = False,
+    ) -> dict[str, Any]:
+        if provider not in {"codex", "claude-code"}:
+            raise ValueError("provider is unsupported")
+        if not session_id or len(session_id) > 160:
+            raise ValueError("session ID is invalid")
+        incoming_activity = _timestamp(last_activity)
+        incoming_terminal = _timestamp(terminal_at)
+
+        def update(data: dict[str, Any]) -> dict[str, Any]:
+            stored = data.setdefault("sessionTimestamps", {})
+            if not isinstance(stored, dict):
+                stored = {}
+                data["sessionTimestamps"] = stored
+            by_provider = stored.setdefault(provider, {})
+            if not isinstance(by_provider, dict):
+                by_provider = {}
+                stored[provider] = by_provider
+            previous = by_provider.get(session_id)
+            if not isinstance(previous, dict):
+                previous = {}
+            previous_activity = _timestamp(previous.get("lastActivity"))
+            previous_terminal = _timestamp(previous.get("terminalAt"))
+            activity_candidates = [
+                value
+                for value in (
+                    previous_activity,
+                    incoming_activity,
+                    previous_terminal,
+                    incoming_terminal,
+                )
+                if value is not None
+            ]
+            terminal_candidates = [
+                value
+                for value in (previous_terminal, incoming_terminal)
+                if value is not None
+            ]
+            projected: dict[str, Any] = {}
+            if activity_candidates:
+                projected["lastActivity"] = max(activity_candidates)
+            if terminal_candidates and not clear_terminal:
+                projected["terminalAt"] = max(terminal_candidates)
+            if not projected:
+                by_provider.pop(session_id, None)
+                return {}
+            by_provider[session_id] = {
+                **projected,
+                "recordedAt": int(time.time()),
+            }
+            if len(by_provider) > 500:
+                oldest = sorted(
+                    by_provider,
+                    key=lambda key: by_provider[key].get("recordedAt", 0)
+                    if isinstance(by_provider.get(key), dict)
+                    else 0,
+                )[: len(by_provider) - 500]
+                for key in oldest:
+                    by_provider.pop(key, None)
+            return projected
+
+        return self._locked(update)
+
+    def forget_session_timestamps(self, provider: str, session_id: str) -> None:
+        if provider not in {"codex", "claude-code"} or not session_id:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.get("sessionTimestamps")
+            by_provider = stored.get(provider) if isinstance(stored, dict) else None
+            if isinstance(by_provider, dict):
+                by_provider.pop(session_id, None)
 
         self._locked(update)
 

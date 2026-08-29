@@ -116,6 +116,7 @@ export interface SessionSummary {
   title: string;
   status: string;
   lastActivity?: number | null;
+  observedAt?: number | null;
   attention?: boolean;
   messages?: ConversationItem[];
   activeTurnId?: string | null;
@@ -348,6 +349,7 @@ export interface SessionEvent {
   failureSummary?: string | null;
   waitType?: "approval" | "input";
   waitDescription?: string | null;
+  activityAt?: number | null;
   observedAt?: number;
   tokenUsage?: ThreadTokenUsage;
 }
@@ -432,6 +434,12 @@ function isTerminalSession(session: SessionSummary): boolean {
   return ["completed", "failed", "interrupted"].includes(session.status);
 }
 
+function eventActivityAt(event: SessionEvent): number | undefined {
+  return "activityAt" in event
+    ? event.activityAt ?? undefined
+    : event.observedAt;
+}
+
 function isStaleTurnEvent(session: SessionSummary, event: SessionEvent): boolean {
   if (isTerminalSession(session)) return true;
   return Boolean(
@@ -452,14 +460,14 @@ export function applySessionEvent(
       ...session,
       status: event.status ?? session.status,
       statusChangedAt: event.status && event.status !== session.status
-        ? (event.observedAt ?? session.statusChangedAt)
+        ? (eventActivityAt(event) ?? session.statusChangedAt)
         : session.statusChangedAt,
       attention: event.status === "waiting",
       activeTurnId: active ? (event.turnId ?? session.activeTurnId) : null,
       activeTurnStartedAt: active
         ? (event.startedAt ?? session.activeTurnStartedAt)
         : null,
-      terminalAt: terminal ? (event.completedAt ?? event.observedAt ?? session.terminalAt) : null,
+      terminalAt: terminal ? (event.completedAt ?? eventActivityAt(event) ?? session.terminalAt) : null,
       turnDurationMs: terminal ? (event.durationMs ?? session.turnDurationMs) : null,
       failureSummary: event.status === "failed"
         ? (event.failureSummary ?? session.failureSummary)
@@ -471,7 +479,7 @@ export function applySessionEvent(
       activityLabel: event.status === "waiting"
         ? event.waitType === "input" ? "Waiting for input" : "Waiting for approval"
         : session.activityLabel,
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
   }
 
@@ -503,7 +511,7 @@ export function applySessionEvent(
       messages,
       activityLabel: "Responding",
       activityText: "",
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
   }
 
@@ -518,7 +526,7 @@ export function applySessionEvent(
       status: "working",
       activeTurnId: event.turnId ?? session.activeTurnId,
       messages,
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
     if (event.phase === "started") {
       return {
@@ -543,7 +551,7 @@ export function applySessionEvent(
       activityText: event.append
         ? `${session.activityText ?? ""}${text}`
         : text || (label === session.activityLabel ? session.activityText ?? "" : ""),
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
   }
 
@@ -589,7 +597,7 @@ export function applySessionSummaryEvent(
       activeTurnId: event.turnId ?? session.activeTurnId,
       activityLabel: "Responding",
       activityText: "",
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
   }
   if (event.kind === "item") {
@@ -597,11 +605,11 @@ export function applySessionSummaryEvent(
       return {
         ...session,
         activityLabel: "Thinking",
-        lastActivity: event.observedAt ?? session.lastActivity,
+        lastActivity: eventActivityAt(event) ?? session.lastActivity,
       };
     }
     if (event.phase !== "started" || !event.item) {
-      return { ...session, lastActivity: event.observedAt ?? session.lastActivity };
+      return { ...session, lastActivity: eventActivityAt(event) ?? session.lastActivity };
     }
     const label = event.item.kind === "command"
       ? "Running command"
@@ -616,7 +624,7 @@ export function applySessionSummaryEvent(
       activeTurnId: event.turnId ?? session.activeTurnId,
       activityLabel: label,
       activityText: event.item.kind === "command" ? "" : event.item.description ?? "",
-      lastActivity: event.observedAt ?? session.lastActivity,
+      lastActivity: eventActivityAt(event) ?? session.lastActivity,
     };
   }
   const updated = applySessionEvent({ ...session, messages: undefined }, event);

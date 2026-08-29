@@ -3703,6 +3703,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val identityKey = providerSessionKey(provider, sessionId)
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
+        val activityAt =
+            if ("activityAt" in event) {
+                event["activityAt"]?.takeUnless { it is JsonNull }
+                    ?.jsonPrimitive?.content?.toLongOrNull()
+            } else {
+                event["observedAt"]?.jsonPrimitive?.content?.toLongOrNull()
+            }
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
             if (action == "removed") {
@@ -3769,9 +3776,23 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             } else if (it.matches(provider, sessionId) && usage != null) {
                                 it.copy(tokenUsage = usage)
                             } else if (it.matches(provider, sessionId) && inferredStatus != null) {
+                                val terminal = inferredStatus in setOf("completed", "failed", "interrupted")
                                 it.copy(
                                     status = inferredStatus,
                                     attention = inferredStatus == "waiting",
+                                    lastActivity = activityAt ?: it.lastActivity,
+                                    terminalAt =
+                                        if (terminal) {
+                                            event["completedAt"]?.jsonPrimitive?.content?.toLongOrNull()
+                                                ?: activityAt ?: it.terminalAt
+                                        } else if (inferredStatus in setOf("working", "waiting")) {
+                                            null
+                                        } else {
+                                            it.terminalAt
+                                        },
+                                    statusChangedAt =
+                                        if (inferredStatus != it.status) activityAt ?: it.statusChangedAt
+                                        else it.statusChangedAt,
                                 )
                             } else {
                                 it
@@ -3808,6 +3829,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                         ?: selected.activeTurnId,
                                 activityLabel = "Responding",
                                 activityText = "",
+                                lastActivity = activityAt ?: selected.lastActivity,
                             ),
                     )
                 }
@@ -3857,6 +3879,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                         ?: selected.activeTurnId,
                                 activityLabel = nextLabel,
                                 activityText = nextActivityText,
+                                lastActivity = activityAt ?: selected.lastActivity,
                             ),
                     )
                 }
@@ -3882,6 +3905,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                         ?: selected.activeTurnId,
                                 activityLabel = label,
                                 activityText = activityText,
+                                lastActivity = activityAt ?: selected.lastActivity,
                             ),
                     )
                 }
@@ -3893,6 +3917,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         } else {
                             null
                         }
+                    val terminal = newStatus in setOf("completed", "failed", "interrupted")
                     current.copy(
                         selected =
                             selected.copy(
@@ -3906,6 +3931,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                     } else {
                                         null
                                     },
+                                lastActivity = activityAt ?: selected.lastActivity,
+                                terminalAt =
+                                    if (terminal) {
+                                        event["completedAt"]?.jsonPrimitive?.content?.toLongOrNull()
+                                            ?: activityAt ?: selected.terminalAt
+                                    } else if (newStatus in setOf("working", "waiting")) {
+                                        null
+                                    } else {
+                                        selected.terminalAt
+                                    },
+                                statusChangedAt =
+                                    if (newStatus != selected.status) activityAt ?: selected.statusChangedAt
+                                    else selected.statusChangedAt,
                                 waitType =
                                     if (newStatus == "waiting") {
                                         event["waitType"]?.jsonPrimitive?.content

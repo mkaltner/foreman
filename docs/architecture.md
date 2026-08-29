@@ -85,6 +85,14 @@ session workspaces. Lifecycle events observed during the browser session feed a
 coalesced 20-entry recent list; stale-turn observation and feed entries are not
 persisted by the service.
 
+The Linux service does persist a bounded temporal overlay of at most 500
+session timestamp records per provider. Activity and terminal timestamps are
+keyed by provider plus stable session ID, restored before provider discovery,
+and removed with the matching provider session. Provider discovery may advance
+known activity, an explicit active state may clear a prior terminal boundary,
+and missing provider timestamps cannot substitute service startup or observation
+time. `observedAt` remains projection metadata rather than session activity.
+
 ### Multi-host overview connections
 
 The unified overview is a client-side projection. No Foreman service knows

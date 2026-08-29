@@ -203,6 +203,7 @@ data class SessionSummary(
     val title: String,
     val status: String,
     val lastActivity: Long? = null,
+    val observedAt: Long? = null,
     val attention: Boolean = false,
     val messages: List<ConversationItem> = emptyList(),
     val activeTurnId: String? = null,
