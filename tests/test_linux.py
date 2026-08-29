@@ -1321,6 +1321,78 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(unavailable["providers"][1]["unavailableReason"], "cli-missing")
             self.assertEqual(unavailable["providers"][1]["capabilities"], [])
 
+    async def test_claude_resume_wins_delete_race_without_ghost_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FakeClaude.instances.clear()
+            state = State(root / "state")
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            claude = FakeClaude.instances[-1]
+            client = Client(None, "race", authenticated=True)
+            resume_started = asyncio.Event()
+            release_resume = asyncio.Event()
+            original_resume = claude.resume_session
+
+            async def paused_resume(*args: Any, **kwargs: Any) -> dict[str, str]:
+                resume_started.set()
+                await release_resume.wait()
+                return await original_resume(*args, **kwargs)
+
+            claude.resume_session = paused_resume  # type: ignore[method-assign]
+            resume = asyncio.create_task(
+                app.dispatch(
+                    client,
+                    {
+                        "type": "provider.session.resume",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": "external-session",
+                            "repositoryId": ".",
+                            "text": "Resume safely",
+                        },
+                    },
+                )
+            )
+            await resume_started.wait()
+            deletion = asyncio.create_task(
+                app.dispatch(
+                    client,
+                    {
+                        "type": "provider.session.delete",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": "external-session",
+                            "repositoryId": ".",
+                            "confirm": True,
+                        },
+                    },
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(deletion.done())
+
+            release_resume.set()
+            self.assertTrue((await resume)["accepted"])
+            with self.assertRaisesRegex(ValueError, "active; interrupt"):
+                await deletion
+            self.assertEqual(claude.deletions, [])
+            self.assertEqual(
+                app.claude_session_overlays["external-session"]["state"],
+                "working",
+            )
+            self.assertEqual(
+                state.session_settings("claude-code")["external-session"]["model"],
+                "sonnet",
+            )
+
     async def test_claude_discovery_is_concurrent_and_returns_before_its_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

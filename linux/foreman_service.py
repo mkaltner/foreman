@@ -1014,6 +1014,45 @@ class Foreman:
             projected["messages"] = messages[-500:]
         return projected
 
+    def remember_claude_query_started(
+        self,
+        session_id: str,
+        cwd: Path,
+        text: str,
+        model: str,
+        permission_mode: str,
+        run_id: str | None,
+    ) -> dict[str, Any]:
+        self.claude_session_cwds[session_id] = str(cwd)
+        route_settings = self.remember_session_settings(
+            "claude-code",
+            session_id,
+            {"model": model, "permissionMode": permission_mode},
+        )
+        overlay = self.claude_session_overlays.setdefault(session_id, {})
+        overlay.update(
+            {
+                "source": "managed",
+                "state": "working",
+                "status": "working",
+                "title": overlay.get("title") or text.strip().splitlines()[0][:300],
+                "model": model,
+                "permissionMode": permission_mode,
+                "activeTurnId": run_id,
+                "lastActivity": int(time.time()),
+                **route_settings,
+            }
+        )
+        self.claude_session_messages.setdefault(session_id, []).append(
+            {
+                "id": f"user-{run_id or int(time.time() * 1000)}",
+                "kind": "user",
+                "text": text,
+                "turnId": run_id,
+            }
+        )
+        return overlay
+
     async def read_claude_session(
         self, session_id: str, repository_id: str
     ) -> dict[str, Any]:
@@ -2190,6 +2229,11 @@ class Foreman:
                 result = await self.claude.start_session(
                     cwd, text, model, permission_mode
                 )
+                session_id = result["sessionId"]
+                run_id = result.get("runId")
+                overlay = self.remember_claude_query_started(
+                    session_id, cwd, text, model, permission_mode, run_id
+                )
             else:
                 assert session_id is not None
                 async with self.thread_lock(
@@ -2207,47 +2251,13 @@ class Foreman:
                     result = await self.claude.resume_session(
                         session_id, cwd, text, model, permission_mode
                     )
-                    self.claude_session_overlays.setdefault(
-                        session_id, {}
-                    ).update(
-                        {
-                            "state": "working",
-                            "status": "working",
-                            "activeTurnId": result.get("runId"),
-                        }
+                    session_id = result["sessionId"]
+                    run_id = result.get("runId")
+                    overlay = self.remember_claude_query_started(
+                        session_id, cwd, text, model, permission_mode, run_id
                     )
-            session_id = result["sessionId"]
-            run_id = result.get("runId")
-            self.claude_session_cwds[session_id] = str(cwd)
-            route_settings = self.remember_session_settings(
-                provider,
-                session_id,
-                {"model": model, "permissionMode": permission_mode},
-            )
-            overlay = self.claude_session_overlays.setdefault(session_id, {})
-            overlay.update(
-                {
-                    "source": "managed",
-                    "state": "working",
-                    "status": "working",
-                    "title": overlay.get("title") or text.strip().splitlines()[0][:300],
-                    "model": model,
-                    "permissionMode": permission_mode,
-                    "activeTurnId": run_id,
-                    "lastActivity": int(time.time()),
-                    **route_settings,
-                }
-            )
             client.subscriptions.add(
                 self.provider_subscription("claude-code", session_id)
-            )
-            self.claude_session_messages.setdefault(session_id, []).append(
-                {
-                    "id": f"user-{run_id or int(time.time() * 1000)}",
-                    "kind": "user",
-                    "text": text,
-                    "turnId": run_id,
-                }
             )
             projected = self.project_claude_session(
                 {
@@ -2299,22 +2309,24 @@ class Foreman:
                 raise ValueError("permanent deletion requires confirm=true")
             repository_id = required_text(payload, "repositoryId", 500)
             cwd = self.resolve_repository(repository_id)
-            overlay = self.claude_session_overlays.get(session_id, {})
-            if overlay.get("state") == "working" or overlay.get("activeTurnId"):
-                raise ValueError("Claude session is active; interrupt it before deletion")
             await self.require_claude()
             assert self.claude is not None
             async with self.thread_lock(
                 self.provider_subscription(provider, session_id)
             ):
+                overlay = self.claude_session_overlays.get(session_id, {})
+                if overlay.get("state") == "working" or overlay.get("activeTurnId"):
+                    raise ValueError(
+                        "Claude session is active; interrupt it before deletion"
+                    )
                 await self.claude.delete_session(session_id, cwd)
+                self.claude_session_overlays.pop(session_id, None)
+                self.claude_session_cwds.pop(session_id, None)
+                self.claude_session_messages.pop(session_id, None)
+                self.state.forget_session_settings(provider, session_id)
             subscription = self.provider_subscription(provider, session_id)
             for connected in self.clients:
                 connected.subscriptions.discard(subscription)
-            self.claude_session_overlays.pop(session_id, None)
-            self.claude_session_cwds.pop(session_id, None)
-            self.claude_session_messages.pop(session_id, None)
-            self.state.forget_session_settings(provider, session_id)
             await self.broadcast_claude_lifecycle(session_id, action="removed")
             return {
                 "provider": provider,
