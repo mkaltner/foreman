@@ -148,7 +148,7 @@ export function webRoutePath(route: WebRoute): string {
   if (route.view === "dashboard") return "/dashboard";
   if (route.view === "settings") return "/settings";
   if (route.view === "detail") return `/sessions/${route.provider}/${encodeURIComponent(route.sessionId)}`;
-  return "/";
+  return "/sessions";
 }
 
 export interface AppDirective {

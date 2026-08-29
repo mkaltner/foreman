@@ -315,6 +315,43 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun rememberedSessionSurvivesRecreationAndValidatesAfterSynchronization() {
+        val target = rememberedSessionTarget(PROVIDER_CLAUDE_CODE, "claude-thread")
+        val session = SessionSummary(
+            id = "claude-thread",
+            repository = "/repo",
+            title = "Claude thread",
+            status = "idle",
+            provider = PROVIDER_CLAUDE_CODE,
+        )
+        val providers = listOf(
+            ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true),
+            ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", enabled = true, available = true),
+        )
+
+        assertEquals(Screen.Detail, restorationDestination(target))
+        assertEquals(session, restorableSessionSummary(requireNotNull(target), providers, listOf(session)))
+        assertEquals(target, rememberedSessionForEntry(target, true, providers, listOf(session)))
+        assertNull(restorableSessionSummary(target, providers, emptyList()))
+        assertNull(rememberedSessionForEntry(target, true, providers, emptyList()))
+        assertEquals(target, rememberedSessionForEntry(target, false, emptyList(), emptyList()))
+        assertNull(restorableSessionSummary(target, providers.map {
+            if (it.id == PROVIDER_CLAUDE_CODE) it.copy(enabled = false) else it
+        }, listOf(session)))
+        assertNull(rememberedSessionTarget("future-provider", "thread"))
+    }
+
+    @Test
+    fun rememberedTargetsRemainProviderAndHostSpecific() {
+        val home = rememberedSessionTarget(PROVIDER_CODEX, "same")
+        val work = rememberedSessionTarget(PROVIDER_CLAUDE_CODE, "same")
+
+        assertEquals(RememberedSessionTarget(PROVIDER_CODEX, "same"), home)
+        assertEquals(RememberedSessionTarget(PROVIDER_CLAUDE_CODE, "same"), work)
+        assertFalse(home == work)
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),

@@ -432,6 +432,44 @@ class MainActivity : ComponentActivity() {
 
 internal enum class Screen { Setup, Overview, Dashboard, Sessions, Detail, Diagnostics }
 
+internal data class RememberedSessionTarget(
+    val provider: String,
+    val sessionId: String,
+)
+
+internal fun rememberedSessionTarget(
+    provider: String,
+    sessionId: String?,
+): RememberedSessionTarget? =
+    sessionId
+        ?.takeIf { supportedProvider(provider) && it.isNotBlank() && it.length <= 1000 }
+        ?.let { RememberedSessionTarget(provider, it) }
+
+internal fun restorationDestination(target: RememberedSessionTarget?): Screen =
+    if (target == null) Screen.Sessions else Screen.Detail
+
+internal fun restorableSessionSummary(
+    target: RememberedSessionTarget,
+    providers: List<ProviderInfo>,
+    sessions: List<SessionSummary>,
+): SessionSummary? {
+    val providerAvailable = providers.any {
+        it.id == target.provider && it.enabled && it.available
+    }
+    return sessions.firstOrNull { it.matches(target.provider, target.sessionId) }
+        ?.takeIf { providerAvailable }
+}
+
+internal fun rememberedSessionForEntry(
+    target: RememberedSessionTarget?,
+    authoritative: Boolean,
+    providers: List<ProviderInfo>,
+    sessions: List<SessionSummary>,
+): RememberedSessionTarget? =
+    target?.takeIf {
+        !authoritative || restorableSessionSummary(it, providers, sessions) != null
+    }
+
 internal fun shouldStopMonitoringForNotificationPermission(
     monitoringEnabled: Boolean,
     permissionGranted: Boolean,
@@ -1152,6 +1190,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var activeHost = hosts.active()
     private var preferences = PreferenceStore(application, activeHost?.id)
     private val savedPreferences = preferences.load()
+    private val initiallyRememberedSession = rememberedSessionTarget(
+        savedPreferences.selectedSessionProvider,
+        savedPreferences.selectedSessionId,
+    )
     private val savedSearchFilters =
         SessionSearchFilters(
             query = savedPreferences.searchQuery,
@@ -1164,6 +1206,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     val state =
         MutableStateFlow(
             UiState(
+                screen = if (activeHost == null) Screen.Setup else restorationDestination(initiallyRememberedSession),
                 displayName = activeHost?.displayName.orEmpty(),
                 host = activeHost?.tcpEndpoint().orEmpty(),
                 hasSavedConnection = activeHost != null,
@@ -1210,8 +1253,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val sessionDiscoveryLock = Any()
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
     private var sessionDiscoveryJob: Job? = null
-    private var restorationProvider: String = savedPreferences.selectedSessionProvider
-    private var restorationSessionId: String? = savedPreferences.selectedSessionId
+    private var restorationProvider: String = initiallyRememberedSession?.provider ?: PROVIDER_CODEX
+    private var restorationSessionId: String? = initiallyRememberedSession?.sessionId
     private var sessionOpenGeneration = 0L
     private var searchJob: Job? = null
     private var workspaceFileJob: Job? = null
@@ -1298,6 +1341,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         it.id == sessionProvider(session) && it.enabled && it.available
                     }
                 }
+                val rememberedOpenable = providers.any {
+                    it.id == restorationProvider && it.enabled && it.available
+                }
+                if (restorationSessionId != null && !rememberedOpenable) clearRememberedSession()
                 state.update {
                     it.copy(
                         providers = providers,
@@ -1377,6 +1424,30 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         synchronizeSessionPresence()
     }
 
+    fun enterSessions() {
+        val current = state.value
+        val target = rememberedSessionTarget(restorationProvider, restorationSessionId)
+        val remembered = rememberedSessionForEntry(
+            target = target,
+            authoritative = current.connected && !current.loading,
+            providers = current.providers,
+            sessions = current.sessions,
+        )
+        if (remembered == null) {
+            if (target != null) clearRememberedSession()
+            showSessions()
+            return
+        }
+        val hostId = current.activeHostId
+        if (hostId == null) {
+            showSessions()
+        } else if (current.connected) {
+            openSession(remembered.sessionId, provider = remembered.provider)
+        } else {
+            openHostSession(hostId, remembered.provider, remembered.sessionId)
+        }
+    }
+
     fun openOverviewHost(hostId: String) {
         if (hostId == state.value.activeHostId) {
             showDashboard()
@@ -1388,12 +1459,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun openOverviewSessions(hostId: String) {
         overviewNavigation.clear()
         when (hostNavigationAction(state.value.activeHostId, state.value.connected, hostId)) {
-            HostNavigationAction.Show -> showSessions()
+            HostNavigationAction.Show -> enterSessions()
             HostNavigationAction.Reconnect -> {
-                showSessions()
+                enterSessions()
                 reconnect()
             }
-            HostNavigationAction.Switch -> switchHost(hostId, Screen.Sessions)
+            HostNavigationAction.Switch -> switchHost(hostId)
         }
     }
 
@@ -1978,7 +2049,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         id: String,
         approvalId: String? = null,
     ) {
-        if (hostId == null || hosts.load(hostId) == null) return
+        if (hostId == null || hosts.load(hostId) == null || !supportedProvider(provider)) return
         overviewNavigation.clear()
         if (state.value.activeHostId == hostId && state.value.connected) {
             openSession(id, focusedApprovalId = approvalId, provider = provider)
@@ -2048,8 +2119,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 activeHost = saved
                 preferences = PreferenceStore(getApplication(), saved.id)
                 val restored = preferences.load()
-                restorationProvider = restored.selectedSessionProvider
-                restorationSessionId = restored.selectedSessionId
+                val remembered = rememberedSessionTarget(
+                    restored.selectedSessionProvider,
+                    restored.selectedSessionId,
+                )
+                restorationProvider = remembered?.provider ?: PROVIDER_CODEX
+                restorationSessionId = remembered?.sessionId
                 hostNavigation.choose(saved.id, Screen.Sessions)
                 val filters = restored.searchFilters()
                 hosts.updateConnection(
@@ -2343,7 +2418,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         activateSavedHost(next)
     }
 
-    fun switchHost(hostId: String, destination: Screen = Screen.Sessions) {
+    fun switchHost(hostId: String) {
+        if (hostId == state.value.activeHostId) return
+        val selected = hosts.select(hostId) ?: return
+        overviewNavigation.invalidateForHost(selected.id)
+        stopActiveHost()
+        activeHost = selected
+        activateSavedHost(selected)
+    }
+
+    private fun switchHost(hostId: String, destination: Screen) {
         if (hostId == state.value.activeHostId) return
         switchHost(hostId, hostNavigation.choose(hostId, destination))
     }
@@ -2386,11 +2470,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         overviewNavigation.invalidateForHost(saved.id)
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
-        restorationProvider = restored.selectedSessionProvider
-        restorationSessionId = restored.selectedSessionId
+        val remembered = rememberedSessionTarget(
+            restored.selectedSessionProvider,
+            restored.selectedSessionId,
+        )
+        restorationProvider = remembered?.provider ?: PROVIDER_CODEX
+        restorationSessionId = remembered?.sessionId
         val choice = requestedChoice ?: hostNavigation.choose(
             hostId = saved.id,
-            screen = if (restorationSessionId == null) Screen.Sessions else Screen.Detail,
+            screen = restorationDestination(remembered),
             sessionId = restorationSessionId,
             provider = restorationProvider,
         )
@@ -2788,6 +2876,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         focusedApprovalId: String? = null,
         provider: String = PROVIDER_CODEX,
     ) {
+        if (!supportedProvider(provider)) {
+            showSessions()
+            state.update { it.copy(error = "This session provider is not supported.") }
+            return
+        }
         val generation = ++sessionOpenGeneration
         state.value.activeHostId?.let { hostId ->
             hostNavigation.choose(
@@ -2869,7 +2962,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 synchronizeSessionPresence()
                 monitorIfActive(selected)
             }.onFailure { error ->
-                if (generation == sessionOpenGeneration) fail(error)
+                if (
+                    generation == sessionOpenGeneration &&
+                    state.value.screen == Screen.Detail &&
+                    restorationSessionId == id &&
+                    restorationProvider == provider
+                ) {
+                    state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
+                    state.update {
+                        it.copy(
+                            screen = Screen.Sessions,
+                            selected = null,
+                            loading = false,
+                            error = error.message ?: "Session could not be loaded",
+                            highlightedItemId = null,
+                            focusedApprovalId = null,
+                        )
+                    }
+                    synchronizeSessionPresence()
+                }
             }
         }
     }
@@ -2881,10 +2992,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     ) {
         val synchronizedHostId = expectedNavigation?.hostId ?: state.value.activeHostId
         state.update { it.copy(loading = true, error = null) }
-        val providers = runCatching {
-            client.request("provider.list").payload.getValue("providers").jsonArray
-                .map { json.decodeFromJsonElement<ProviderInfo>(it) }
-        }.getOrElse { defaultProviders() }
+        val providers = client.request("provider.list").payload.getValue("providers").jsonArray
+            .map { json.decodeFromJsonElement<ProviderInfo>(it) }
         val codexAvailable = providers.any {
             it.id == PROVIDER_CODEX && it.enabled && it.available
         }
@@ -2927,7 +3036,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     }
                 val claudeSessions =
                     if (claudeAvailable) {
-                        runCatching { listSessions(PROVIDER_CLAUDE_CODE) }.getOrElse { emptyList() }
+                        listSessions(PROVIDER_CLAUDE_CODE)
                     } else {
                         emptyList()
                     }
@@ -2998,25 +3107,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         val sessions = snapshot.sessions
         var selectedReadError: String? = null
-        val selected = selectedSessionId?.let {
-            val selectedProviderAvailable = providers.any { provider ->
-                provider.id == selectedProvider && provider.enabled && provider.available
-            }
-            if (!selectedProviderAvailable) {
+        var authoritativeSelectionInvalid = false
+        val selected = selectedSessionId?.let { sessionId ->
+            val target = rememberedSessionTarget(selectedProvider, sessionId)
+            val listed = target?.let { restorableSessionSummary(it, providers, sessions) }
+            if (listed == null) {
+                authoritativeSelectionInvalid = true
                 null
-            } else if (selectedProvider == PROVIDER_CLAUDE_CODE) {
-                runCatching { readSession(selectedProvider, it) }.getOrElse { error ->
+            } else {
+                runCatching { readSession(selectedProvider, sessionId) }.getOrElse { error ->
                     selectedReadError =
-                        "Claude Code session history is unavailable: ${error.message ?: "provider unavailable"}"
+                        "${providerDisplayName(selectedProvider)} session history is unavailable: " +
+                            (error.message ?: "provider unavailable")
                     null
                 }
-            } else {
-                readSession(selectedProvider, it)
             }
         }
         if (state.value.activeHostId != synchronizedHostId) return
+        val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
         state.update {
-            val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
             it.withSynchronizedSessions(
                     sessions = sessions,
                     repositories = snapshot.repositories,
@@ -3052,6 +3161,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     }
                 }
         }
+        if (applySelection && selectedSessionId != null && selected == null) {
+            if (authoritativeSelectionInvalid) clearRememberedSession()
+            synchronizedHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
+        }
         val validIds = sessions.mapTo(mutableSetOf()) { it.providerKey() }
         preferences.retainSessionIds(validIds)
         state.update {
@@ -3068,13 +3181,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private suspend fun listSessions(provider: String = PROVIDER_CODEX): List<SessionSummary> {
         val response =
-            if (provider == PROVIDER_CLAUDE_CODE) {
-                client.request(
-                    "provider.session.list",
-                    buildJsonObject { put("provider", provider) },
-                )
-            } else {
-                client.request("session.list")
+            when (provider) {
+                PROVIDER_CODEX -> client.request("session.list")
+                PROVIDER_CLAUDE_CODE ->
+                    client.request(
+                        "provider.session.list",
+                        buildJsonObject { put("provider", provider) },
+                    )
+                else -> error("Unsupported session provider")
             }
         return response.payload.getValue("sessions").jsonArray
             .map { json.decodeFromJsonElement<SessionSummary>(it) }
@@ -3135,15 +3249,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 put("repositoryId", summary?.repositoryId ?: ".")
             }
         }
-        client.request(
-            if (provider == PROVIDER_CLAUDE_CODE) "provider.session.subscribe" else "session.subscribe",
-            if (provider == PROVIDER_CLAUDE_CODE) providerPayload else buildJsonObject { put("sessionId", id) },
-        )
+        val (subscribeType, readType, payload) =
+            when (provider) {
+                PROVIDER_CODEX -> Triple(
+                    "session.subscribe",
+                    "session.read",
+                    buildJsonObject { put("sessionId", id) },
+                )
+                PROVIDER_CLAUDE_CODE -> Triple("provider.session.subscribe", "provider.session.read", providerPayload)
+                else -> error("Unsupported session provider")
+            }
+        client.request(subscribeType, payload)
         val response =
-            client.request(
-                if (provider == PROVIDER_CLAUDE_CODE) "provider.session.read" else "session.read",
-                if (provider == PROVIDER_CLAUDE_CODE) providerPayload else buildJsonObject { put("sessionId", id) },
-            )
+            client.request(readType, payload)
         return json.decodeFromJsonElement(
             response.payload.getValue("session"),
         )
@@ -3152,11 +3270,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun backToSessions() {
         sessionOpenGeneration += 1
         state.value.activeHostId?.let { hostNavigation.choose(it, Screen.Sessions) }
-        restorationSessionId = null
-        preferences.setSelectedSession(PROVIDER_CODEX, null)
         state.update { it.copy(screen = Screen.Sessions, selected = null, loading = false, error = null, highlightedItemId = null, focusedApprovalId = null) }
         synchronizeSessionPresence()
         refresh()
+    }
+
+    private fun clearRememberedSession() {
+        restorationProvider = PROVIDER_CODEX
+        restorationSessionId = null
+        preferences.setSelectedSession(PROVIDER_CODEX, null)
     }
 
     fun requestSessionAction(session: SessionSummary, action: SessionAction) {
@@ -3240,6 +3362,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runCatching {
                     TurnMonitorService.cancel(getApplication(), pending.sessionId, pending.provider)
                 }
+                if (
+                    restorationSessionId == pending.sessionId &&
+                    restorationProvider == pending.provider
+                ) clearRememberedSession()
                 state.update { current ->
                     val wasSelected = current.selected?.matches(pending.provider, pending.sessionId) == true
                     val key = providerSessionKey(pending.provider, pending.sessionId)
@@ -3676,19 +3802,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             } ?: return
             val claudeAvailable =
                 providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }
-            val enabledProviders = providers.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
+            val openableProviders = providers.filter { it.enabled && it.available }.mapTo(mutableSetOf()) { it.id }
+            if (restorationSessionId != null && restorationProvider !in openableProviders) {
+                clearRememberedSession()
+            }
             state.update { current ->
                 fun availability(session: SessionSummary): SessionSummary =
                     if (sessionProvider(session) == PROVIDER_CLAUDE_CODE && !claudeAvailable &&
                         session.status !in setOf("working", "waiting")
                     ) session.copy(status = "unavailable") else session
                 val selected = current.selected?.takeIf {
-                    sessionProvider(it) in enabledProviders
+                    sessionProvider(it) in openableProviders
                 }?.let(::availability)
                 current.copy(
                     providers = providers,
                     sessions = current.sessions.filter {
-                        sessionProvider(it) in enabledProviders
+                        sessionProvider(it) in openableProviders
                     }.map(::availability),
                     selected = selected,
                     screen = if (current.selected != null && selected == null) Screen.Sessions else current.screen,
@@ -3699,6 +3828,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (message.type != "session.event") return
         val provider =
             message.payload["provider"]?.jsonPrimitive?.content ?: PROVIDER_CODEX
+        if (!supportedProvider(provider)) return
         val sessionId = message.payload["sessionId"]?.jsonPrimitive?.content ?: return
         val identityKey = providerSessionKey(provider, sessionId)
         val event = message.eventObject()
@@ -3713,7 +3843,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
             if (action == "removed") {
+                val wasRemembered = restorationSessionId == sessionId && restorationProvider == provider
+                if (wasRemembered) clearRememberedSession()
                 state.update { current ->
+                    val wasSelected = current.selected?.matches(provider, sessionId) == true
                     val pinned = current.pinnedSessionIds - identityKey
                     val hidden = current.hiddenSessionIds - identityKey
                     preferences.setPinnedSessionIds(pinned)
@@ -3721,6 +3854,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     current.copy(
                         sessions = current.sessions.filterNot { it.matches(provider, sessionId) },
                         searchResults = current.searchResults.filterNot { it.session.matches(provider, sessionId) },
+                        selected = if (wasSelected) null else current.selected,
+                        screen = if (wasSelected) Screen.Sessions else current.screen,
                         pinnedSessionIds = pinned,
                         hiddenSessionIds = hidden,
                     )
@@ -4721,7 +4856,7 @@ private fun HostDashboardScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::showSessions) {
+                    IconButton(onClick = viewModel::enterSessions) {
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Sessions")
                     }
                     IconButton(onClick = viewModel::refresh, enabled = state.connected && !state.loading) {

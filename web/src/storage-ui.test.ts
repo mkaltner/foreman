@@ -5,6 +5,7 @@ import {
   forgetStoredHost,
   hostIdFromUrl,
   clearHostNotificationOverride,
+  clearRememberedSession,
   loadAppearance,
   loadDashboardPreferences,
   loadHostRegistry,
@@ -12,6 +13,7 @@ import {
   loadHostNotificationOverride,
   loadNotificationPreferences,
   loadSessionOrganization,
+  loadRememberedSession,
   loadCollapsedRepositories,
   saveAppearance,
   saveDashboardPreferences,
@@ -19,6 +21,7 @@ import {
   saveNotificationsEnabled,
   saveNotificationPreferences,
   saveSessionOrganization,
+  saveRememberedSession,
   saveCollapsedRepositories,
   suggestedHostDisplayName,
   updateStoredHost,
@@ -53,6 +56,26 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadHostRegistry().hosts).toHaveLength(1);
     expect(loadHostRegistry().hosts[0].deviceToken).toBe("fmt_home");
     expect(loadCollapsedRepositories(work.id)).toEqual(new Set());
+  });
+
+  it("stores bounded provider-aware last sessions per host and removes them when forgotten", () => {
+    const home = createStoredHost({ displayName: "Home", host: "home.local", webPort: 8766, deviceToken: "fmt_home" });
+    const work = createStoredHost({ displayName: "Work", host: "work.local", webPort: 9766, deviceToken: "fmt_work" });
+    let registry = addStoredHost({ hosts: [], activeHostId: null }, home);
+    registry = addStoredHost(registry, work);
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: "home-thread" });
+    saveRememberedSession({ hostId: work.id, provider: "claude-code", sessionId: "work-thread" });
+
+    expect(loadRememberedSession(home.id)?.sessionId).toBe("home-thread");
+    expect(loadRememberedSession(work.id)).toMatchObject({ provider: "claude-code", sessionId: "work-thread" });
+    registry = forgetStoredHost(registry, home.id);
+    expect(loadRememberedSession(home.id)).toBeNull();
+    expect(loadRememberedSession(work.id)?.sessionId).toBe("work-thread");
+
+    clearRememberedSession(work.id);
+    expect(loadRememberedSession(work.id)).toBeNull();
+    saveRememberedSession({ hostId: work.id, provider: "codex", sessionId: "x".repeat(1001) });
+    expect(loadRememberedSession(work.id)).toBeNull();
   });
 
   it("does not resurrect a forgotten host when a stale socket update arrives", () => {
@@ -241,7 +264,7 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
     expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
     expect(webRoutePath({ view: "dashboard" })).toBe("/dashboard");
-    expect(webRoutePath({ view: "sessions" })).toBe("/");
+    expect(webRoutePath({ view: "sessions" })).toBe("/sessions");
     expect(webRoutePath({ view: "detail", provider: "claude-code", sessionId: "thread/one" }))
       .toBe("/sessions/claude-code/thread%2Fone");
     const deepLink = `${webRoutePath({ view: "detail", provider: "codex", sessionId: "same" })}${withHostInSearch("", "host-work")}`;
