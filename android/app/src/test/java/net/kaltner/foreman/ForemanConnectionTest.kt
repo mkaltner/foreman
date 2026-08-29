@@ -13,6 +13,7 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -1326,6 +1327,45 @@ class ForemanConnectionTest {
 
         assertEquals(FOREGROUND_NOTIFICATION_ID, global)
         assertTrue(singleTurn != FOREGROUND_NOTIFICATION_ID)
+    }
+
+    @Test
+    fun globalMonitoringFiltersProvidersAndDiscoversOnlyMonitorableTurns() {
+        val providers = buildJsonArray {
+            add(buildJsonObject { put("id", PROVIDER_CODEX); put("enabled", true); put("available", true) })
+            add(buildJsonObject { put("id", PROVIDER_CLAUDE_CODE); put("enabled", false); put("available", true) })
+            add(buildJsonObject { put("id", "other"); put("enabled", true); put("available", true) })
+        }
+        assertEquals(setOf(PROVIDER_CODEX), enabledMonitorProviders(providers))
+
+        val codexSessions = buildJsonArray {
+            add(buildJsonObject { put("id", "working"); put("status", "working"); put("repository", "/repo") })
+            add(buildJsonObject { put("id", "waiting"); put("status", "waiting") })
+            add(buildJsonObject { put("id", "old"); put("status", "completed") })
+        }
+        val candidates = globalTurnCandidates(PROVIDER_CODEX, codexSessions)
+        assertEquals(listOf("working", "waiting"), candidates.map { it.sessionId })
+        assertEquals(NotificationEvent.Approval, monitorOutcome(candidates.last().status)?.event)
+
+        val claudeSessions = buildJsonArray {
+            add(buildJsonObject { put("id", "managed"); put("status", "working"); put("source", "managed") })
+            add(buildJsonObject { put("id", "external"); put("status", "working"); put("source", "external") })
+        }
+        assertEquals(
+            listOf("managed"),
+            globalTurnCandidates(PROVIDER_CLAUDE_CODE, claudeSessions).map { it.sessionId },
+        )
+    }
+
+    @Test
+    fun globalStatusEnrollmentRequiresWatchingAnEnabledProviderAndActiveStatus() {
+        val enabled = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
+
+        assertTrue(shouldEnrollGlobalTurn(true, enabled, PROVIDER_CODEX, "working"))
+        assertTrue(shouldEnrollGlobalTurn(true, enabled, PROVIDER_CLAUDE_CODE, "waiting"))
+        assertFalse(shouldEnrollGlobalTurn(false, enabled, PROVIDER_CODEX, "working"))
+        assertFalse(shouldEnrollGlobalTurn(true, setOf(PROVIDER_CODEX), PROVIDER_CLAUDE_CODE, "working"))
+        assertFalse(shouldEnrollGlobalTurn(true, enabled, PROVIDER_CODEX, "completed"))
     }
 
     @Test

@@ -27,6 +27,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.JsonElement
 
 internal data class MonitorOutcome(
     val title: String,
@@ -68,6 +69,53 @@ internal fun outcomeNotificationId(
             providerNotificationId(hostId, provider, rawSessionId)
         } ?: providerNotificationId(hostId, PROVIDER_CODEX, sessionId)
     }
+
+internal data class GlobalTurnCandidate(
+    val provider: String,
+    val sessionId: String,
+    val status: String,
+    val repository: String?,
+    val turnId: String?,
+    val startedAt: Long?,
+)
+
+internal fun enabledMonitorProviders(providers: Iterable<JsonElement>): Set<String> =
+    providers.mapNotNullTo(linkedSetOf()) { raw ->
+        val provider = raw.jsonObject
+        val id = provider["id"]?.jsonPrimitive?.content ?: return@mapNotNullTo null
+        val enabled = provider["enabled"]?.jsonPrimitive?.booleanOrNull != false
+        val available = provider["available"]?.jsonPrimitive?.booleanOrNull == true
+        id.takeIf {
+            enabled && available && it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
+        }
+    }
+
+internal fun globalTurnCandidates(provider: String, sessions: Iterable<JsonElement>): List<GlobalTurnCandidate> =
+    sessions.mapNotNull { raw ->
+        val session = raw.jsonObject
+        val status = session["status"]?.jsonPrimitive?.content ?: return@mapNotNull null
+        if (status !in setOf("working", "waiting")) return@mapNotNull null
+        if (
+            provider == PROVIDER_CLAUDE_CODE &&
+                session["source"]?.jsonPrimitive?.content == "external"
+        ) return@mapNotNull null
+        GlobalTurnCandidate(
+            provider = provider,
+            sessionId = session["id"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+            status = status,
+            repository = session["repository"]?.jsonPrimitive?.content,
+            turnId = session["activeTurnId"]?.jsonPrimitive?.content,
+            startedAt = session["activeTurnStartedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
+        )
+    }
+
+internal fun shouldEnrollGlobalTurn(
+    monitorAllTurns: Boolean,
+    enabledProviders: Set<String>,
+    provider: String,
+    status: String,
+): Boolean =
+    monitorAllTurns && provider in enabledProviders && status in setOf("working", "waiting")
 
 internal class MonitorLifecycle(
     private val initialReconnectDelay: Long = 2_000L,
@@ -336,15 +384,7 @@ class TurnMonitorService : Service() {
 
     private suspend fun discoverActiveTurns() {
         val providers = client.request("provider.list").payload["providers"]?.jsonArray.orEmpty()
-        enabledProviders = providers.mapNotNullTo(linkedSetOf()) { raw ->
-            val provider = raw.jsonObject
-            val id = provider["id"]?.jsonPrimitive?.content ?: return@mapNotNullTo null
-            val enabled = provider["enabled"]?.jsonPrimitive?.booleanOrNull != false
-            val available = provider["available"]?.jsonPrimitive?.booleanOrNull == true
-            if (enabled && available && id in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)) {
-                id
-            } else null
-        }
+        enabledProviders = enabledMonitorProviders(providers)
         enabledProviders.toList().forEach { provider ->
             val response = client.request(
                 if (provider == PROVIDER_CLAUDE_CODE) "provider.session.list" else "session.list",
@@ -354,27 +394,20 @@ class TurnMonitorService : Service() {
                     buildJsonObject { }
                 },
             )
-            response.payload["sessions"]?.jsonArray.orEmpty().forEach { raw ->
-                val session = raw.jsonObject
-                if (
-                    provider == PROVIDER_CLAUDE_CODE &&
-                        session["source"]?.jsonPrimitive?.content == "external"
-                ) return@forEach
-                val sessionId = session["id"]?.jsonPrimitive?.content ?: return@forEach
-                val status = session["status"]?.jsonPrimitive?.content ?: return@forEach
-                val sessionKey = providerSessionKey(provider, sessionId)
-                if (!lifecycle.monitorActive(sessionKey, status)) return@forEach
-                session["repository"]?.jsonPrimitive?.content?.let {
+            globalTurnCandidates(provider, response.payload["sessions"]?.jsonArray.orEmpty()).forEach { session ->
+                val sessionKey = providerSessionKey(session.provider, session.sessionId)
+                if (!lifecycle.monitorActive(sessionKey, session.status)) return@forEach
+                session.repository?.let {
                     repositoryIdentities[sessionKey] = normalizeRepositoryIdentity(it)
                 }
-                if (status == "working") {
+                if (session.status == "working") {
                     recordActiveTurn(
                         sessionKey,
-                        session["activeTurnId"]?.jsonPrimitive?.content,
-                        session["activeTurnStartedAt"]?.jsonPrimitive?.content?.toLongOrNull(),
+                        session.turnId,
+                        session.startedAt,
                     )
                 } else {
-                    monitorOutcome(status)?.let { finishMonitoring(sessionKey, it) }
+                    monitorOutcome(session.status)?.let { finishMonitoring(sessionKey, it) }
                 }
             }
         }
@@ -383,15 +416,7 @@ class TurnMonitorService : Service() {
     private fun handleEvent(message: WireMessage) {
         if (message.type == "provider.event") {
             message.payload["providers"]?.jsonArray?.let { providers ->
-                enabledProviders = providers.mapNotNullTo(linkedSetOf()) { raw ->
-                    val provider = raw.jsonObject
-                    val id = provider["id"]?.jsonPrimitive?.content ?: return@mapNotNullTo null
-                    val enabled = provider["enabled"]?.jsonPrimitive?.booleanOrNull != false
-                    val available = provider["available"]?.jsonPrimitive?.booleanOrNull == true
-                    id.takeIf {
-                        enabled && available && it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
-                    }
-                }
+                enabledProviders = enabledMonitorProviders(providers)
             }
             return
         }
@@ -427,9 +452,11 @@ class TurnMonitorService : Service() {
         if (event["kind"]?.jsonPrimitive?.content != "status") return
         val status = event["status"]?.jsonPrimitive?.content ?: return
         val discovered =
-            monitorAllTurns && provider in enabledProviders && lifecycle.monitorActive(sessionKey, status)
+            shouldEnrollGlobalTurn(monitorAllTurns, enabledProviders, provider, status) &&
+                lifecycle.monitorActive(sessionKey, status)
         if (!lifecycle.contains(sessionKey)) return
         if (status == "working") {
+            clearAttentionNotifications(sessionKey)
             recordActiveTurn(
                 sessionKey,
                 event["turnId"]?.jsonPrimitive?.content,
@@ -531,6 +558,14 @@ class TurnMonitorService : Service() {
             approvalNotifications.remove(it)
             monitoredHostId?.let { hostId -> notificationManager.cancel(approvalNotificationId(hostId, it)) }
         }
+    }
+
+    @Synchronized
+    private fun clearAttentionNotifications(sessionId: String) {
+        monitoredHostId?.let { hostId ->
+            notificationManager.cancel(outcomeNotificationId(hostId, sessionId, false))
+        }
+        clearApprovalNotifications(sessionId)
     }
 
     @Synchronized
