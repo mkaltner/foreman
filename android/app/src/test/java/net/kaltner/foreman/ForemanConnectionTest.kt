@@ -1320,6 +1320,15 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun globalMonitoringReusesTheForegroundNotificationForOutcomes() {
+        val global = outcomeNotificationId("host", providerSessionKey(PROVIDER_CODEX, "session"), true)
+        val singleTurn = outcomeNotificationId("host", providerSessionKey(PROVIDER_CODEX, "session"), false)
+
+        assertEquals(FOREGROUND_NOTIFICATION_ID, global)
+        assertTrue(singleTurn != FOREGROUND_NOTIFICATION_ID)
+    }
+
+    @Test
     fun promptFailureCancellationPreventsLateStaleNotifications() {
         val lifecycle = MonitorLifecycle()
 
