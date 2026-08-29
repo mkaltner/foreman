@@ -649,6 +649,111 @@ class PairingLimiterTests(unittest.TestCase):
         self.assertTrue(limiter.allowed("attacker"))
 
 
+class SessionPresenceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        root = Path(self.temporary_directory.name)
+        self.app = Foreman(
+            "127.0.0.1",
+            0,
+            root,
+            State(root / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        self.browser = Client(None, "browser", authenticated=True)
+        self.android = Client(None, "android", authenticated=True)
+        self.observer = Client(None, "observer", authenticated=True)
+        for client in (self.browser, self.android, self.observer):
+            client.send = AsyncMock()  # type: ignore[method-assign]
+            self.app.clients.add(client)
+
+    async def asyncTearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    async def test_presence_is_deduplicated_and_broadcast_on_aggregate_changes(self) -> None:
+        browser_result = await self.app.dispatch(
+            self.browser,
+            {
+                "type": "session.presence",
+                "payload": {"provider": "codex", "sessionId": "thread-1"},
+            },
+        )
+        expected = [{"provider": "codex", "sessionId": "thread-1"}]
+        self.assertEqual(browser_result, {"sessions": expected})
+        self.assertEqual(
+            self.observer.send.await_args.args[0],  # type: ignore[attr-defined]
+            {
+                "version": protocol.VERSION,
+                "type": "session.presence.event",
+                "payload": {"sessions": expected},
+            },
+        )
+
+        for client in (self.browser, self.android, self.observer):
+            client.send.reset_mock()  # type: ignore[attr-defined]
+        duplicate = await self.app.dispatch(
+            self.android,
+            {
+                "type": "session.presence",
+                "payload": {"provider": "codex", "sessionId": "thread-1"},
+            },
+        )
+        self.assertEqual(duplicate, {"sessions": expected})
+        self.observer.send.assert_not_awaited()  # type: ignore[attr-defined]
+
+        await self.app.dispatch(self.browser, {"type": "session.presence", "payload": {}})
+        self.assertEqual(self.app.session_presence_projection(), expected)
+        self.observer.send.assert_not_awaited()  # type: ignore[attr-defined]
+
+        await self.app.dispatch(
+            self.android,
+            {
+                "type": "session.presence",
+                "payload": {"provider": "claude-code", "sessionId": "session-2"},
+            },
+        )
+        self.assertEqual(
+            self.app.session_presence_projection(),
+            [{"provider": "claude-code", "sessionId": "session-2"}],
+        )
+        self.observer.send.assert_awaited_once()  # type: ignore[attr-defined]
+
+    async def test_presence_is_removed_on_disconnect(self) -> None:
+        await self.app.dispatch(
+            self.browser,
+            {
+                "type": "session.presence",
+                "payload": {"provider": "codex", "sessionId": "thread-1"},
+            },
+        )
+        self.observer.send.reset_mock()  # type: ignore[attr-defined]
+
+        await self.app.remove_client(self.browser)
+
+        self.assertEqual(self.app.session_presence_projection(), [])
+        self.observer.send.assert_awaited_once()  # type: ignore[attr-defined]
+        self.assertEqual(
+            self.observer.send.await_args.args[0]["payload"],  # type: ignore[attr-defined]
+            {"sessions": []},
+        )
+
+    async def test_presence_rejects_partial_or_unknown_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "provided together"):
+            await self.app.dispatch(
+                self.browser,
+                {"type": "session.presence", "payload": {"sessionId": "thread-1"}},
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            await self.app.dispatch(
+                self.browser,
+                {
+                    "type": "session.presence",
+                    "payload": {"provider": "unknown", "sessionId": "thread-1"},
+                },
+            )
+
+
 class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_codex_provider_subscription_delivers_live_conversation_events(
         self,

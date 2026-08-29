@@ -28,6 +28,96 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun focusedSessionPresenceIsProviderAwareAndOnlyPublishedFromVisibleDetail() {
+        val codex = SessionSummary("same", "/repo", "Codex", "working")
+        val claude = codex.copy(provider = PROVIDER_CLAUDE_CODE)
+
+        assertEquals(
+            providerSessionKey(PROVIDER_CODEX, "same"),
+            focusedSessionPresenceKey(true, Screen.Detail, codex),
+        )
+        assertEquals(
+            providerSessionKey(PROVIDER_CLAUDE_CODE, "same"),
+            focusedSessionPresenceKey(true, Screen.Detail, claude),
+        )
+        assertNull(focusedSessionPresenceKey(false, Screen.Detail, codex))
+        assertNull(focusedSessionPresenceKey(true, Screen.Sessions, codex))
+        assertNull(focusedSessionPresenceKey(true, Screen.Detail, null))
+    }
+
+    @Test
+    fun presencePublisherKeepsAQueuedBackgroundClearPending() {
+        val focused = providerSessionKey(PROVIDER_CODEX, "same")
+
+        assertFalse(sessionPresenceSyncPending(true, focused, focused))
+        assertTrue(sessionPresenceSyncPending(true, focused, null))
+        assertTrue(sessionPresenceSyncPending(false, null, null))
+    }
+
+    @Test
+    fun suppressedApprovalsRemainPendingUntilTheSessionLosesFocus() {
+        val session = providerSessionKey(PROVIDER_CODEX, "same")
+        val ledger = ApprovalNotificationLedger()
+
+        ledger.record("approval-1", session)
+        assertFalse(ledger.shouldDisplay("approval-1", setOf(session)))
+
+        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
+        ledger.markDisplayed("approval-1")
+        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+
+        assertEquals(listOf("approval-1"), ledger.hideSession(session))
+        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
+        assertEquals(listOf("approval-1"), ledger.clearSession(session))
+        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+    }
+
+    @Test
+    fun focusedSessionProjectionRejectsMalformedOrUnknownEntries() {
+        val sessions =
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "one")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "one")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CLAUDE_CODE)
+                        put("sessionId", "two")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", "unknown")
+                        put("sessionId", "ignored")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "")
+                    },
+                )
+            }
+
+        assertEquals(
+            setOf(
+                providerSessionKey(PROVIDER_CODEX, "one"),
+                providerSessionKey(PROVIDER_CLAUDE_CODE, "two"),
+            ),
+            focusedSessionKeys(sessions),
+        )
+    }
+
+    @Test
     fun focusedActivityGroupsOnlyRoutineSuccessfulWork() {
         val messages =
             listOf(

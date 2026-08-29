@@ -64,7 +64,7 @@ function UnifiedMetric({ label, value, onClick }: { label: string; value: string
 function HostOverviewCard({ host, active, snapshot, now, onOpen, onReconnect, onEdit, onForget }: { host: StoredHost; active: boolean; snapshot?: HostOverviewSnapshot; now: number; onOpen: () => void; onReconnect: () => void; onEdit: () => void; onForget: () => void }) {
   const live = snapshot?.connection === "connected";
   const connection = snapshot?.connection ?? host.lastKnownStatus;
-  const runtime = snapshot?.runtimeMode === "shared" ? "Shared Desktop" : snapshot?.runtimeMode === "fallback" ? "Fallback" : host.runtimeMode === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop" : host.runtimeMode ? "Fallback" : "Unknown";
+  const runtime = snapshot?.runtimeMode === "shared" ? "Shared Desktop" : snapshot?.runtimeMode === "fallback" ? "Foreman-managed Codex runtime" : host.runtimeMode === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop" : host.runtimeMode ? "Foreman-managed Codex runtime" : "Unknown";
   return <article className={`host-overview-card ${live ? "live" : "stale"}`}>
     <header><div><h3>{host.displayName}</h3><small>{host.host}:{host.webPort}</small></div><span className={`host-connection ${connection}`}>{connection}</span></header>
     {!live && <p className="stale-warning"><strong>Stale snapshot</strong> · Last connected {formatAge(host.lastConnectedAt ?? snapshot?.observedAt, now)}</p>}

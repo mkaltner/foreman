@@ -139,6 +139,7 @@ class Client:
     authenticated: bool = False
     device_id: str | None = None
     subscriptions: set[str] = field(default_factory=set)
+    focused_session: str | None = None
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     requests: set[asyncio.Task[Any]] = field(default_factory=set)
     search_task: asyncio.Task[dict[str, Any]] | None = None
@@ -1242,6 +1243,63 @@ class Foreman:
             return_exceptions=True,
         )
 
+    def session_presence_projection(self) -> list[dict[str, str]]:
+        sessions: set[tuple[str, str]] = set()
+        for client in self.clients:
+            if not client.authenticated or client.focused_session is None:
+                continue
+            provider, separator, session_id = client.focused_session.partition(":")
+            if separator and provider in PROVIDERS and session_id:
+                sessions.add((provider, session_id))
+        return [
+            {"provider": provider, "sessionId": session_id}
+            for provider, session_id in sorted(sessions)
+        ]
+
+    async def broadcast_session_presence(self) -> None:
+        if self.stopping:
+            return
+        outgoing = {
+            "version": VERSION,
+            "type": "session.presence.event",
+            "payload": {"sessions": self.session_presence_projection()},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+            ),
+            return_exceptions=True,
+        )
+
+    async def set_session_presence(
+        self, client: Client, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        before = self.session_presence_projection()
+        provider_value = payload.get("provider")
+        session_value = payload.get("sessionId")
+        if provider_value is None and session_value is None:
+            client.focused_session = None
+        elif provider_value is None or session_value is None:
+            raise ValueError("provider and sessionId must be provided together")
+        else:
+            provider = required_text(payload, "provider", 40)
+            session_id = required_text(payload, "sessionId", 160)
+            if provider not in PROVIDERS:
+                raise ValueError("provider is unsupported")
+            client.focused_session = f"{provider}:{session_id}"
+        after = self.session_presence_projection()
+        if after != before:
+            await self.broadcast_session_presence()
+        return {"sessions": after}
+
+    async def remove_client(self, client: Client) -> None:
+        before = self.session_presence_projection()
+        self.clients.discard(client)
+        if self.session_presence_projection() != before:
+            await self.broadcast_session_presence()
+
     def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
@@ -1418,7 +1476,7 @@ class Foreman:
                 task.cancel()
             if client.requests:
                 await asyncio.gather(*client.requests, return_exceptions=True)
-            self.clients.discard(client)
+            await self.remove_client(client)
             if client.authenticated:
                 self.diagnostics.record(
                     "client.disconnected",
@@ -1464,7 +1522,7 @@ class Foreman:
                 task.cancel()
             if client.requests:
                 await asyncio.gather(*client.requests, return_exceptions=True)
-            self.clients.discard(client)
+            await self.remove_client(client)
             if client.authenticated:
                 self.diagnostics.record(
                     "client.disconnected",
@@ -1764,9 +1822,13 @@ class Foreman:
 
     async def disconnect_device(self, device_id: str) -> None:
         targets = [client for client in self.clients if client.device_id == device_id]
+        presence_before = self.session_presence_projection()
         for target in targets:
             target.authenticated = False
             target.device_id = None
+            target.focused_session = None
+        if self.session_presence_projection() != presence_before:
+            await self.broadcast_session_presence()
         await asyncio.gather(
             *(self.close_client(target) for target in targets), return_exceptions=True
         )
@@ -1821,6 +1883,7 @@ class Foreman:
                     "search": codex_enabled,
                     "diagnostics": True,
                     "workspaceFiles": True,
+                    "sessionPresence": True,
                     "providerConfiguration": True,
                     "remoteRestart": self.remote_restart_enabled,
                 },
@@ -1861,6 +1924,9 @@ class Foreman:
             return {"time": int(time.time())}
         if not client.authenticated:
             raise PermissionError("authenticate first")
+
+        if message_type == "session.presence":
+            return await self.set_session_presence(client, payload)
 
         if message_type in CODEX_OPERATIONS:
             self.require_provider_enabled("codex")
