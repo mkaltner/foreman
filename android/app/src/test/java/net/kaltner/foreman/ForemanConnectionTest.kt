@@ -114,21 +114,26 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun suppressedApprovalsRemainPendingUntilTheSessionLosesFocus() {
+    fun focusedApprovalsRemainPendingWithoutRealertingAfterFocusChanges() {
         val session = providerSessionKey(PROVIDER_CODEX, "same")
-        val ledger = ApprovalNotificationLedger()
+        val ledger = AttentionNotificationLedger()
+        val request = explicitAttentionRequest("approval", "approval-1", session)
 
-        ledger.record("approval-1", session)
-        assertFalse(ledger.shouldDisplay("approval-1", setOf(session)))
+        ledger.record(request)
+        assertTrue(
+            eligibleAttentionRequests(ledger.pendingRequests(), setOf(session), setOf(session)).isEmpty(),
+        )
 
-        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
-        ledger.markDisplayed("approval-1")
-        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+        val visible = eligibleAttentionRequests(ledger.pendingRequests(), setOf(session), emptySet())
+        assertEquals(setOf(request.key), ledger.claimAlerts(visible))
+        assertTrue(ledger.claimAlerts(visible).isEmpty())
 
-        assertEquals(listOf("approval-1"), ledger.hideSession(session))
-        assertTrue(ledger.shouldDisplay("approval-1", emptySet()))
-        assertEquals(listOf("approval-1"), ledger.clearSession(session))
-        assertFalse(ledger.shouldDisplay("approval-1", emptySet()))
+        assertTrue(
+            eligibleAttentionRequests(ledger.pendingRequests(), setOf(session), setOf(session)).isEmpty(),
+        )
+        assertTrue(ledger.claimAlerts(visible).isEmpty())
+        assertEquals(listOf(request), ledger.clearSession(session))
+        assertTrue(ledger.pendingRequests().isEmpty())
     }
 
     @Test
@@ -1709,12 +1714,13 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun globalMonitoringReusesTheForegroundNotificationForOutcomes() {
-        val global = outcomeNotificationId("host", providerSessionKey(PROVIDER_CODEX, "session"), true)
-        val singleTurn = outcomeNotificationId("host", providerSessionKey(PROVIDER_CODEX, "session"), false)
+    fun standaloneOutcomesKeepAProviderScopedIdentityOutsideForegroundMonitoring() {
+        val codex = outcomeNotificationId("host", providerSessionKey(PROVIDER_CODEX, "session"))
+        val claude = outcomeNotificationId("host", providerSessionKey(PROVIDER_CLAUDE_CODE, "session"))
 
-        assertEquals(FOREGROUND_NOTIFICATION_ID, global)
-        assertTrue(singleTurn != FOREGROUND_NOTIFICATION_ID)
+        assertTrue(codex != FOREGROUND_NOTIFICATION_ID)
+        assertTrue(claude != FOREGROUND_NOTIFICATION_ID)
+        assertTrue(codex != claude)
     }
 
     @Test
