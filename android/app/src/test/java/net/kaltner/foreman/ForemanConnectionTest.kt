@@ -28,6 +28,16 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun collapsedRepositoriesRemainScopedByHostAcrossNavigation() {
+        var collapsed = toggleCollapsedRepository(emptyMap(), "home", "/projects/foreman")
+        collapsed = toggleCollapsedRepository(collapsed, "work", "/projects/other")
+
+        assertEquals(setOf("/projects/foreman"), collapsed["home"])
+        assertEquals(setOf("/projects/other"), collapsed["work"])
+        assertFalse(toggleCollapsedRepository(collapsed, "home", "/projects/foreman").containsKey("home"))
+    }
+
+    @Test
     fun focusedSessionPresenceIsProviderAwareAndOnlyPublishedFromVisibleDetail() {
         val codex = SessionSummary("same", "/repo", "Codex", "working")
         val claude = codex.copy(provider = PROVIDER_CLAUDE_CODE)
@@ -600,6 +610,8 @@ class ForemanConnectionTest {
         assertEquals(true, composerKeyboardOptions.autoCorrectEnabled)
         assertEquals(KeyboardType.Text, composerKeyboardOptions.keyboardType)
         assertTrue(UiPreferences().hapticsEnabled)
+        assertTrue(UiPreferences().groupSessionsByRepository)
+        assertTrue(UiPreferences().collapsedRepositoryIds.isEmpty())
     }
 
     @Test
@@ -1618,6 +1630,28 @@ class ForemanConnectionTest {
             "",
         )
         assertEquals(listOf("waiting"), hidden.map { it.session.id })
+    }
+
+    @Test
+    fun repositoryGroupsBubbleActiveSessionsAheadOfPinnedHistory() {
+        val repositories = listOf(RepositoryInfo("foreman", "foreman", "foreman", "main", false))
+        val sessions = listOf(
+            SessionSummary("done", "/projects/foreman", "Done", "idle", 300),
+            SessionSummary("active", "/projects/foreman/src", "Active", "working", 200),
+            SessionSummary("other", "/workspace/other", "Other", "idle", 100),
+        )
+        val visible = filterSessions(
+            sessions,
+            SessionSearchFilters(),
+            setOf("done"),
+            emptySet(),
+            emptyList(),
+            repositories,
+            "/projects",
+        )
+        val groups = repositorySessionGroups(visible, repositories, "/projects")
+        assertEquals(listOf("Repository: foreman", "Workspace: /workspace/other"), groups.map { it.repository.label })
+        assertEquals(listOf("active", "done"), groups.first().sessions.map { it.session.id })
     }
 
     @Test

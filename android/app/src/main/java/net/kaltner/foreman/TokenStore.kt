@@ -357,6 +357,7 @@ class PreferenceStore(context: Context, hostId: String?) {
                 }.getOrDefault(ThemeMode.System),
             accentColor = parseAccentColor(preferences.getString("accentColor", null)),
             activityDetail = enumPreference("activityDetail", ActivityDetail.Focused),
+            groupSessionsByRepository = preferences.getBoolean("groupSessionsByRepository", true),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
             hapticsEnabled = preferences.getBoolean("hapticsEnabled", true),
             monitorActiveTurns = preferences.getBoolean("monitorActiveTurns", false),
@@ -371,6 +372,9 @@ class PreferenceStore(context: Context, hostId: String?) {
             searchDateTo = preferences.getString("sessionSearchDateTo", "").orEmpty(),
             pinnedSessionIds = sessionIds("pinnedSessionIds"),
             hiddenSessionIds = sessionIds("hiddenSessionIds"),
+            collapsedRepositoryIds =
+                preferences.getStringSet("collapsedRepositoryIds", emptySet()).orEmpty()
+                    .filterTo(linkedSetOf()) { it.length <= 1000 },
             lastProvider = preferences.getString("lastProvider", PROVIDER_CODEX)
                 ?.takeIf { it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) }
                 ?: PROVIDER_CODEX,
@@ -387,6 +391,7 @@ class PreferenceStore(context: Context, hostId: String?) {
     fun setThemeMode(mode: ThemeMode) { preferences.edit().putString("themeMode", mode.name).apply() }
     fun setAccentColor(color: AccentColor) { preferences.edit().putString("accentColor", color.name).apply() }
     fun setActivityDetail(detail: ActivityDetail) { preferences.edit().putString("activityDetail", detail.name).apply() }
+    fun setGroupSessionsByRepository(enabled: Boolean) { preferences.edit().putBoolean("groupSessionsByRepository", enabled).apply() }
     fun setFollowNewMessages(enabled: Boolean) { preferences.edit().putBoolean("followNewMessages", enabled).apply() }
     fun setHapticsEnabled(enabled: Boolean) { preferences.edit().putBoolean("hapticsEnabled", enabled).apply() }
     fun setMonitorActiveTurns(enabled: Boolean) { preferences.edit().putBoolean("monitorActiveTurns", enabled).apply() }
@@ -438,6 +443,11 @@ class PreferenceStore(context: Context, hostId: String?) {
     fun setHiddenSessionIds(ids: Set<String>) {
         preferences.edit().putStringSet("hiddenSessionIds", ids.toList().takeLast(1000).toSet()).apply()
     }
+    fun setCollapsedRepositoryIds(ids: Set<String>) {
+        preferences.edit()
+            .putStringSet("collapsedRepositoryIds", ids.toList().takeLast(1000).toSet())
+            .apply()
+    }
     fun retainSessionIds(ids: Set<String>) {
         setPinnedSessionIds(sessionIds("pinnedSessionIds").intersect(ids))
         setHiddenSessionIds(sessionIds("hiddenSessionIds").intersect(ids))
@@ -461,6 +471,7 @@ data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
     val activityDetail: ActivityDetail = ActivityDetail.Focused,
+    val groupSessionsByRepository: Boolean = true,
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
@@ -475,6 +486,7 @@ data class UiPreferences(
     val searchDateTo: String = "",
     val pinnedSessionIds: Set<String> = emptySet(),
     val hiddenSessionIds: Set<String> = emptySet(),
+    val collapsedRepositoryIds: Set<String> = emptySet(),
     val lastProvider: String = PROVIDER_CODEX,
     val claudeModel: String = "sonnet",
     val claudePermissionMode: String = "default",

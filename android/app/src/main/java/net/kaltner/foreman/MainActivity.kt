@@ -821,6 +821,8 @@ internal data class UiState(
     val themeMode: ThemeMode = ThemeMode.System,
     val accentColor: AccentColor = AccentColor.Purple,
     val activityDetail: ActivityDetail = ActivityDetail.Focused,
+    val groupSessionsByRepository: Boolean = true,
+    val collapsedRepositoriesByHost: Map<String, Set<String>> = emptyMap(),
     val followNewMessages: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val monitorActiveTurns: Boolean = false,
@@ -953,6 +955,7 @@ internal fun UiState.withForgottenConnection(): UiState =
         repositories = emptyList(),
         selected = null,
         composerDrafts = emptyMap(),
+        collapsedRepositoriesByHost = emptyMap(),
         showNewSession = false,
         notificationPreferences = NotificationPreferences(),
         hostNotificationOverride = false,
@@ -1014,6 +1017,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
                 activityDetail = savedPreferences.activityDetail,
+                groupSessionsByRepository = savedPreferences.groupSessionsByRepository,
+                collapsedRepositoriesByHost = activeHost?.id?.let { hostId ->
+                    savedPreferences.collapsedRepositoryIds.takeIf { it.isNotEmpty() }
+                        ?.let { mapOf(hostId to it) }
+                }.orEmpty(),
                 followNewMessages = savedPreferences.followNewMessages,
                 hapticsEnabled = savedPreferences.hapticsEnabled,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
@@ -1557,6 +1565,26 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(activityDetail = detail) }
     }
 
+    fun setGroupSessionsByRepository(enabled: Boolean) {
+        preferences.setGroupSessionsByRepository(enabled)
+        state.update { it.copy(groupSessionsByRepository = enabled) }
+    }
+
+    fun toggleCollapsedRepository(repositoryId: String) {
+        val hostId = state.value.activeHostId ?: return
+        val collapsed = toggleCollapsedRepository(
+            state.value.collapsedRepositoriesByHost,
+            hostId,
+            repositoryId,
+        )
+        preferences.setCollapsedRepositoryIds(collapsed[hostId].orEmpty())
+        state.update { current ->
+            if (current.activeHostId == hostId) {
+                current.copy(collapsedRepositoriesByHost = collapsed)
+            } else current
+        }
+    }
+
     fun setFollowNewMessages(enabled: Boolean) {
         preferences.setFollowNewMessages(enabled)
         state.update { it.copy(followNewMessages = enabled) }
@@ -1715,6 +1743,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         themeMode = restored.themeMode,
                         accentColor = restored.accentColor,
                         activityDetail = restored.activityDetail,
+                        groupSessionsByRepository = restored.groupSessionsByRepository,
                         followNewMessages = restored.followNewMessages,
                         hapticsEnabled = restored.hapticsEnabled,
                         monitorActiveTurns = restored.monitorActiveTurns,
@@ -1933,6 +1962,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     savedHosts = hosts.all().map { host -> host.summary() },
                     overviewSnapshots = it.overviewSnapshots - hostId,
                     composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+                    collapsedRepositoriesByHost = it.collapsedRepositoriesByHost - hostId,
                 )
             }
             return
@@ -1949,6 +1979,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             it.copy(
                 overviewSnapshots = it.overviewSnapshots - hostId,
                 composerDrafts = it.composerDrafts.filterKeys { key -> key.hostId != hostId },
+                collapsedRepositoriesByHost = it.collapsedRepositoriesByHost - hostId,
             )
         }
         activateSavedHost(next)
@@ -2033,6 +2064,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 showSearch = sessionSearchActive(filters),
                 pinnedSessionIds = restored.pinnedSessionIds,
                 hiddenSessionIds = restored.hiddenSessionIds,
+                collapsedRepositoriesByHost = if (restored.collapsedRepositoryIds.isEmpty()) {
+                    it.collapsedRepositoriesByHost - saved.id
+                } else {
+                    it.collapsedRepositoriesByHost + (saved.id to restored.collapsedRepositoryIds)
+                },
                 highlightedItemId = null,
                 focusedApprovalId = null,
                 approvals = emptyList(),
@@ -2052,6 +2088,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 themeMode = restored.themeMode,
                 accentColor = restored.accentColor,
                 activityDetail = restored.activityDetail,
+                groupSessionsByRepository = restored.groupSessionsByRepository,
                 followNewMessages = restored.followNewMessages,
                 hapticsEnabled = restored.hapticsEnabled,
                 monitorActiveTurns = restored.monitorActiveTurns,
@@ -4443,6 +4480,9 @@ private fun SessionsScreen(
     viewModel: ForemanViewModel,
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
+    val collapsedRepositoryIds = state.activeHostId
+        ?.let(state.collapsedRepositoriesByHost::get)
+        .orEmpty()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -4551,6 +4591,11 @@ private fun SessionsScreen(
                         it.session.source != "external"
                 }
                 val recent = remaining.filterNot { it in active || it in waiting }
+                val repositoryGroups = repositorySessionGroups(
+                    visible,
+                    state.repositories,
+                    state.repositoryRoot,
+                )
                 PullToRefreshBox(
                     isRefreshing = state.loading,
                     onRefresh = viewModel::refresh,
@@ -4572,50 +4617,55 @@ private fun SessionsScreen(
                                 Text("Try clearing a filter or using a shorter substring.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        sessionSection(
-                            "Pinned",
-                            pinned,
-                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
-                            viewModel::requestSessionAction,
-                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
-                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                            state.capabilities,
-                            state.repositories,
-                            state.repositoryRoot,
-                        )
-                        sessionSection(
-                            "Waiting",
-                            waiting,
-                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
-                            viewModel::requestSessionAction,
-                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
-                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                            state.capabilities,
-                            state.repositories,
-                            state.repositoryRoot,
-                        )
-                        sessionSection(
-                            "Active",
-                            active,
-                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
-                            viewModel::requestSessionAction,
-                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
-                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                            state.capabilities,
-                            state.repositories,
-                            state.repositoryRoot,
-                        )
-                        sessionSection(
-                            "Recent",
-                            recent,
-                            { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
-                            viewModel::requestSessionAction,
-                            { provider, id -> viewModel.togglePinnedSession(id, provider) },
-                            { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                            state.capabilities,
-                            state.repositories,
-                            state.repositoryRoot,
-                        )
+                        if (state.groupSessionsByRepository && !sessionSearchActive(state.searchFilters)) {
+                            repositoryGroups.forEach { group ->
+                                repositorySessionSection(
+                                    group,
+                                    group.repository.id in collapsedRepositoryIds,
+                                    { viewModel.toggleCollapsedRepository(group.repository.id) },
+                                    { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
+                                    viewModel::requestSessionAction,
+                                    { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                                    { provider, id -> viewModel.toggleHiddenSession(id, provider) },
+                                    state.capabilities,
+                                    state.repositories,
+                                    state.repositoryRoot,
+                                )
+                            }
+                        } else {
+                            sessionSection(
+                                "Pinned", pinned,
+                                { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
+                                viewModel::requestSessionAction,
+                                { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                                { provider, id -> viewModel.toggleHiddenSession(id, provider) },
+                                state.capabilities, state.repositories, state.repositoryRoot,
+                            )
+                            sessionSection(
+                                "Waiting", waiting,
+                                { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
+                                viewModel::requestSessionAction,
+                                { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                                { provider, id -> viewModel.toggleHiddenSession(id, provider) },
+                                state.capabilities, state.repositories, state.repositoryRoot,
+                            )
+                            sessionSection(
+                                "Active", active,
+                                { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
+                                viewModel::requestSessionAction,
+                                { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                                { provider, id -> viewModel.toggleHiddenSession(id, provider) },
+                                state.capabilities, state.repositories, state.repositoryRoot,
+                            )
+                            sessionSection(
+                                "Recent", recent,
+                                { id, itemId, provider -> viewModel.openSession(id, itemId, provider = provider) },
+                                viewModel::requestSessionAction,
+                                { provider, id -> viewModel.togglePinnedSession(id, provider) },
+                                { provider, id -> viewModel.toggleHiddenSession(id, provider) },
+                                state.capabilities, state.repositories, state.repositoryRoot,
+                            )
+                        }
                     }
                 }
             }
@@ -4887,6 +4937,76 @@ private fun compactionDetail(item: ConversationItem): String {
 private fun compactDuration(durationMs: Long): String =
     if (durationMs < 1_000) "${durationMs}ms" else "${String.format(java.util.Locale.US, "%.1f", durationMs / 1_000.0).removeSuffix(".0")}s"
 
+private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSection(
+    group: RepositorySessionGroup,
+    collapsed: Boolean,
+    toggleCollapsed: () -> Unit,
+    open: (String, String?, String) -> Unit,
+    action: (SessionSummary, SessionAction) -> Unit,
+    pin: (String, String) -> Unit,
+    hide: (String, String) -> Unit,
+    capabilities: Set<String>,
+    repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
+) {
+    item(key = "repository:${group.repository.id}") {
+        Surface(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = toggleCollapsed),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    group.repository.label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    Text(
+                        "${group.sessions.size} ${if (collapsed) "›" else "⌄"}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+    }
+    if (!collapsed) {
+        sessionCards(
+            group.sessions,
+            open,
+            action,
+            pin,
+            hide,
+            capabilities,
+            repositories,
+            repositoryRoot,
+            showRepositoryLabel = false,
+        )
+    }
+}
+
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     title: String,
     sessions: List<VisibleSession>,
@@ -4908,6 +5028,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
+    sessionCards(sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot)
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
+    sessions: List<VisibleSession>,
+    open: (String, String?, String) -> Unit,
+    action: (SessionSummary, SessionAction) -> Unit,
+    pin: (String, String) -> Unit,
+    hide: (String, String) -> Unit,
+    capabilities: Set<String>,
+    repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
+    showRepositoryLabel: Boolean = true,
+) {
     items(sessions, key = { it.session.providerKey() }) { visible ->
         val session = visible.session
         val provider = sessionProvider(session)
@@ -4916,7 +5050,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             matches = visible.matches,
             pinned = visible.pinned,
             hidden = visible.hidden,
-            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot).label,
+            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot)
+                .label
+                .takeIf { showRepositoryLabel },
             onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId, provider) },
             onAction = { action(session, it) },
             onPin = { pin(provider, session.id) },
@@ -4932,7 +5068,7 @@ private fun SessionCard(
     matches: List<SessionSearchMatch>,
     pinned: Boolean,
     hidden: Boolean,
-    repositoryLabel: String,
+    repositoryLabel: String?,
     onClick: () -> Unit,
     onAction: (SessionAction) -> Unit,
     onPin: () -> Unit,
@@ -4941,18 +5077,21 @@ private fun SessionCard(
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    sessionDisplayTitle(session),
-                    modifier = Modifier.weight(1f),
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.width(8.dp))
+            Text(
+                sessionDisplayTitle(session),
+                modifier = Modifier.fillMaxWidth(),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 ProviderBadge(sessionProvider(session))
                 Spacer(Modifier.width(6.dp))
                 StatusPill(sessionDisplayStatus(session))
+                Spacer(Modifier.weight(1f))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
                     Icon(
                         if (pinned) Icons.Default.Star else Icons.Default.StarBorder,
@@ -4978,11 +5117,13 @@ private fun SessionCard(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
-            Text(
-                repositoryLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            repositoryLabel?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             matches.take(3).forEach { match ->
                 Text(
                     "${match.kind.replaceFirstChar { it.uppercase() }} · ${match.snippet}",
@@ -6694,6 +6835,27 @@ private fun UiSettingsMenu(
                         }
                     },
                     onClick = { showingActivityDetail = true },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text("Group sessions by repository")
+                            Text(
+                                "Active sessions appear first in each collapsible group",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    leadingIcon = {
+                        Checkbox(
+                            checked = state.groupSessionsByRepository,
+                            onCheckedChange = null,
+                        )
+                    },
+                    onClick = {
+                        viewModel.setGroupSessionsByRepository(!state.groupSessionsByRepository)
+                    },
                 )
                 HorizontalDivider()
                 DropdownMenuItem(

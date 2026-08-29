@@ -43,6 +43,7 @@ export interface Appearance {
   theme: ThemeMode;
   accent: AccentColor;
   activityDetail: ActivityDetail;
+  groupSessionsByRepository: boolean;
 }
 
 const LEGACY_HOST_KEY = "foreman.host.v1";
@@ -53,6 +54,7 @@ const NOTIFICATION_PREFERENCES_KEY = "foreman.notification-preferences.v2";
 const DASHBOARD_KEY = "foreman.dashboard.v1";
 const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 const SESSION_SEARCH_KEY = "foreman.session-search.v1";
+const COLLAPSED_REPOSITORIES_KEY = "foreman.collapsed-repositories.v1";
 const HOST_SCOPED_KEYS = [
   APPEARANCE_KEY,
   NOTIFICATIONS_KEY,
@@ -60,11 +62,13 @@ const HOST_SCOPED_KEYS = [
   DASHBOARD_KEY,
   SESSION_ORGANIZATION_KEY,
   SESSION_SEARCH_KEY,
+  COLLAPSED_REPOSITORIES_KEY,
 ];
 export const DEFAULT_APPEARANCE: Appearance = {
   theme: "system",
   accent: "purple",
   activityDetail: "focused",
+  groupSessionsByRepository: true,
 };
 export const ACCENTS: AccentColor[] = [
   "purple",
@@ -197,6 +201,7 @@ export function loadAppearance(hostId?: string | null, storage: Storage = localS
         ? (parsed?.accent as AccentColor)
         : DEFAULT_APPEARANCE.accent,
       activityDetail: parsed?.activityDetail === "full" ? "full" : "focused",
+      groupSessionsByRepository: parsed?.groupSessionsByRepository !== false,
     };
   } catch {
     return DEFAULT_APPEARANCE;
@@ -340,6 +345,31 @@ export function saveSessionOrganization(
     pinnedIds: [...new Set(organization.pinnedIds)].slice(-1000),
     hiddenIds: [...new Set(organization.hiddenIds)].slice(-1000),
   }));
+}
+
+export function loadCollapsedRepositories(
+  hostId: string,
+  storage: Storage = localStorage,
+): Set<string> {
+  try {
+    const parsed = JSON.parse(storage.getItem(scopedKey(COLLAPSED_REPOSITORIES_KEY, hostId)) ?? "null");
+    return new Set(Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string" && id.length <= 1000).slice(-1000)
+      : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedRepositories(
+  repositoryIds: ReadonlySet<string>,
+  hostId: string,
+  storage: Storage = localStorage,
+): void {
+  storage.setItem(
+    scopedKey(COLLAPSED_REPOSITORIES_KEY, hostId),
+    JSON.stringify([...repositoryIds].filter((id) => id.length <= 1000).slice(-1000)),
+  );
 }
 
 export function loadSessionSearch(hostId: string, storage: Storage = localStorage): string {

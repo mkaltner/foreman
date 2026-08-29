@@ -189,24 +189,27 @@ describe("Claude session deletion", () => {
     const onAction = vi.fn();
     const onPin = vi.fn();
     const onHide = vi.fn();
-    render(<SessionList
-      results={[{ session, pinned: false, hidden: false, matches: [] }]}
-      filters={DEFAULT_SESSION_FILTERS}
-      repositoryOptions={[]}
-      searchLoading={false}
-      searchError=""
-      selectedId={null}
-      selectedProvider="codex"
-      disabled={false}
-      onOpen={vi.fn()}
-      onRefresh={vi.fn()}
-      onNew={vi.fn()}
-      onAction={onAction}
-      onFilters={vi.fn()}
-      onSearchNow={vi.fn()}
-      onPin={onPin}
-      onHide={onHide}
-    />);
+    const sessionList = () => (
+      <SessionList
+        results={[{ session, pinned: false, hidden: false, matches: [] }]}
+        filters={DEFAULT_SESSION_FILTERS}
+        repositoryOptions={[]}
+        searchLoading={false}
+        searchError=""
+        selectedId={null}
+        selectedProvider="codex"
+        disabled={false}
+        onOpen={vi.fn()}
+        onRefresh={vi.fn()}
+        onNew={vi.fn()}
+        onAction={onAction}
+        onFilters={vi.fn()}
+        onSearchNow={vi.fn()}
+        onPin={onPin}
+        onHide={onHide}
+      />
+    );
+    render(sessionList());
 
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pin Claude work" }));
@@ -215,6 +218,12 @@ describe("Claude session deletion", () => {
     expect(onHide).toHaveBeenCalledWith("claude-code", "claude-session");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(onAction).toHaveBeenCalledWith("delete", session);
+    const repositoryGroup = screen.getByRole("button", { name: /Workspace: \/projects\/foreman/ });
+    expect(repositoryGroup).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(repositoryGroup);
+    expect(repositoryGroup).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+
   });
 });
 

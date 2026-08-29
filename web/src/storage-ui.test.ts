@@ -12,12 +12,14 @@ import {
   loadHostNotificationOverride,
   loadNotificationPreferences,
   loadSessionOrganization,
+  loadCollapsedRepositories,
   saveAppearance,
   saveDashboardPreferences,
   saveHostRegistry,
   saveNotificationsEnabled,
   saveNotificationPreferences,
   saveSessionOrganization,
+  saveCollapsedRepositories,
   suggestedHostDisplayName,
   updateStoredHost,
   withHostInSearch,
@@ -43,12 +45,14 @@ describe("storage, appearance, and interaction helpers", () => {
     let registry = addStoredHost({ hosts: [], activeHostId: null }, home);
     registry = addStoredHost(registry, work);
     saveHostRegistry(registry);
+    saveCollapsedRepositories(new Set(["/projects/work"]), work.id);
     expect(loadHostRegistry().hosts.map(({ displayName }) => displayName)).toEqual(["Home", "Work"]);
     expect(localStorage.getItem("foreman.hosts.v2")).not.toContain("pairingKey");
     registry = forgetStoredHost(registry, work.id);
     saveHostRegistry(registry);
     expect(loadHostRegistry().hosts).toHaveLength(1);
     expect(loadHostRegistry().hosts[0].deviceToken).toBe("fmt_home");
+    expect(loadCollapsedRepositories(work.id)).toEqual(new Set());
   });
 
   it("does not resurrect a forgotten host when a stale socket update arrives", () => {
@@ -93,11 +97,11 @@ describe("storage, appearance, and interaction helpers", () => {
   });
 
   it("persists theme and accent with safe defaults", () => {
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
-    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full" });
-    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
+    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
+    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
     localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused" });
+    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
   });
 
   it("persists bounded browser-local dashboard presentation choices", () => {
@@ -129,6 +133,14 @@ describe("storage, appearance, and interaction helpers", () => {
     saveSessionOrganization({ pinnedIds: ["work-session"], hiddenIds: [] }, "work");
     expect(loadSessionOrganization("home").pinnedIds).toEqual(["home-session"]);
     expect(loadSessionOrganization("work").pinnedIds).toEqual(["work-session"]);
+  });
+
+  it("restores collapsed repositories after a tab is reopened and keeps hosts isolated", () => {
+    saveCollapsedRepositories(new Set(["/projects/foreman"]), "home");
+    saveCollapsedRepositories(new Set(["/projects/android"]), "work");
+
+    expect(loadCollapsedRepositories("home")).toEqual(new Set(["/projects/foreman"]));
+    expect(loadCollapsedRepositories("work")).toEqual(new Set(["/projects/android"]));
   });
 
   it("persists the browser notification preference disabled by default", () => {

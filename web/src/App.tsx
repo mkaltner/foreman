@@ -95,12 +95,14 @@ import {
   forgetStoredHost,
   hostIdFromUrl,
   loadAppearance,
+  loadCollapsedRepositories,
   loadHostNotificationOverride,
   loadHostRegistry,
   loadNotificationPreferences,
   loadSessionSearch,
   loadSessionOrganization,
   saveAppearance,
+  saveCollapsedRepositories,
   clearHostNotificationOverride,
   saveHostRegistry,
   saveNotificationPreferences,
@@ -122,7 +124,10 @@ import {
   parseSessionFilters,
   repositoryIdentity,
   repositoryFilterOptions,
+  repositorySessionGroups,
   sessionFiltersSearch,
+  toggleCollapsedRepository,
+  type CollapsedRepositoriesByHost,
   type SessionFilters,
   type RepositoryFilterOption,
   type VisibleSession,
@@ -255,6 +260,12 @@ function App() {
   const [hostSetupOpen, setHostSetupOpen] = useState(false);
   const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
   const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [collapsedRepositoriesByHost, setCollapsedRepositoriesByHost] =
+    useState<CollapsedRepositoriesByHost>(() => {
+      const collapsed = new Map<string, ReadonlySet<string>>();
+      if (initialHostId) collapsed.set(initialHostId, loadCollapsedRepositories(initialHostId));
+      return collapsed;
+    });
   const scrollPositions = useRef(new Map<string, number>());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
@@ -1112,6 +1123,11 @@ function App() {
       notificationPreferencesRef.current = nextNotifications;
       setHostNotificationOverride(loadHostNotificationOverride(hostId) !== null);
       setOrganization(nextOrganization);
+      setCollapsedRepositoriesByHost((previous) => {
+        const collapsed = new Map(previous);
+        collapsed.set(hostId, loadCollapsedRepositories(hostId));
+        return collapsed;
+      });
     }
     const filters = parseSessionFilters(filtersSearch ?? loadSessionSearch(hostId));
     searchFiltersRef.current = filters;
@@ -1193,6 +1209,11 @@ function App() {
       const nextSnapshots = new Map(previous);
       nextSnapshots.delete(hostId);
       return nextSnapshots;
+    });
+    setCollapsedRepositoriesByHost((previous) => {
+      const collapsed = new Map(previous);
+      collapsed.delete(hostId);
+      return collapsed;
     });
     persistRegistry(next);
     if (wasActive) {
@@ -1495,7 +1516,18 @@ function App() {
       ) : (
         <main className={`workspace ${view === "detail" ? "show-detail" : "show-list"}`}>
           <SessionList
+            collapsedRepositories={collapsedRepositoriesByHost.get(activeHost.id) ?? new Set()}
+            onToggleRepository={(repositoryId) => {
+              setCollapsedRepositoriesByHost((previous) => {
+                const next = toggleCollapsedRepository(previous, activeHost.id, repositoryId);
+                saveCollapsedRepositories(next.get(activeHost.id) ?? new Set(), activeHost.id);
+                return next;
+              });
+            }}
             results={visibleSessions}
+            groupByRepository={appearance.groupSessionsByRepository}
+            repositories={repositories}
+            repositoryRoot={serviceStatus?.repositoryRoot ?? ""}
             accountUsage={accountUsage}
             providers={providers}
             filters={searchFilters}
@@ -1742,7 +1774,12 @@ function HostSelector({ hosts, activeHostId, activeState, detail, onSelect, onAd
 }
 
 export function SessionList({
+  collapsedRepositories: controlledCollapsedRepositories,
+  onToggleRepository,
   results,
+  groupByRepository = true,
+  repositories = [],
+  repositoryRoot = "",
   accountUsage = null,
   providers = [],
   filters,
@@ -1761,7 +1798,12 @@ export function SessionList({
   onPin,
   onHide,
 }: {
+  collapsedRepositories?: ReadonlySet<string>;
+  onToggleRepository?: (repositoryId: string) => void;
   results: VisibleSession[];
+  groupByRepository?: boolean;
+  repositories?: RepositoryInfo[];
+  repositoryRoot?: string;
   accountUsage?: AccountUsage | null;
   providers?: ProviderInfo[];
   filters: SessionFilters;
@@ -1780,6 +1822,17 @@ export function SessionList({
   onPin: (provider: ProviderId, id: string) => void;
   onHide: (provider: ProviderId, id: string) => void;
 }) {
+  const [localCollapsedRepositories, setLocalCollapsedRepositories] =
+    useState<Set<string>>(() => new Set());
+  const collapsedRepositories = controlledCollapsedRepositories ?? localCollapsedRepositories;
+  const toggleRepository = onToggleRepository ?? ((repositoryId: string) => {
+    setLocalCollapsedRepositories((previous) => {
+      const next = new Set(previous);
+      if (next.has(repositoryId)) next.delete(repositoryId);
+      else next.add(repositoryId);
+      return next;
+    });
+  });
   const sessions = results.map(({ session }) => session);
   const pinnedSessions = results.filter(({ pinned }) => pinned).map(({ session }) => session);
   const unpinnedSessions = results.filter(({ pinned }) => !pinned).map(({ session }) => session);
@@ -1789,6 +1842,7 @@ export function SessionList({
     active: unpinnedSessions.filter((session) => !session.attention && session.status === "working"),
     recent: unpinnedSessions.filter((session) => !session.attention && session.status !== "waiting" && session.status !== "working"),
   };
+  const repositoryGroups = repositorySessionGroups(results, repositories, repositoryRoot);
   const discoveryActive = activeFilterCount(filters) > 0;
   return (
     <aside className="session-pane">
@@ -1803,30 +1857,24 @@ export function SessionList({
       <div className="session-scroll">
         {discoveryActive ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} onOpen={onOpen} onPin={onPin} onHide={onHide} /> : <>
         {sessions.length === 0 && <div className="empty-list"><h3>No sessions yet</h3><p>Start one from a repository.</p></div>}
-        {(["pinned", "waiting", "active", "recent"] as const).map((group) =>
+        {groupByRepository ? repositoryGroups.map((group) => (
+          <section className="session-group repository-session-group" key={group.repository.id}>
+            <button
+              className="repository-group-toggle"
+              aria-expanded={!collapsedRepositories.has(group.repository.id)}
+              aria-label={`${collapsedRepositories.has(group.repository.id) ? "Expand" : "Collapse"} ${group.repository.label} (${group.sessions.length} sessions)`}
+              onClick={() => toggleRepository(group.repository.id)}
+            >
+              <span>{group.repository.label}</span>
+              <span>{group.sessions.length} {collapsedRepositories.has(group.repository.id) ? "›" : "⌄"}</span>
+            </button>
+            {!collapsedRepositories.has(group.repository.id) && group.sessions.map(({ session }) => renderSessionCard(session))}
+          </section>
+        )) : (["pinned", "waiting", "active", "recent"] as const).map((group) =>
           groups[group].length ? (
             <section className="session-group" key={group}>
               <h2>{group === "pinned" ? "Pinned" : group === "waiting" ? "Needs attention" : group === "active" ? "Active" : "Recent"}</h2>
-              {groups[group].map((session) => (
-                <article
-                  key={`${sessionProvider(session)}:${session.id}`}
-                  className={`session-card ${selectedId === session.id && selectedProvider === sessionProvider(session) ? "selected" : ""}`}
-                  onClick={() => onOpen(sessionProvider(session), session.id)}
-                >
-                  <div className="session-title-row"><h3>{session.title}</h3><ProviderBadge provider={sessionProvider(session)} /><StatusPill status={session.status} /></div>
-                  <p className="repository">{shortRepository(session.repository)}</p>
-                  {sessionProvider(session) === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
-                  <div className="session-meta">
-                    <span>{formatActivity(session.lastActivity)}</span>
-                    <span className="card-actions">
-                      <button className={results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(sessionProvider(session), session.id); }} aria-label={`${results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "Unpin" : "Pin"} ${session.title}`}>{results.find((item) => item.session.id === session.id && sessionProvider(item.session) === sessionProvider(session))?.pinned ? "★" : "☆"}</button>
-                      <button onClick={(event) => { event.stopPropagation(); onHide(sessionProvider(session), session.id); }}>Hide</button>
-                      {sessionProvider(session) === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
-                      {(sessionProvider(session) === "codex" || session.capabilities?.includes("session.delete")) && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
-                    </span>
-                  </div>
-                </article>
-              ))}
+              {groups[group].map((session) => renderSessionCard(session))}
             </section>
           ) : null,
         )}
@@ -1835,6 +1883,29 @@ export function SessionList({
       {accountUsage?.providers && <AccountUsageDock usage={accountUsage} providers={providers} />}
     </aside>
   );
+
+  function renderSessionCard(session: SessionSummary) {
+    const provider = sessionProvider(session);
+    const pinned = results.find((item) => item.session.id === session.id && sessionProvider(item.session) === provider)?.pinned;
+    return <article
+      key={`${provider}:${session.id}`}
+      className={`session-card ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
+      onClick={() => onOpen(provider, session.id)}
+    >
+      <div className="session-title-row"><h3>{session.title}</h3><ProviderBadge provider={provider} /><StatusPill status={session.status} /></div>
+      <p className="repository">{shortRepository(session.repository)}</p>
+      {provider === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
+      <div className="session-meta">
+        <span>{formatActivity(session.lastActivity)}</span>
+        <span className="card-actions">
+          <button className={pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(provider, session.id); }} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`}>{pinned ? "★" : "☆"}</button>
+          <button onClick={(event) => { event.stopPropagation(); onHide(provider, session.id); }}>Hide</button>
+          {provider === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
+          {(provider === "codex" || session.capabilities?.includes("session.delete")) && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
+        </span>
+      </div>
+    </article>;
+  }
 }
 
 export function AccountUsageDock({ usage, providers: providerInfo }: { usage: AccountUsage; providers: ProviderInfo[] }) {
@@ -2787,7 +2858,7 @@ function SettingsView({
     <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
     <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
     <ProviderSettings providers={providers} onProviderEnabled={onProviderEnabled} />
-    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
+    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><label className="check-row"><input type="checkbox" checked={appearance.groupSessionsByRepository} onChange={(event) => onAppearance({ ...appearance, groupSessionsByRepository: event.target.checked })} /><span><strong>Group sessions by repository</strong><small>Keep each project together and show its active sessions first.</small></span></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
       <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p>{notificationTestResult && <p className="notification-test-result" role="status">{notificationTestResult}</p>}</div><div className="notification-actions"><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button>{notificationState === "granted" && <button className="secondary" disabled={testingNotification} onClick={() => { setTestingNotification(true); setNotificationTestResult(""); void onNotificationTest().then((method) => setNotificationTestResult(`Browser accepted the test via ${method === "page" ? "the page" : "the service worker"}. If no system alert appeared, check OS notification settings and Do Not Disturb.`)).catch((caught) => setNotificationTestResult(caught instanceof Error ? `Test failed: ${caught.message}` : "Test failed: the browser rejected the notification.")).finally(() => setTestingNotification(false)); }}>{testingNotification ? "Sending…" : "Send test"}</button>}</div></div>
