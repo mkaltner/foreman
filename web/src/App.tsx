@@ -66,6 +66,7 @@ import {
   routeForSession,
   providerSessionKey,
   reconcileSessionSummaries,
+  reconcileSessionSettings,
   sessionProvider,
   type AccountUsage,
   type AccessLevelInfo,
@@ -1037,7 +1038,7 @@ function App() {
             selectedIdRef.current !== reopenId ||
             selectedProviderRef.current !== reopenProvider
           ) return;
-          setCurrent({ ...result.session, provider: reopenProvider });
+          setCurrent((previous) => reconcileSessionSettings(previous, { ...result.session, provider: reopenProvider }));
           await client.request("provider.session.subscribe", { provider: reopenProvider, sessionId: reopenId });
         } catch {
           if (
@@ -1129,7 +1130,7 @@ function App() {
             setInputs((current) => reconcileSessionPending(current, refreshedInputs, id, inputsAtOpen));
           }
         }
-        setCurrent({ ...result.session, provider });
+        setCurrent((previous) => reconcileSessionSettings(previous, { ...result.session, provider }));
         await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
         if (generation === sessionOpenGenerationRef.current) {
@@ -1444,10 +1445,14 @@ function App() {
     if (returned && typeof returned.id === "string") {
       const provider = payload?.provider === "claude-code" ? "claude-code" : sessionProvider(returned);
       const projected = { ...returned, provider };
-      setCurrent(projected);
+      setCurrent((previous) => reconcileSessionSettings(previous, projected));
       setSessions((previous) => previous.map((session) =>
         session.id === projected.id && sessionProvider(session) === provider
-          ? { ...session, ...projected, messages: session.messages ?? projected.messages }
+          ? reconcileSessionSettings(session, {
+            ...session,
+            ...projected,
+            messages: session.messages ?? projected.messages,
+          })
           : session,
       ));
     }
@@ -2088,13 +2093,15 @@ export function ConversationView({
   const provider = sessionProvider(session);
   const initialRoute = useMemo(() => {
     if (provider === "codex") return routeForSession(session, models, accessLevels);
-    const model = models.find((entry) => entry.id === session.model) ?? models[0];
-    const permission = accessLevels.find((entry) => entry.id === session.permissionMode) ?? accessLevels[0];
-    return { model: model?.id ?? "sonnet", reasoningEffort: "", accessLevel: permission?.id ?? "default" };
+    const model = models.find((entry) => entry.id === session.model);
+    const permission = accessLevels.find((entry) => entry.id === session.permissionMode);
+    return { model: model?.id ?? "", reasoningEffort: "", accessLevel: permission?.id ?? "" };
   }, [accessLevels, models, provider, session]);
   const [model, setModel] = useState(initialRoute.model);
   const [effort, setEffort] = useState(initialRoute.reasoningEffort);
   const [access, setAccess] = useState(initialRoute.accessLevel);
+  const latestSessionRef = useRef(session);
+  latestSessionRef.current = session;
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [updatingRoute, setUpdatingRoute] = useState(false);
@@ -2155,7 +2162,7 @@ export function ConversationView({
 
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
-  const hasActiveTurn = (session.status === "working" || session.status === "waiting") && !!session.activeTurnId;
+  const hasActiveTurn = ["working", "waiting", "stopping"].includes(session.status);
   const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
@@ -2198,12 +2205,7 @@ export function ConversationView({
       } else if (active) {
         await onRequest("turn.steer", { ...base, turnId: session.activeTurnId });
       } else {
-        await onRequest("turn.prompt", {
-          ...base,
-          ...(model ? { model } : {}),
-          ...(effort ? { reasoningEffort: effort } : {}),
-          ...(access ? { accessLevel: access } : {}),
-        });
+        await onRequest("turn.prompt", base);
       }
       onDraftChange("");
       setImages([]);
@@ -2248,14 +2250,36 @@ export function ConversationView({
   };
 
   const updateAccess = async (value: string) => {
+    if (hasActiveTurn) return;
+    if (
+      (value === "full" && !window.confirm("Enable Full access for the next turn? Codex can use the Internet and any file without asking first.")) ||
+      (value === "bypassPermissions" && !window.confirm("Use Claude bypass-permissions mode for the next turn? This skips Claude Code permission checks."))
+    ) return;
     const previous = access;
+    const startingRevision = session.settingsRevision ?? 0;
     setAccess(value);
-    if (provider === "claude-code") return;
     setUpdatingRoute(true);
     try {
-      await onRequest("session.settings", { sessionId: session.id, accessLevel: value });
+      const result = await onRequest<{ session?: SessionSummary }>(
+        provider === "claude-code" ? "provider.session.settings" : "session.settings",
+        provider === "claude-code"
+          ? { provider, sessionId: session.id, repositoryId: session.repositoryId ?? ".", permissionMode: value }
+          : { sessionId: session.id, accessLevel: value },
+      );
+      if (result.session) {
+        setAccess(
+          provider === "claude-code"
+            ? result.session.permissionMode ?? value
+            : result.session.accessLevel ?? value,
+        );
+      }
     } catch (caught) {
-      setAccess(previous);
+      const latest = latestSessionRef.current;
+      setAccess(
+        (latest.settingsRevision ?? 0) > startingRevision
+          ? provider === "claude-code" ? latest.permissionMode ?? "" : latest.accessLevel ?? ""
+          : previous,
+      );
       onError(caught instanceof Error ? caught.message : "Access setting was not updated");
     } finally {
       setUpdatingRoute(false);
@@ -2263,23 +2287,40 @@ export function ConversationView({
   };
 
   const updateModel = async (value: string) => {
+    if (hasActiveTurn) return;
     const previousModel = model;
     const previousEffort = effort;
+    const startingRevision = session.settingsRevision ?? 0;
     const next = models.find((entry) => entry.id === value);
     const nextEffort = next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? "";
     setModel(value);
     setEffort(nextEffort);
-    if (provider === "claude-code") return;
     setUpdatingRoute(true);
     try {
-      await onRequest("session.settings", {
-        sessionId: session.id,
-        model: value,
-        ...(nextEffort ? { reasoningEffort: nextEffort } : {}),
-      });
+      const result = await onRequest<{ session?: SessionSummary }>(
+        provider === "claude-code" ? "provider.session.settings" : "session.settings",
+        provider === "claude-code" ? {
+          provider,
+          sessionId: session.id,
+          repositoryId: session.repositoryId ?? ".",
+          model: value,
+        } : {
+          sessionId: session.id,
+          model: value,
+          ...(nextEffort ? { reasoningEffort: nextEffort } : {}),
+        },
+      );
+      if (result.session) {
+        setModel(result.session.model ?? value);
+        if (provider === "codex") {
+          setEffort(result.session.reasoningEffort ?? nextEffort);
+        }
+      }
     } catch (caught) {
-      setModel(previousModel);
-      setEffort(previousEffort);
+      const latest = latestSessionRef.current;
+      const newer = (latest.settingsRevision ?? 0) > startingRevision;
+      setModel(newer ? latest.model ?? "" : previousModel);
+      setEffort(newer ? latest.reasoningEffort ?? "" : previousEffort);
       onError(caught instanceof Error ? caught.message : "Model setting was not updated");
     } finally {
       setUpdatingRoute(false);
@@ -2287,17 +2328,25 @@ export function ConversationView({
   };
 
   const updateEffort = async (value: string) => {
+    if (hasActiveTurn) return;
     const previous = effort;
+    const startingRevision = session.settingsRevision ?? 0;
     setEffort(value);
     setUpdatingRoute(true);
     try {
-      await onRequest("session.settings", {
+      const result = await onRequest<{ session?: SessionSummary }>("session.settings", {
         sessionId: session.id,
         model,
         reasoningEffort: value,
       });
+      if (result.session) setEffort(result.session.reasoningEffort ?? value);
     } catch (caught) {
-      setEffort(previous);
+      const latest = latestSessionRef.current;
+      setEffort(
+        (latest.settingsRevision ?? 0) > startingRevision
+          ? latest.reasoningEffort ?? ""
+          : previous,
+      );
       onError(caught instanceof Error ? caught.message : "Reasoning setting was not updated");
     } finally {
       setUpdatingRoute(false);
@@ -2348,10 +2397,11 @@ export function ConversationView({
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
       <form className="composer" onSubmit={submit}>
         <div className="route-row">
-          <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} onChange={(value) => void updateAccess(value)} />
-          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateModel(value)} />
-          {provider === "codex" && <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute} onChange={(value) => void updateEffort(value)} />}
+          <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateAccess(value)} />
+          <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateModel(value)} />
+          {provider === "codex" && <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateEffort(value)} />}
         </div>
+        {hasActiveTurn && <p className="route-locked-note">{provider === "claude-code" ? "Model and permission are available when this turn finishes." : "Model, reasoning, and access are available when this turn finishes."}</p>}
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           {provider === "codex" && <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>}
@@ -2484,12 +2534,14 @@ export function RouteSelect({
   value,
   options,
   disabled,
+  disabledReason,
   onChange,
 }: {
   label: string;
   value: string;
   options: RouteOption[];
   disabled: boolean;
+  disabledReason?: string;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -2498,6 +2550,7 @@ export function RouteSelect({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selected = options.find((option) => option.value === value);
+  const displayValue = (selected?.label ?? value) || "Server default";
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -2531,11 +2584,12 @@ export function RouteSelect({
         ref={triggerRef}
         type="button"
         className={`route-trigger ${selected?.warning ? "warning" : ""}`}
-        aria-label={`${label}: ${selected?.label ?? value}`}
+        aria-label={`${label}: ${displayValue}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         disabled={disabled || options.length === 0}
+        title={disabled ? disabledReason : undefined}
         onClick={() => setOpen((current) => !current)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -2544,7 +2598,7 @@ export function RouteSelect({
           }
         }}
       >
-        <span>{selected?.label ?? value}</span><i aria-hidden="true">⌄</i>
+        <span>{displayValue}</span><i aria-hidden="true">⌄</i>
       </button>
       {open && (
         <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>

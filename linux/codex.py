@@ -811,8 +811,18 @@ class Codex:
         thread_id = params.get("threadId")
         if not isinstance(thread_id, str) or not isinstance(settings, dict):
             return
-        self._routes[thread_id] = (settings.get("model"), settings.get("effort"))
-        self._access_levels[thread_id] = access_level(settings)
+        previous_model, previous_effort = self._routes.get(thread_id, (None, None))
+        self._routes[thread_id] = (
+            settings.get("model")
+            if isinstance(settings.get("model"), str)
+            else previous_model,
+            settings.get("effort")
+            if isinstance(settings.get("effort"), str)
+            else previous_effort,
+        )
+        selected_access_level = access_level(settings)
+        if selected_access_level is not None:
+            self._access_levels[thread_id] = selected_access_level
 
     async def _reconnect(self) -> None:
         delay = 0.25
@@ -945,11 +955,18 @@ class Codex:
 
     def _remember_route(self, result: dict[str, Any]) -> dict[str, Any]:
         thread = result["thread"]
+        previous_model, previous_effort = self._routes.get(thread["id"], (None, None))
         self._routes[thread["id"]] = (
-            result.get("model"),
-            result.get("reasoningEffort"),
+            result.get("model")
+            if isinstance(result.get("model"), str)
+            else previous_model,
+            result.get("reasoningEffort")
+            if isinstance(result.get("reasoningEffort"), str)
+            else previous_effort,
         )
-        self._access_levels[thread["id"]] = access_level(result)
+        selected_access_level = access_level(result)
+        if selected_access_level is not None:
+            self._access_levels[thread["id"]] = selected_access_level
         return self._with_route(thread)
 
     def _with_route(self, thread: dict[str, Any]) -> dict[str, Any]:

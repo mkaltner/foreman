@@ -605,6 +605,36 @@ class StateTests(unittest.TestCase):
             state.forget_session_token_usage("thread-1")
             self.assertEqual(state.session_token_usage(), {})
 
+    def test_session_settings_are_durable_isolated_and_removable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            first = state.remember_session_settings(
+                "codex",
+                "thread-1",
+                {"model": "gpt-test", "accessLevel": "full"},
+            )
+            second = state.remember_session_settings(
+                "codex",
+                "thread-2",
+                {"model": "gpt-other", "accessLevel": "ask"},
+            )
+            claude = state.remember_session_settings(
+                "claude-code",
+                "thread-1",
+                {"model": "sonnet", "permissionMode": "dontAsk"},
+            )
+
+            restored = State(directory)
+            self.assertEqual(restored.session_settings("codex")["thread-1"], first)
+            self.assertEqual(restored.session_settings("codex")["thread-2"], second)
+            self.assertEqual(
+                restored.session_settings("claude-code")["thread-1"], claude
+            )
+            self.assertNotEqual(first["settingsRevision"], 0)
+            state.forget_session_settings("codex", "thread-1")
+            self.assertNotIn("thread-1", restored.session_settings("codex"))
+            self.assertIn("thread-1", restored.session_settings("claude-code"))
+
     def test_provider_account_usage_can_restore_a_bounded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
@@ -1039,6 +1069,44 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 [item["kind"] for item in read["session"]["messages"]],
                 ["user", "assistant", "tool"],
+            )
+
+            settings = await app.dispatch(
+                client,
+                {
+                    "type": "provider.session.settings",
+                    "payload": {
+                        "provider": "claude-code",
+                        "sessionId": "external-session",
+                        "repositoryId": ".",
+                        "model": "haiku",
+                        "permissionMode": "dontAsk",
+                    },
+                },
+            )
+            self.assertEqual(settings["session"]["model"], "haiku")
+            self.assertEqual(settings["session"]["permissionMode"], "dontAsk")
+            app.claude_session_overlays["external-session"]["status"] = "working"
+            with self.assertRaisesRegex(ValueError, "available when this turn finishes"):
+                await app.dispatch(
+                    client,
+                    {
+                        "type": "provider.session.settings",
+                        "payload": {
+                            "provider": "claude-code",
+                            "sessionId": "external-session",
+                            "repositoryId": ".",
+                            "permissionMode": "default",
+                        },
+                    },
+                )
+            app.claude_session_overlays["external-session"]["status"] = "resumable"
+            self.assertEqual(
+                app.claude_route(
+                    {"model": "sonnet", "permissionMode": "default"},
+                    "external-session",
+                ),
+                {"model": "haiku", "permissionMode": "dontAsk"},
             )
 
             started = await app.dispatch(
@@ -2010,6 +2078,17 @@ Tighten up this layout, please.
 
 
 class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_resume_does_not_replace_known_route_with_ask(self) -> None:
+        adapter = Codex("unused", AsyncMock())
+        adapter._routes["thread-1"] = ("gpt-known", "high")
+        adapter._access_levels["thread-1"] = "full"
+
+        resumed = adapter._remember_route({"thread": THREAD})
+
+        self.assertEqual(resumed["_foremanModel"], "gpt-known")
+        self.assertEqual(resumed["_foremanReasoningEffort"], "high")
+        self.assertEqual(resumed["_foremanAccessLevel"], "full")
+
     async def test_reads_account_rate_limits_without_account_identity(self) -> None:
         adapter = Codex("unused", AsyncMock())
         adapter._supported_methods = {"account/rateLimits/read"}
@@ -2644,6 +2723,78 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return message
             self.unsolicited.append(message)
 
+    async def test_session_settings_reject_active_turns_and_restore_per_session(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Settings test"},
+        )
+        idle = await self.request(
+            "session.settings",
+            {
+                "sessionId": "thread-1",
+                "model": "model-test",
+                "reasoningEffort": "high",
+                "accessLevel": "full",
+            },
+        )
+        self.assertTrue(idle["updated"])
+        self.assertEqual(idle["session"]["accessLevel"], "full")
+        self.assertGreater(idle["session"]["settingsRevision"], 0)
+
+        self.app.codex.active.add("thread-1")
+        active = await self.request_error(
+            "session.settings",
+            {"sessionId": "thread-1", "accessLevel": "ask"},
+        )
+        self.assertIn("available when this turn finishes", active["message"])
+        self.assertEqual(self.state.session_settings("codex")["thread-1"]["accessLevel"], "full")
+
+        self.app.codex.active.remove("thread-1")
+        self.app.session_overlays["thread-1"]["status"] = "waiting"
+        waiting = await self.request_error(
+            "session.settings",
+            {"sessionId": "thread-1", "reasoningEffort": "low", "model": "model-test"},
+        )
+        self.assertIn("available when this turn finishes", waiting["message"])
+        self.app.session_overlays["thread-1"]["status"] = "stopping"
+        stopping = await self.request_error(
+            "session.settings",
+            {"sessionId": "thread-1", "accessLevel": "auto"},
+        )
+        self.assertIn("available when this turn finishes", stopping["message"])
+        self.app.session_overlays["thread-1"]["status"] = "idle"
+
+        await self.request(
+            "session.settings",
+            {"sessionId": "thread-2", "accessLevel": "ask"},
+        )
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            self.repository_root,
+            State(self.state.directory),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+        self.assertEqual(restored.session_overlays["thread-1"]["accessLevel"], "full")
+        self.assertEqual(restored.session_overlays["thread-2"]["accessLevel"], "ask")
+        await restored.dispatch(
+            Client(None, "restored-client", authenticated=True),
+            {
+                "type": "turn.prompt",
+                "payload": {
+                    "sessionId": "thread-1",
+                    "text": "Use saved settings",
+                    "model": "model-test",
+                    "reasoningEffort": "low",
+                    "accessLevel": "ask",
+                },
+            },
+        )
+        self.assertEqual(restored.codex.prompts[-1]["model"], "model-test")
+        self.assertEqual(restored.codex.prompts[-1]["effort"], "high")
+        self.assertEqual(restored.codex.prompts[-1]["accessLevel"], "full")
+
     async def test_pair_list_read_start_and_prompt(self) -> None:
         hello = await self.request("hello")
         self.assertTrue(hello["capabilities"]["steer"])
@@ -2878,7 +3029,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "images": [{"mimeType": "image/jpeg", "data": "YWJj"}],
                 "model": "model-test",
                 "effort": "high",
-                "accessLevel": "auto",
+                "accessLevel": "full",
             },
         )
         event = next(
@@ -3194,6 +3345,56 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         release_read.set()
         self.assertTrue((await archive)["archived"])
         self.assertTrue((await prompt)["accepted"])
+
+    async def test_prompt_race_rejects_a_late_settings_mutation(self) -> None:
+        client = Client(self.writer, "test", authenticated=True)
+        await self.app.dispatch(
+            client,
+            {
+                "type": "session.settings",
+                "payload": {"sessionId": "thread-race", "accessLevel": "full"},
+            },
+        )
+        prompt_started = asyncio.Event()
+        release_prompt = asyncio.Event()
+        original_prompt = self.app.codex.prompt
+
+        async def paused_prompt(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            prompt_started.set()
+            await release_prompt.wait()
+            return await original_prompt(*args, **kwargs)
+
+        self.app.codex.prompt = paused_prompt
+        prompt = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-race", "text": "Hello"},
+                },
+            )
+        )
+        await prompt_started.wait()
+        settings = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "session.settings",
+                    "payload": {"sessionId": "thread-race", "accessLevel": "ask"},
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(settings.done())
+
+        release_prompt.set()
+        self.assertTrue((await prompt)["accepted"])
+        with self.assertRaisesRegex(ValueError, "available when this turn finishes"):
+            await settings
+        self.assertEqual(
+            self.state.session_settings("codex")["thread-race"]["accessLevel"],
+            "full",
+        )
 
     async def test_rejects_unsupported_model_effort_and_bad_images(self) -> None:
         await self.request(

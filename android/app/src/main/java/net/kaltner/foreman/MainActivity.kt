@@ -542,7 +542,10 @@ internal fun sessionDisplayTitle(session: SessionSummary?): String =
     session?.title?.ifBlank { "Untitled session" } ?: "Session"
 
 internal fun sessionCanBeManaged(status: String): Boolean =
-    status != "working" && status != "waiting"
+    status !in setOf("working", "waiting", "stopping")
+
+internal fun sessionRouteEditable(session: SessionSummary?): Boolean =
+    session == null || sessionCanBeManaged(session.status)
 
 internal fun sessionActionSupported(capabilities: Set<String>, action: SessionAction): Boolean =
     capabilities.contains(if (action == SessionAction.Archive) "archive" else "delete")
@@ -611,10 +614,6 @@ internal fun turnPayload(
     }
     if (steering) {
         put("turnId", requireNotNull(session.activeTurnId))
-    } else {
-        accessLevel?.let { put("accessLevel", it) }
-        model?.let { put("model", it) }
-        effort?.let { put("reasoningEffort", it) }
     }
 }
 
@@ -634,11 +633,14 @@ internal fun UiState.withAccessLevelsAndSessionAccess(
     available: List<AccessLevelInfo>,
     session: SessionSummary?,
 ): UiState {
-    val requested = session?.accessLevel ?: composerAccessLevel
+    val requested = if (session == null) composerAccessLevel else session.accessLevel
     val selected =
         available.firstOrNull { it.id == requested }
-            ?: available.firstOrNull { it.id == "ask" }
-            ?: available.firstOrNull()
+            ?: if (session == null) {
+                available.firstOrNull { it.id == "ask" } ?: available.firstOrNull()
+            } else {
+                null
+            }
     return copy(
         accessLevels = available,
         composerAccessLevel = selected?.id ?: requested,
@@ -649,36 +651,34 @@ internal fun UiState.withModelsAndSessionRoute(
     available: List<ModelInfo>,
     session: SessionSummary?,
 ): UiState {
-    val requestedModel = session?.model ?: composerModel
+    val requestedModel = if (session == null) composerModel else session.model
     val selectedModel =
         available.firstOrNull { it.id == requestedModel }
-            ?: available.firstOrNull { it.isDefault }
-            ?: available.firstOrNull()
+            ?: if (session == null) {
+                available.firstOrNull { it.isDefault } ?: available.firstOrNull()
+            } else {
+                null
+            }
     return copy(
         models = available,
         composerModel = selectedModel?.id ?: requestedModel,
         composerEffort =
             selectedModel?.let {
-                compatibleEffort(it, session?.reasoningEffort ?: composerEffort)
-            } ?: session?.reasoningEffort ?: composerEffort,
+                compatibleEffort(
+                    it,
+                    if (session == null) composerEffort else session.reasoningEffort,
+                )
+            } ?: if (session == null) composerEffort else session.reasoningEffort,
     )
 }
 
 internal fun UiState.withProviderRoute(session: SessionSummary?): UiState =
     if (session != null && sessionProvider(session) == PROVIDER_CLAUDE_CODE) {
-        val model =
-            claudeModels.firstOrNull { it.id == session.model }
-                ?: claudeModels.firstOrNull { it.id == claudeComposerModel }
-                ?: claudeModels.firstOrNull()
-        val permission =
-            claudePermissionModes.firstOrNull { it.id == session.permissionMode }
-                ?: claudePermissionModes.firstOrNull { it.id == claudeComposerPermissionMode }
-                ?: claudePermissionModes.firstOrNull { it.id == "default" }
-                ?: claudePermissionModes.firstOrNull()
+        val model = claudeModels.firstOrNull { it.id == session.model }
+        val permission = claudePermissionModes.firstOrNull { it.id == session.permissionMode }
         copy(
-            claudeComposerModel = model?.id ?: session.model ?: "sonnet",
-            claudeComposerPermissionMode =
-                permission?.id ?: session.permissionMode ?: "default",
+            claudeComposerModel = model?.id ?: session.model.orEmpty(),
+            claudeComposerPermissionMode = permission?.id ?: session.permissionMode.orEmpty(),
         )
     } else {
         withModelsAndSessionRoute(models, session)
@@ -715,8 +715,28 @@ internal fun reconcileSelectedSession(
         messages.add(insertionIndex, item)
         knownIds += item.id
     }
-    return incoming.copy(messages = messages)
+    val settings = reconcileSessionSettings(previous, incoming)
+    return settings.copy(messages = messages)
 }
+
+internal fun reconcileSessionSettings(
+    previous: SessionSummary?,
+    incoming: SessionSummary,
+): SessionSummary =
+    if (
+        previous?.providerKey() == incoming.providerKey() &&
+        (previous.settingsRevision ?: 0L) > (incoming.settingsRevision ?: 0L)
+    ) {
+        incoming.copy(
+            model = previous.model,
+            reasoningEffort = previous.reasoningEffort,
+            accessLevel = previous.accessLevel,
+            permissionMode = previous.permissionMode,
+            settingsRevision = previous.settingsRevision,
+        )
+    } else {
+        incoming
+    }
 
 internal fun UiState.withSynchronizedSessions(
     sessions: List<SessionSummary>,
@@ -726,8 +746,12 @@ internal fun UiState.withSynchronizedSessions(
     selectedProvider: String = PROVIDER_CODEX,
 ): UiState {
     val reconciledSelected = reconcileSelectedSession(selected, selectedSession)
+    val previousById = this.sessions.associateBy { it.providerKey() }
+    val reconciledSessions = sessions.map { incoming ->
+        reconcileSessionSettings(previousById[incoming.providerKey()], incoming)
+    }
     return copy(
-        sessions = sessions,
+        sessions = reconciledSessions,
         repositories = repositories,
         selected = reconciledSelected,
         screen =
@@ -841,6 +865,11 @@ internal data class UiState(
     val models: List<ModelInfo> = emptyList(),
     val composerModel: String? = null,
     val composerEffort: String? = null,
+    val newSessionAccessLevel: String? = null,
+    val newSessionModel: String? = null,
+    val newSessionEffort: String? = null,
+    val newSessionClaudeModel: String = "sonnet",
+    val newSessionClaudePermissionMode: String = "default",
     val repositoryRoot: String = "",
     val searchFilters: SessionSearchFilters = SessionSearchFilters(),
     val searchResults: List<SessionSearchResult> = emptyList(),
@@ -1083,9 +1112,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 composerAccessLevel = savedPreferences.accessLevel,
                 composerModel = savedPreferences.model,
                 composerEffort = savedPreferences.reasoningEffort,
+                newSessionAccessLevel = savedPreferences.accessLevel,
+                newSessionModel = savedPreferences.model,
+                newSessionEffort = savedPreferences.reasoningEffort,
                 selectedNewSessionProvider = savedPreferences.lastProvider,
                 claudeComposerModel = savedPreferences.claudeModel,
                 claudeComposerPermissionMode = savedPreferences.claudePermissionMode,
+                newSessionClaudeModel = savedPreferences.claudeModel,
+                newSessionClaudePermissionMode = savedPreferences.claudePermissionMode,
                 searchFilters = savedSearchFilters,
                 showSearch = sessionSearchActive(savedSearchFilters),
                 pinnedSessionIds = savedPreferences.pinnedSessionIds,
@@ -1386,15 +1420,16 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setComposerModel(id: String) {
         val current = state.value
         val model = current.models.firstOrNull { it.id == id } ?: return
+        val selectedSession = current.selected ?: return
+        if (!sessionRouteEditable(selectedSession) || !current.connected || "threadSettings" !in current.capabilities) return
         val effort = compatibleEffort(model, current.composerEffort)
         val previousModel = current.composerModel
         val previousEffort = current.composerEffort
-        val previousSessionModel = current.selected?.model
-        val previousSessionEffort = current.selected?.reasoningEffort
-        preferences.setModelRoute(model.id, effort)
+        val previousSessionModel = selectedSession.model
+        val previousSessionEffort = selectedSession.reasoningEffort
+        val startingRevision = selectedSession.settingsRevision ?: 0L
         state.update { it.copy(composerModel = model.id, composerEffort = effort) }
-        val sessionId = current.selected?.id ?: return
-        if (!current.connected || "threadSettings" !in current.capabilities) return
+        val sessionId = selectedSession.id
         state.update { it.copy(submitting = true, error = null) }
         viewModelScope.launch {
             runCatching {
@@ -1402,29 +1437,49 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     "session.settings",
                     sessionSettingsPayload(sessionId, model = model.id, effort = effort),
                 )
-            }.onSuccess {
+            }.onSuccess { response ->
+                val acknowledged = response.payload["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                }
                 state.update {
                     val selected = it.selected
+                    val candidate = acknowledged ?: selected?.copy(model = model.id, reasoningEffort = effort)
+                    val updated = candidate?.let { value -> reconcileSessionSettings(selected, value) }
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
                         selected =
-                            if (selected?.id == sessionId) {
-                                selected.copy(model = model.id, reasoningEffort = effort)
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true) {
+                                updated
                             } else {
                                 selected
                             },
+                        sessions = it.sessions.map { session ->
+                            if (session.matches(PROVIDER_CODEX, sessionId) && updated != null) {
+                                val reconciled = reconcileSessionSettings(session, updated)
+                                session.copy(
+                                    model = reconciled.model,
+                                    reasoningEffort = reconciled.reasoningEffort,
+                                    accessLevel = reconciled.accessLevel,
+                                    settingsRevision = reconciled.settingsRevision,
+                                )
+                            } else session
+                        },
+                        composerModel = if (focused) updated?.model ?: model.id else it.composerModel,
+                        composerEffort = if (focused) updated?.reasoningEffort ?: effort else it.composerEffort,
                     )
                 }
             }.onFailure { error ->
-                preferences.setModelRoute(previousModel, previousEffort)
                 state.update {
                     val selected = it.selected
+                    val newer = (selected?.settingsRevision ?: 0L) > startingRevision
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
-                        composerModel = previousModel,
-                        composerEffort = previousEffort,
+                        composerModel = if (!focused) it.composerModel else if (newer) selected.model else previousModel,
+                        composerEffort = if (!focused) it.composerEffort else if (newer) selected.reasoningEffort else previousEffort,
                         selected =
-                            if (selected?.id == sessionId) {
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true && !newer) {
                                 selected.copy(
                                     model = previousSessionModel,
                                     reasoningEffort = previousSessionEffort,
@@ -1442,12 +1497,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setComposerAccessLevel(id: String) {
         val current = state.value
         if (current.accessLevels.none { it.id == id }) return
+        val selectedSession = current.selected ?: return
+        if (!sessionRouteEditable(selectedSession) || !current.connected || "threadSettings" !in current.capabilities) return
         val previous = current.composerAccessLevel
-        val previousSessionAccess = current.selected?.accessLevel
-        preferences.setAccessLevel(id)
+        val previousSessionAccess = selectedSession.accessLevel
+        val startingRevision = selectedSession.settingsRevision ?: 0L
         state.update { it.copy(composerAccessLevel = id) }
-        val sessionId = current.selected?.id ?: return
-        if (!current.connected || "threadSettings" !in current.capabilities) return
+        val sessionId = selectedSession.id
         state.update { it.copy(submitting = true, error = null) }
         viewModelScope.launch {
             runCatching {
@@ -1455,28 +1511,47 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     "session.settings",
                     sessionSettingsPayload(sessionId, accessLevel = id),
                 )
-            }.onSuccess {
+            }.onSuccess { response ->
+                val acknowledged = response.payload["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                }
                 state.update {
                     val selected = it.selected
+                    val candidate = acknowledged ?: selected?.copy(accessLevel = id)
+                    val updated = candidate?.let { value -> reconcileSessionSettings(selected, value) }
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
                         selected =
-                            if (selected?.id == sessionId) {
-                                selected.copy(accessLevel = id)
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true) {
+                                updated
                             } else {
                                 selected
                             },
+                        sessions = it.sessions.map { session ->
+                            if (session.matches(PROVIDER_CODEX, sessionId) && updated != null) {
+                                val reconciled = reconcileSessionSettings(session, updated)
+                                session.copy(
+                                    model = reconciled.model,
+                                    reasoningEffort = reconciled.reasoningEffort,
+                                    accessLevel = reconciled.accessLevel,
+                                    settingsRevision = reconciled.settingsRevision,
+                                )
+                            } else session
+                        },
+                        composerAccessLevel = if (focused) updated?.accessLevel ?: id else it.composerAccessLevel,
                     )
                 }
             }.onFailure { error ->
-                preferences.setAccessLevel(previous)
                 state.update {
                     val selected = it.selected
+                    val newer = (selected?.settingsRevision ?: 0L) > startingRevision
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
-                        composerAccessLevel = previous,
+                        composerAccessLevel = if (!focused) it.composerAccessLevel else if (newer) selected.accessLevel else previous,
                         selected =
-                            if (selected?.id == sessionId) {
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true && !newer) {
                                 selected.copy(accessLevel = previousSessionAccess)
                             } else {
                                 selected
@@ -1492,12 +1567,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val current = state.value
         val model = current.models.firstOrNull { it.id == current.composerModel } ?: return
         if (effort !in model.reasoningEfforts) return
+        val selectedSession = current.selected ?: return
+        if (!sessionRouteEditable(selectedSession) || !current.connected || "threadSettings" !in current.capabilities) return
         val previous = current.composerEffort
-        val previousSessionEffort = current.selected?.reasoningEffort
-        preferences.setModelRoute(model.id, effort)
+        val previousSessionEffort = selectedSession.reasoningEffort
+        val startingRevision = selectedSession.settingsRevision ?: 0L
         state.update { it.copy(composerEffort = effort) }
-        val sessionId = current.selected?.id ?: return
-        if (!current.connected || "threadSettings" !in current.capabilities) return
+        val sessionId = selectedSession.id
         state.update { it.copy(submitting = true, error = null) }
         viewModelScope.launch {
             runCatching {
@@ -1505,28 +1581,47 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     "session.settings",
                     sessionSettingsPayload(sessionId, model = model.id, effort = effort),
                 )
-            }.onSuccess {
+            }.onSuccess { response ->
+                val acknowledged = response.payload["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                }
                 state.update {
                     val selected = it.selected
+                    val candidate = acknowledged ?: selected?.copy(reasoningEffort = effort)
+                    val updated = candidate?.let { value -> reconcileSessionSettings(selected, value) }
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
                         selected =
-                            if (selected?.id == sessionId) {
-                                selected.copy(reasoningEffort = effort)
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true) {
+                                updated
                             } else {
                                 selected
                             },
+                        sessions = it.sessions.map { session ->
+                            if (session.matches(PROVIDER_CODEX, sessionId) && updated != null) {
+                                val reconciled = reconcileSessionSettings(session, updated)
+                                session.copy(
+                                    model = reconciled.model,
+                                    reasoningEffort = reconciled.reasoningEffort,
+                                    accessLevel = reconciled.accessLevel,
+                                    settingsRevision = reconciled.settingsRevision,
+                                )
+                            } else session
+                        },
+                        composerEffort = if (focused) updated?.reasoningEffort ?: effort else it.composerEffort,
                     )
                 }
             }.onFailure { error ->
-                preferences.setModelRoute(model.id, previous)
                 state.update {
                     val selected = it.selected
+                    val newer = (selected?.settingsRevision ?: 0L) > startingRevision
+                    val focused = selected?.matches(PROVIDER_CODEX, sessionId) == true
                     it.copy(
                         submitting = false,
-                        composerEffort = previous,
+                        composerEffort = if (!focused) it.composerEffort else if (newer) selected.reasoningEffort else previous,
                         selected =
-                            if (selected?.id == sessionId) {
+                            if (selected?.matches(PROVIDER_CODEX, sessionId) == true && !newer) {
                                 selected.copy(reasoningEffort = previousSessionEffort)
                             } else {
                                 selected
@@ -1539,34 +1634,114 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun setClaudeComposerModel(id: String) {
-        if (state.value.claudeModels.none { it.id == id }) return
-        val permission = state.value.claudeComposerPermissionMode
-        preferences.setClaudeRoute(id, permission)
-        state.update {
-            it.copy(
-                claudeComposerModel = id,
-                selected = it.selected?.let { selected ->
-                    if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
-                        selected.copy(model = id)
-                    } else selected
-                },
-            )
+        val current = state.value
+        if (current.claudeModels.none { it.id == id }) return
+        val selected = current.selected?.takeIf { sessionProvider(it) == PROVIDER_CLAUDE_CODE } ?: return
+        if (!sessionRouteEditable(selected) || !current.connected) return
+        val previous = current.claudeComposerModel
+        val startingRevision = selected.settingsRevision ?: 0L
+        state.update { it.copy(claudeComposerModel = id, submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "provider.session.settings",
+                    buildJsonObject {
+                        put("provider", PROVIDER_CLAUDE_CODE)
+                        put("sessionId", selected.id)
+                        put("repositoryId", selected.repositoryId ?: ".")
+                        put("model", id)
+                    },
+                )
+            }.onSuccess { response ->
+                val acknowledged = response.payload["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                } ?: selected.copy(model = id)
+                state.update {
+                    val focused = it.selected?.matches(PROVIDER_CLAUDE_CODE, selected.id) == true
+                    val reconciled = reconcileSessionSettings(it.selected, acknowledged)
+                    it.copy(
+                        submitting = false,
+                        selected = if (focused) reconciled else it.selected,
+                        sessions = it.sessions.map { session ->
+                            if (session.matches(PROVIDER_CLAUDE_CODE, selected.id)) {
+                                val latest = reconcileSessionSettings(session, reconciled)
+                                session.copy(
+                                    model = latest.model,
+                                    permissionMode = latest.permissionMode,
+                                    settingsRevision = latest.settingsRevision,
+                                )
+                            } else session
+                        },
+                        claudeComposerModel = if (focused) reconciled.model ?: id else it.claudeComposerModel,
+                    )
+                }
+            }.onFailure { error ->
+                state.update {
+                    val focused = it.selected?.matches(PROVIDER_CLAUDE_CODE, selected.id) == true
+                    val newer = (it.selected?.settingsRevision ?: 0L) > startingRevision
+                    it.copy(
+                        submitting = false,
+                        claudeComposerModel = if (!focused) it.claudeComposerModel else if (newer) it.selected.model.orEmpty() else previous,
+                        error = error.message ?: "Claude model setting was not updated",
+                    )
+                }
+            }
         }
     }
 
     fun setClaudeComposerPermissionMode(id: String) {
-        if (state.value.claudePermissionModes.none { it.id == id }) return
-        val model = state.value.claudeComposerModel
-        preferences.setClaudeRoute(model, id)
-        state.update {
-            it.copy(
-                claudeComposerPermissionMode = id,
-                selected = it.selected?.let { selected ->
-                    if (sessionProvider(selected) == PROVIDER_CLAUDE_CODE) {
-                        selected.copy(permissionMode = id)
-                    } else selected
-                },
-            )
+        val current = state.value
+        if (current.claudePermissionModes.none { it.id == id }) return
+        val selected = current.selected?.takeIf { sessionProvider(it) == PROVIDER_CLAUDE_CODE } ?: return
+        if (!sessionRouteEditable(selected) || !current.connected) return
+        val previous = current.claudeComposerPermissionMode
+        val startingRevision = selected.settingsRevision ?: 0L
+        state.update { it.copy(claudeComposerPermissionMode = id, submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                client.request(
+                    "provider.session.settings",
+                    buildJsonObject {
+                        put("provider", PROVIDER_CLAUDE_CODE)
+                        put("sessionId", selected.id)
+                        put("repositoryId", selected.repositoryId ?: ".")
+                        put("permissionMode", id)
+                    },
+                )
+            }.onSuccess { response ->
+                val acknowledged = response.payload["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                } ?: selected.copy(permissionMode = id)
+                state.update {
+                    val focused = it.selected?.matches(PROVIDER_CLAUDE_CODE, selected.id) == true
+                    val reconciled = reconcileSessionSettings(it.selected, acknowledged)
+                    it.copy(
+                        submitting = false,
+                        selected = if (focused) reconciled else it.selected,
+                        sessions = it.sessions.map { session ->
+                            if (session.matches(PROVIDER_CLAUDE_CODE, selected.id)) {
+                                val latest = reconcileSessionSettings(session, reconciled)
+                                session.copy(
+                                    model = latest.model,
+                                    permissionMode = latest.permissionMode,
+                                    settingsRevision = latest.settingsRevision,
+                                )
+                            } else session
+                        },
+                        claudeComposerPermissionMode = if (focused) reconciled.permissionMode ?: id else it.claudeComposerPermissionMode,
+                    )
+                }
+            }.onFailure { error ->
+                state.update {
+                    val focused = it.selected?.matches(PROVIDER_CLAUDE_CODE, selected.id) == true
+                    val newer = (it.selected?.settingsRevision ?: 0L) > startingRevision
+                    it.copy(
+                        submitting = false,
+                        claudeComposerPermissionMode = if (!focused) it.claudeComposerPermissionMode else if (newer) it.selected.permissionMode.orEmpty() else previous,
+                        error = error.message ?: "Claude permission setting was not updated",
+                    )
+                }
+            }
         }
     }
 
@@ -1809,9 +1984,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         composerAccessLevel = restored.accessLevel,
                         composerModel = restored.model,
                         composerEffort = restored.reasoningEffort,
+                        newSessionAccessLevel = restored.accessLevel,
+                        newSessionModel = restored.model,
+                        newSessionEffort = restored.reasoningEffort,
                         selectedNewSessionProvider = restored.lastProvider,
                         claudeComposerModel = restored.claudeModel,
                         claudeComposerPermissionMode = restored.claudePermissionMode,
+                        newSessionClaudeModel = restored.claudeModel,
+                        newSessionClaudePermissionMode = restored.claudePermissionMode,
                     )
                 }
                 synchronizeSessions()
@@ -2154,9 +2334,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 composerAccessLevel = restored.accessLevel,
                 composerModel = restored.model,
                 composerEffort = restored.reasoningEffort,
+                newSessionAccessLevel = restored.accessLevel,
+                newSessionModel = restored.model,
+                newSessionEffort = restored.reasoningEffort,
                 selectedNewSessionProvider = restored.lastProvider,
                 claudeComposerModel = restored.claudeModel,
                 claudeComposerPermissionMode = restored.claudePermissionMode,
+                newSessionClaudeModel = restored.claudeModel,
+                newSessionClaudePermissionMode = restored.claudePermissionMode,
             )
         }
         launchReconnect(saved)
@@ -2498,8 +2683,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     restorationProvider != provider
                 ) return@runCatching
                 state.update {
+                    val reconciled = reconcileSelectedSession(it.selected, selected)
                     it.copy(
-                        selected = selected,
+                        selected = reconciled,
                         loading = false,
                         approvals =
                             if (provider == PROVIDER_CODEX) {
@@ -2523,7 +2709,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             } else {
                                 it.inputs
                             },
-                    ).withProviderRoute(selected)
+                    ).withProviderRoute(reconciled)
                 }
                 synchronizeSessionPresence()
                 monitorIfActive(selected)
@@ -2922,6 +3108,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     ) {
         if (state.value.submitting) return
         preferences.setLastProvider(PROVIDER_CODEX)
+        preferences.setModelRoute(model, reasoningEffort)
+        preferences.setAccessLevel(accessLevel)
         viewModelScope.launch {
             state.update { it.copy(submitting = true, showNewSession = false, error = null) }
             runCatching {
@@ -2954,6 +3142,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         composerAccessLevel = created.accessLevel ?: accessLevel,
                         composerModel = created.model ?: model,
                         composerEffort = created.reasoningEffort ?: reasoningEffort,
+                        newSessionAccessLevel = accessLevel,
+                        newSessionModel = model,
+                        newSessionEffort = reasoningEffort,
                         selectedNewSessionProvider = PROVIDER_CODEX,
                         screen = Screen.Detail,
                     )
@@ -3010,6 +3201,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         claudeComposerModel = created.model ?: selectedModel,
                         claudeComposerPermissionMode =
                             created.permissionMode ?: permissionMode,
+                        newSessionClaudeModel = selectedModel,
+                        newSessionClaudePermissionMode = permissionMode,
                         screen = Screen.Detail,
                     )
                 }
@@ -3404,14 +3597,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     sessions =
                         current.sessions.map {
                             if (it.matches(provider, sessionId) && kind == "route") {
-                                it.copy(
-                                    accessLevel =
-                                        event["accessLevel"]?.jsonPrimitive?.content
-                                            ?: it.accessLevel,
+                                val revision = event["settingsRevision"]?.jsonPrimitive?.content?.toLongOrNull()
+                                if (revision != null && (it.settingsRevision ?: 0L) > revision) it else it.copy(
+                                    accessLevel = event["accessLevel"]?.jsonPrimitive?.content ?: it.accessLevel,
+                                    permissionMode = event["permissionMode"]?.jsonPrimitive?.content ?: it.permissionMode,
                                     model = event["model"]?.jsonPrimitive?.content ?: it.model,
-                                    reasoningEffort =
-                                        event["reasoningEffort"]?.jsonPrimitive?.content
-                                            ?: it.reasoningEffort,
+                                    reasoningEffort = event["reasoningEffort"]?.jsonPrimitive?.content ?: it.reasoningEffort,
+                                    settingsRevision = revision ?: it.settingsRevision,
                                 )
                             } else if (it.matches(provider, sessionId) && usage != null) {
                                 it.copy(tokenUsage = usage)
@@ -3571,22 +3763,46 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     )
                 }
                 "route" -> {
+                    val settingsRevision =
+                        event["settingsRevision"]?.jsonPrimitive?.content?.toLongOrNull()
+                    if (
+                        settingsRevision != null &&
+                        (selected.settingsRevision ?: 0L) > settingsRevision
+                    ) return@update current
                     val accessLevel =
                         event["accessLevel"]?.jsonPrimitive?.content ?: selected.accessLevel
+                    val permissionMode =
+                        event["permissionMode"]?.jsonPrimitive?.content ?: selected.permissionMode
                     val model = event["model"]?.jsonPrimitive?.content ?: selected.model
                     val reasoningEffort =
                         event["reasoningEffort"]?.jsonPrimitive?.content
                             ?: selected.reasoningEffort
+                    val updated =
+                        selected.copy(
+                            accessLevel = accessLevel,
+                            permissionMode = permissionMode,
+                            model = model,
+                            reasoningEffort = reasoningEffort,
+                            settingsRevision = settingsRevision ?: selected.settingsRevision,
+                        )
                     current.copy(
-                        selected =
-                            selected.copy(
-                                accessLevel = accessLevel,
-                                model = model,
-                                reasoningEffort = reasoningEffort,
-                            ),
-                        composerAccessLevel = accessLevel,
-                        composerModel = model,
-                        composerEffort = reasoningEffort,
+                        selected = updated,
+                        sessions = current.sessions.map {
+                            if (it.matches(provider, sessionId)) {
+                                it.copy(
+                                    accessLevel = updated.accessLevel,
+                                    permissionMode = updated.permissionMode,
+                                    model = updated.model,
+                                    reasoningEffort = updated.reasoningEffort,
+                                    settingsRevision = updated.settingsRevision,
+                                )
+                            } else it
+                        },
+                        composerAccessLevel = if (provider == PROVIDER_CODEX) accessLevel else current.composerAccessLevel,
+                        composerModel = if (provider == PROVIDER_CODEX) model else current.composerModel,
+                        composerEffort = if (provider == PROVIDER_CODEX) reasoningEffort else current.composerEffort,
+                        claudeComposerModel = if (provider == PROVIDER_CLAUDE_CODE) model.orEmpty() else current.claudeComposerModel,
+                        claudeComposerPermissionMode = if (provider == PROVIDER_CLAUDE_CODE) permissionMode.orEmpty() else current.claudeComposerPermissionMode,
                     )
                 }
                 "usage" -> {
@@ -4799,11 +5015,11 @@ private fun SessionsScreen(
             claudeModels = state.claudeModels,
             claudePermissionModes = state.claudePermissionModes,
             initialProvider = state.selectedNewSessionProvider,
-            initialModel = state.composerModel,
-            initialEffort = state.composerEffort,
-            initialAccessLevel = state.composerAccessLevel,
-            initialClaudeModel = state.claudeComposerModel,
-            initialClaudePermissionMode = state.claudeComposerPermissionMode,
+            initialModel = state.newSessionModel,
+            initialEffort = state.newSessionEffort,
+            initialAccessLevel = state.newSessionAccessLevel,
+            initialClaudeModel = state.newSessionClaudeModel,
+            initialClaudePermissionMode = state.newSessionClaudePermissionMode,
             onDismiss = { viewModel.setNewSession(false) },
             onStart = viewModel::startProviderSession,
         )
@@ -5514,9 +5730,11 @@ private fun SessionDetailScreen(
                 }.orEmpty(),
                 provider = selectedProvider,
                 resumableExternal = selected.source == "external",
-                working = selected.status in setOf("working", "waiting"),
+                working = selected.status in setOf("working", "waiting", "stopping"),
                 interruptible = providerInterruptEligible(selected),
-                routeEnabled = state.connected && !state.submitting,
+                interruptEnabled = state.connected && !state.submitting,
+                routeEnabled = state.connected && !state.submitting && sessionRouteEditable(selected),
+                routeLocked = !sessionRouteEditable(selected),
                 enabled = state.connected && !state.submitting &&
                     !(selectedProvider == PROVIDER_CLAUDE_CODE && selected.status in setOf("working", "waiting")) &&
                     selectedApprovals.none { it.status == "pending" || it.status == "submitting" } &&
@@ -5901,7 +6119,9 @@ private fun PromptBox(
     resumableExternal: Boolean,
     working: Boolean,
     interruptible: Boolean,
+    interruptEnabled: Boolean,
     routeEnabled: Boolean,
+    routeLocked: Boolean,
     enabled: Boolean,
     accessLevels: List<AccessLevelInfo>,
     accessLevelId: String?,
@@ -5985,6 +6205,18 @@ private fun PromptBox(
                 selectEffort(it)
                 showEfforts = false
             }
+            if (routeLocked) {
+                Text(
+                    if (provider == PROVIDER_CLAUDE_CODE) {
+                        "Model and permission are available when this turn finishes."
+                    } else {
+                        "Model, reasoning, and access are available when this turn finishes."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
             if (images.isNotEmpty()) {
                 ImageThumbnailRow(images) { index ->
                     images = images.filterIndexed { itemIndex, _ -> itemIndex != index }
@@ -6037,7 +6269,7 @@ private fun PromptBox(
                     ) {
                         IconButton(
                             onClick = interrupt,
-                            enabled = routeEnabled,
+                            enabled = interruptEnabled,
                             modifier = Modifier.size(48.dp),
                         ) {
                             Icon(Icons.Default.Stop, contentDescription = "Stop current turn")

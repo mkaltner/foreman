@@ -1,4 +1,4 @@
-"""Minimal file-backed pairing, device-token, and bounded usage state."""
+"""Minimal file-backed pairing, device-token, and bounded session state."""
 
 from __future__ import annotations
 
@@ -145,6 +145,133 @@ class State:
             stored = data.get("sessionTokenUsage")
             if isinstance(stored, dict):
                 stored.pop(thread_id, None)
+
+        self._locked(update)
+
+    def session_settings(self, provider: str) -> dict[str, dict[str, Any]]:
+        if provider not in {"codex", "claude-code"}:
+            return {}
+
+        def update(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            stored = data.get("sessionSettings")
+            by_provider = stored.get(provider) if isinstance(stored, dict) else None
+            if not isinstance(by_provider, dict):
+                if not isinstance(stored, dict):
+                    stored = {}
+                    data["sessionSettings"] = stored
+                stored[provider] = {}
+                return {}
+            valid_fields = (
+                {"model", "reasoningEffort", "accessLevel"}
+                if provider == "codex"
+                else {"model", "permissionMode"}
+            )
+            valid: list[tuple[str, dict[str, Any]]] = []
+            for session_id, item in by_provider.items():
+                if (
+                    not isinstance(session_id, str)
+                    or not session_id
+                    or len(session_id) > 160
+                    or not isinstance(item, dict)
+                ):
+                    continue
+                settings = {
+                    key: value
+                    for key, value in item.items()
+                    if key in valid_fields and isinstance(value, str) and value
+                }
+                revision = item.get("settingsRevision")
+                updated_at = item.get("updatedAt")
+                if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                    revision = 1
+                settings["settingsRevision"] = revision
+                settings["updatedAt"] = (
+                    updated_at
+                    if isinstance(updated_at, (int, float)) and not isinstance(updated_at, bool)
+                    else 0
+                )
+                valid.append((session_id, settings))
+            valid.sort(key=lambda pair: pair[1]["updatedAt"], reverse=True)
+            bounded = dict(valid[:500])
+            data["sessionSettings"][provider] = bounded
+            return {
+                session_id: {
+                    key: value for key, value in item.items() if key != "updatedAt"
+                }
+                for session_id, item in bounded.items()
+            }
+
+        return self._locked(update)
+
+    def remember_session_settings(
+        self, provider: str, session_id: str, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        if provider not in {"codex", "claude-code"}:
+            raise ValueError("provider is unsupported")
+        if not session_id or len(session_id) > 160:
+            raise ValueError("session ID is invalid")
+        valid_fields = (
+            {"model", "reasoningEffort", "accessLevel"}
+            if provider == "codex"
+            else {"model", "permissionMode"}
+        )
+        incoming = {
+            key: value
+            for key, value in settings.items()
+            if key in valid_fields and isinstance(value, str) and value
+        }
+
+        def update(data: dict[str, Any]) -> dict[str, Any]:
+            stored = data.setdefault("sessionSettings", {})
+            if not isinstance(stored, dict):
+                stored = {}
+                data["sessionSettings"] = stored
+            by_provider = stored.setdefault(provider, {})
+            if not isinstance(by_provider, dict):
+                by_provider = {}
+                stored[provider] = by_provider
+            previous = by_provider.get(session_id)
+            if not isinstance(previous, dict):
+                previous = {}
+            merged = {
+                key: value
+                for key, value in previous.items()
+                if key in valid_fields and isinstance(value, str) and value
+            }
+            changed = any(merged.get(key) != value for key, value in incoming.items())
+            merged.update(incoming)
+            previous_revision = previous.get("settingsRevision", 0)
+            if not isinstance(previous_revision, int) or isinstance(previous_revision, bool):
+                previous_revision = 0
+            revision = max(1, previous_revision + (1 if changed else 0))
+            stored_item = {
+                **merged,
+                "settingsRevision": revision,
+                "updatedAt": int(time.time()),
+            }
+            by_provider[session_id] = stored_item
+            if len(by_provider) > 500:
+                oldest = sorted(
+                    by_provider,
+                    key=lambda key: by_provider[key].get("updatedAt", 0)
+                    if isinstance(by_provider.get(key), dict)
+                    else 0,
+                )[: len(by_provider) - 500]
+                for key in oldest:
+                    by_provider.pop(key, None)
+            return {key: value for key, value in stored_item.items() if key != "updatedAt"}
+
+        return self._locked(update)
+
+    def forget_session_settings(self, provider: str, session_id: str) -> None:
+        if provider not in {"codex", "claude-code"} or not session_id:
+            return
+
+        def update(data: dict[str, Any]) -> None:
+            stored = data.get("sessionSettings")
+            by_provider = stored.get(provider) if isinstance(stored, dict) else None
+            if isinstance(by_provider, dict):
+                by_provider.pop(session_id, None)
 
         self._locked(update)
 

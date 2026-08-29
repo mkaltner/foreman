@@ -125,6 +125,7 @@ export interface SessionSummary {
   reasoningEffort?: string | null;
   accessLevel?: string | null;
   permissionMode?: string | null;
+  settingsRevision?: number;
   source?: "managed" | "external";
   state?: string;
   capabilities?: string[];
@@ -337,6 +338,8 @@ export interface SessionEvent {
   model?: string;
   reasoningEffort?: string;
   accessLevel?: string;
+  permissionMode?: string;
+  settingsRevision?: number;
   action?: "created" | "removed";
   session?: SessionSummary;
   startedAt?: number | null;
@@ -545,11 +548,17 @@ export function applySessionEvent(
   }
 
   if (event.kind === "route") {
+    if (
+      event.settingsRevision !== undefined &&
+      (session.settingsRevision ?? 0) > event.settingsRevision
+    ) return session;
     return {
       ...session,
       model: event.model ?? session.model,
       reasoningEffort: event.reasoningEffort ?? session.reasoningEffort,
       accessLevel: event.accessLevel ?? session.accessLevel,
+      permissionMode: event.permissionMode ?? session.permissionMode,
+      settingsRevision: event.settingsRevision ?? session.settingsRevision,
     };
   }
   if (
@@ -621,6 +630,7 @@ export function reconcileSessionSummaries(
   const prior = new Map(previous.map((session) => [providerSessionKey(sessionProvider(session), session.id), session]));
   return incoming.map((session) => {
     const existing = prior.get(providerSessionKey(sessionProvider(session), session.id));
+    const reconciled = reconcileSessionSettings(existing, session);
     if (
       session.status === "idle" &&
       existing &&
@@ -628,7 +638,7 @@ export function reconcileSessionSummaries(
       existing.terminalAt
     ) {
       return {
-        ...session,
+        ...reconciled,
         status: existing.status,
         terminalAt: existing.terminalAt,
         turnDurationMs: existing.turnDurationMs,
@@ -637,8 +647,28 @@ export function reconcileSessionSummaries(
         activityText: existing.activityText,
       };
     }
-    return session;
+    return reconciled;
   });
+}
+
+export function reconcileSessionSettings(
+  previous: SessionSummary | null | undefined,
+  incoming: SessionSummary,
+): SessionSummary {
+  if (!previous || providerSessionKey(sessionProvider(previous), previous.id) !== providerSessionKey(sessionProvider(incoming), incoming.id)) {
+    return incoming;
+  }
+  if ((previous.settingsRevision ?? 0) <= (incoming.settingsRevision ?? 0)) {
+    return incoming;
+  }
+  return {
+    ...incoming,
+    model: previous.model,
+    reasoningEffort: previous.reasoningEffort,
+    accessLevel: previous.accessLevel,
+    permissionMode: previous.permissionMode,
+    settingsRevision: previous.settingsRevision,
+  };
 }
 
 export function applySessionSummaryEventBatch(
@@ -663,15 +693,17 @@ export function routeForSession(
   models: ModelInfo[],
   accessLevels: AccessLevelInfo[],
 ): RouteSelection {
-  const model =
-    models.find((entry) => entry.id === session?.model && entry.visible) ??
-    models.find((entry) => entry.isDefault && entry.visible) ??
-    models.find((entry) => entry.visible);
+  const model = models.find((entry) => entry.id === session?.model && entry.visible) ?? (
+    session === null
+      ? models.find((entry) => entry.isDefault && entry.visible) ?? models.find((entry) => entry.visible)
+      : undefined
+  );
   const effort = model?.reasoningEfforts.includes(session?.reasoningEffort ?? "")
     ? session?.reasoningEffort
-    : model?.defaultReasoningEffort ?? model?.reasoningEfforts[0];
-  const access =
-    accessLevels.find((entry) => entry.id === session?.accessLevel) ?? accessLevels[0];
+    : session === null ? model?.defaultReasoningEffort ?? model?.reasoningEfforts[0] : undefined;
+  const access = accessLevels.find((entry) => entry.id === session?.accessLevel) ?? (
+    session === null ? accessLevels[0] : undefined
+  );
   return {
     model: model?.id ?? "",
     reasoningEffort: effort ?? "",

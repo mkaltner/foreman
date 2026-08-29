@@ -231,9 +231,11 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        for thread_id, settings in self.state.session_settings("codex").items():
+            self.session_overlays[thread_id] = dict(settings)
         for thread_id, raw_usage in self.state.session_token_usage().items():
             if usage := thread_token_usage(raw_usage):
-                self.session_overlays[thread_id] = {"tokenUsage": usage}
+                self.session_overlays.setdefault(thread_id, {})["tokenUsage"] = usage
         self.provider_enabled = {
             provider: self.state.provider_enabled(provider) for provider in PROVIDERS
         }
@@ -263,7 +265,12 @@ class Foreman:
                         else {}
                     ),
                 }
-        self.claude_session_overlays: dict[str, dict[str, Any]] = {}
+        self.claude_session_overlays: dict[str, dict[str, Any]] = {
+            session_id: dict(settings)
+            for session_id, settings in self.state.session_settings(
+                "claude-code"
+            ).items()
+        }
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
         self.remote_restart_enabled = remote_restart_enabled
@@ -413,6 +420,14 @@ class Foreman:
         outgoing_event: dict[str, Any]
         account_usage_changed = False
         if kind == "query.started":
+            route_settings = self.remember_session_settings(
+                "claude-code",
+                session_id,
+                {
+                    "model": message.get("model"),
+                    "permissionMode": message.get("permissionMode", "default"),
+                },
+            )
             overlay.update(
                 {
                     "source": "managed",
@@ -424,6 +439,7 @@ class Foreman:
                     "model": message.get("model"),
                     "permissionMode": message.get("permissionMode", "default"),
                     "lastActivity": observed_at,
+                    **route_settings,
                 }
             )
             outgoing_event = {
@@ -687,6 +703,7 @@ class Foreman:
             "session.start",
             "session.resume",
             "session.subscribe",
+            "session.settings",
             "turn.prompt",
             "turn.interrupt",
             "model.select",
@@ -698,6 +715,7 @@ class Foreman:
             "session.start",
             "session.resume",
             "session.subscribe",
+            "session.settings",
             "session.delete",
             "turn.prompt",
             "turn.interrupt",
@@ -936,6 +954,18 @@ class Foreman:
         session_id = str(item.get("sessionId", ""))
         cwd = str(item.get("cwd", ""))
         overlay = self.claude_session_overlays.get(session_id, {})
+        discovered = {
+            key: item[key]
+            for key in ("model", "permissionMode")
+            if not isinstance(overlay.get(key), str)
+            and isinstance(item.get(key), str)
+            and item[key]
+        }
+        if session_id and discovered:
+            self.remember_session_settings(
+                "claude-code", session_id, discovered
+            )
+            overlay = self.claude_session_overlays.get(session_id, {})
         source = "managed" if item.get("classification") == "managed" or overlay.get("source") == "managed" else "external"
         state = "working" if item.get("active") else "resumable"
         if source == "managed" and overlay.get("state") in {
@@ -1369,9 +1399,17 @@ class Foreman:
         elif kind == "item" and event.get("phase") == "completed":
             overlay["activityLabel"] = "Thinking"
         elif kind == "route":
-            for key in ("model", "reasoningEffort", "accessLevel"):
-                if isinstance(event.get(key), str):
-                    overlay[key] = event[key]
+            route = {
+                key: event[key]
+                for key in ("model", "reasoningEffort", "accessLevel")
+                if isinstance(event.get(key), str) and event[key]
+            }
+            if route:
+                settings = self.remember_session_settings(
+                    "codex", thread_id, route
+                )
+                overlay.update(settings)
+                event.update(settings)
         elif kind == "usage" and isinstance(event.get("tokenUsage"), dict):
             usage = event["tokenUsage"]
             last = usage.get("last")
@@ -1388,7 +1426,67 @@ class Foreman:
         self, thread: dict[str, Any], include_messages: bool = False
     ) -> dict[str, Any]:
         projected = session(thread, include_messages)
+        known = self.session_overlays.get(projected["id"], {})
+        discovered = {
+            key: projected[key]
+            for key in ("model", "reasoningEffort", "accessLevel")
+            if not isinstance(known.get(key), str)
+            and isinstance(projected.get(key), str)
+            and projected[key]
+        }
+        if discovered:
+            self.remember_session_settings(
+                "codex", projected["id"], discovered
+            )
         return {**projected, **self.session_overlays.get(projected["id"], {})}
+
+    def remember_session_settings(
+        self, provider: str, session_id: str, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        acknowledged = self.state.remember_session_settings(
+            provider, session_id, settings
+        )
+        overlays = (
+            self.session_overlays
+            if provider == "codex"
+            else self.claude_session_overlays
+        )
+        overlays.setdefault(session_id, {}).update(acknowledged)
+        return acknowledged
+
+    async def broadcast_route_settings(
+        self, provider: str, session_id: str, settings: dict[str, Any]
+    ) -> None:
+        event = {
+            "kind": "route",
+            "observedAt": int(time.time()),
+            **settings,
+        }
+        outgoing = {
+            "version": VERSION,
+            "type": "session.event",
+            "payload": {
+                **({"provider": provider} if provider != "codex" else {}),
+                "sessionId": session_id,
+                "event": event,
+            },
+        }
+        subscription = self.provider_subscription(provider, session_id)
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated
+                and (
+                    (
+                        provider == "codex"
+                        and session_id in client.subscriptions
+                    )
+                    or subscription in client.subscriptions
+                )
+            ),
+            return_exceptions=True,
+        )
 
     async def broadcast_lifecycle(
         self, thread_id: str, action: str, projected: dict[str, Any] | None = None
@@ -2041,6 +2139,33 @@ class Foreman:
                     for mode in CLAUDE_PERMISSION_MODES
                 ],
             }
+        if message_type == "provider.session.settings":
+            provider = self.required_provider(payload)
+            self.require_provider_enabled(provider)
+            if provider != "claude-code":
+                raise CapabilityError(
+                    "Use the compatible Codex session.settings operation"
+                )
+            session_id = required_text(payload, "sessionId", 160)
+            repository_id = required_text(payload, "repositoryId", 500)
+            if not any(
+                payload.get(key) is not None for key in ("model", "permissionMode")
+            ):
+                raise ValueError("at least one session setting is required")
+            route = self.claude_route(payload, session_id, complete=False)
+            async with self.thread_lock(
+                self.provider_subscription(provider, session_id)
+            ):
+                projected = await self.read_claude_session(
+                    session_id, repository_id
+                )
+                self.require_configurable_projection(projected)
+                settings = self.remember_session_settings(
+                    provider, session_id, route
+                )
+                projected = {**projected, **settings}
+            await self.broadcast_route_settings(provider, session_id, settings)
+            return {"updated": True, "session": projected}
         if message_type in {"provider.session.start", "provider.session.resume", "provider.turn.prompt"}:
             provider = self.required_provider(payload)
             self.require_provider_enabled(provider)
@@ -2053,25 +2178,52 @@ class Foreman:
             repository_id = required_text(payload, "repositoryId", 500)
             cwd = self.resolve_repository(repository_id)
             text = required_text(payload, "text", 100_000)
-            model = optional_text(payload, "model", 100) or "sonnet"
-            if model not in {item["id"] for item in SUPPORTED_MODELS}:
-                raise ValueError("selected Claude model is unavailable")
-            permission_mode = optional_text(payload, "permissionMode", 100) or "default"
-            if permission_mode not in CLAUDE_PERMISSION_MODES:
-                raise ValueError("selected Claude permission mode is unavailable")
+            session_id = (
+                required_text(payload, "sessionId", 160)
+                if message_type != "provider.session.start"
+                else None
+            )
             if message_type == "provider.session.start":
+                route = self.claude_route(payload)
+                model = route["model"]
+                permission_mode = route["permissionMode"]
                 result = await self.claude.start_session(
                     cwd, text, model, permission_mode
                 )
             else:
-                session_id = required_text(payload, "sessionId", 160)
-                await self.claude.read_session(session_id, cwd)
-                result = await self.claude.resume_session(
-                    session_id, cwd, text, model, permission_mode
-                )
+                assert session_id is not None
+                async with self.thread_lock(
+                    self.provider_subscription(provider, session_id)
+                ):
+                    projected = await self.read_claude_session(
+                        session_id, repository_id
+                    )
+                    self.require_configurable_projection(projected)
+                    # Reading first reconciles any adapter-discovered route into
+                    # the durable overlay before omitted values are resolved.
+                    route = self.claude_route(payload, session_id)
+                    model = route["model"]
+                    permission_mode = route["permissionMode"]
+                    result = await self.claude.resume_session(
+                        session_id, cwd, text, model, permission_mode
+                    )
+                    self.claude_session_overlays.setdefault(
+                        session_id, {}
+                    ).update(
+                        {
+                            "state": "working",
+                            "status": "working",
+                            "activeTurnId": result.get("runId"),
+                        }
+                    )
             session_id = result["sessionId"]
             run_id = result.get("runId")
             self.claude_session_cwds[session_id] = str(cwd)
+            route_settings = self.remember_session_settings(
+                provider,
+                session_id,
+                {"model": model, "permissionMode": permission_mode},
+            )
             overlay = self.claude_session_overlays.setdefault(session_id, {})
             overlay.update(
                 {
@@ -2083,6 +2235,7 @@ class Foreman:
                     "permissionMode": permission_mode,
                     "activeTurnId": run_id,
                     "lastActivity": int(time.time()),
+                    **route_settings,
                 }
             )
             client.subscriptions.add(
@@ -2161,6 +2314,7 @@ class Foreman:
             self.claude_session_overlays.pop(session_id, None)
             self.claude_session_cwds.pop(session_id, None)
             self.claude_session_messages.pop(session_id, None)
+            self.state.forget_session_settings(provider, session_id)
             await self.broadcast_claude_lifecycle(session_id, action="removed")
             return {
                 "provider": provider,
@@ -2275,6 +2429,15 @@ class Foreman:
                 effort=effort,
                 selected_access_level=selected_access_level,
             )
+            self.remember_session_settings(
+                "codex",
+                thread["id"],
+                {
+                    "model": model_id,
+                    "reasoningEffort": effort,
+                    "accessLevel": selected_access_level,
+                },
+            )
             client.subscriptions.add(thread["id"])
             projected = self.projected_session(thread, True)
             await self.broadcast_lifecycle(thread["id"], "created", projected)
@@ -2282,7 +2445,7 @@ class Foreman:
         if message_type == "session.resume":
             thread_id = required_text(payload, "sessionId", 100)
             thread = await self.codex.resume_thread(thread_id)
-            return {"session": session(thread, True)}
+            return {"session": self.projected_session(thread, True)}
         if message_type == "session.subscribe":
             thread_id = required_text(payload, "sessionId", 100)
             client.subscriptions.add(thread_id)
@@ -2300,6 +2463,7 @@ class Foreman:
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
+            self.state.forget_session_settings("codex", thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"archived": True}
         if message_type == "session.delete":
@@ -2312,6 +2476,7 @@ class Foreman:
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
             self.state.forget_session_token_usage(thread_id)
+            self.state.forget_session_settings("codex", thread_id)
             await self.broadcast_lifecycle(thread_id, "removed")
             return {"deleted": True}
         if message_type == "session.settings":
@@ -2324,20 +2489,51 @@ class Foreman:
             model_id, effort = await self.route(payload)
             selected_access_level = await self.access_level(payload)
             async with self.thread_lock(thread_id):
+                await self.require_configurable_codex_session(thread_id)
                 await self.codex.update_thread_settings(
                     thread_id,
                     model_id,
                     effort,
                     selected_access_level,
                 )
-            return {"updated": True}
+                settings = self.remember_session_settings(
+                    "codex",
+                    thread_id,
+                    {
+                        "model": model_id,
+                        "reasoningEffort": effort,
+                        "accessLevel": selected_access_level,
+                    },
+                )
+                projected = self.projected_session(
+                    await self.codex.read_thread(thread_id), True
+                )
+            await self.broadcast_route_settings("codex", thread_id, settings)
+            return {"updated": True, "session": projected}
         if message_type == "turn.prompt":
             thread_id = required_text(payload, "sessionId", 100)
             images = image_payloads(payload)
             text = message_text(payload, images)
-            model_id, effort = await self.route(payload)
-            selected_access_level = await self.access_level(payload)
+            requested_model, requested_effort = await self.route(payload)
+            requested_access_level = await self.access_level(payload)
             async with self.thread_lock(thread_id):
+                await self.require_configurable_codex_session(thread_id)
+                known = self.session_overlays.get(thread_id, {})
+                model_id = (
+                    known.get("model")
+                    if isinstance(known.get("model"), str)
+                    else requested_model
+                )
+                effort = (
+                    known.get("reasoningEffort")
+                    if isinstance(known.get("reasoningEffort"), str)
+                    else requested_effort
+                )
+                selected_access_level = (
+                    known.get("accessLevel")
+                    if isinstance(known.get("accessLevel"), str)
+                    else requested_access_level
+                )
                 result = await self.codex.prompt(
                     thread_id,
                     text,
@@ -2346,6 +2542,26 @@ class Foreman:
                     effort,
                     selected_access_level,
                 )
+                self.session_overlays.setdefault(thread_id, {}).update(
+                    {
+                        "status": "working",
+                        "activeTurnId": result["turn"]["id"],
+                        "attention": False,
+                    }
+                )
+                if any(
+                    isinstance(value, str) and value
+                    for value in (model_id, effort, selected_access_level)
+                ):
+                    self.remember_session_settings(
+                        "codex",
+                        thread_id,
+                        {
+                            "model": model_id,
+                            "reasoningEffort": effort,
+                            "accessLevel": selected_access_level,
+                        },
+                    )
             client.subscriptions.add(thread_id)
             return {"accepted": True, "turnId": result["turn"]["id"]}
         if message_type == "turn.steer":
@@ -2571,6 +2787,62 @@ class Foreman:
         if not any(item["id"] == selected for item in levels):
             raise ValueError("selected access level is unavailable")
         return selected
+
+    def claude_route(
+        self,
+        payload: dict[str, Any],
+        session_id: str | None = None,
+        complete: bool = True,
+    ) -> dict[str, str]:
+        model = optional_text(payload, "model", 100)
+        permission_mode = optional_text(payload, "permissionMode", 100)
+        known = (
+            self.claude_session_overlays.get(session_id, {})
+            if session_id is not None
+            else {}
+        )
+        if complete:
+            model = (
+                known.get("model")
+                if isinstance(known.get("model"), str)
+                else model or "sonnet"
+            )
+            permission_mode = (
+                known.get("permissionMode")
+                if isinstance(known.get("permissionMode"), str)
+                else permission_mode or "default"
+            )
+        if model is not None and model not in {
+            item["id"] for item in SUPPORTED_MODELS
+        }:
+            raise ValueError("selected Claude model is unavailable")
+        if (
+            permission_mode is not None
+            and permission_mode not in CLAUDE_PERMISSION_MODES
+        ):
+            raise ValueError("selected Claude permission mode is unavailable")
+        return {
+            key: value
+            for key, value in {
+                "model": model,
+                "permissionMode": permission_mode,
+            }.items()
+            if isinstance(value, str) and value
+        }
+
+    @staticmethod
+    def require_configurable_projection(projected: dict[str, Any]) -> None:
+        if projected.get("status") in ("working", "waiting", "stopping") or projected.get(
+            "state"
+        ) == "working":
+            raise ValueError(
+                "session settings are available when this turn finishes"
+            )
+
+    async def require_configurable_codex_session(self, thread_id: str) -> None:
+        self.require_configurable_projection(
+            self.projected_session(await self.codex.read_thread(thread_id))
+        )
 
     async def require_inactive_session(self, thread_id: str) -> None:
         projected = session(await self.codex.read_thread(thread_id))
