@@ -1305,6 +1305,21 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun monitorLifecycleDiscoversExternallyStartedActiveTurns() {
+        val lifecycle = MonitorLifecycle()
+
+        assertFalse(lifecycle.monitorActive("session-1", "completed"))
+        assertFalse(lifecycle.contains("session-1"))
+        assertTrue(lifecycle.monitorActive("session-1", "working"))
+        assertFalse(lifecycle.monitorActive("session-1", "working"))
+        assertEquals(
+            "Foreman turn completed",
+            lifecycle.status("session-1", "completed")?.title,
+        )
+        assertTrue(lifecycle.isEmpty())
+    }
+
+    @Test
     fun promptFailureCancellationPreventsLateStaleNotifications() {
         val lifecycle = MonitorLifecycle()
 
