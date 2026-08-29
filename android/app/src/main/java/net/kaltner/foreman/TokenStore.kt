@@ -384,9 +384,10 @@ class PreferenceStore(context: Context, hostId: String?) {
                 preferences.getString("claudePermissionMode", "default") ?: "default",
             selectedSessionProvider =
                 preferences.getString("selectedSessionProvider", PROVIDER_CODEX)
-                    ?.takeIf { it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) }
+                    ?.takeIf(::supportedProvider)
                     ?: PROVIDER_CODEX,
-            selectedSessionId = preferences.getString("selectedSessionId", null),
+            selectedSessionId = preferences.getString("selectedSessionId", null)
+                ?.takeIf { it.isNotBlank() && it.length <= 1000 },
         )
 
     fun setThemeMode(mode: ThemeMode) { preferences.edit().putString("themeMode", mode.name).apply() }
@@ -413,7 +414,7 @@ class PreferenceStore(context: Context, hostId: String?) {
         preferences.edit()
             .putString("selectedSessionProvider", provider)
             .putString("selectedSessionId", sessionId)
-            .apply()
+            .commit()
     }
     fun loadDrafts(): Map<String, String> =
         preferences.all.mapNotNull { (key, value) ->

@@ -315,6 +315,96 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun rememberedProviderSessionSurvivesRecreationAndForceCloseStyleRelaunch() {
+        val persisted = UiPreferences(
+            selectedSessionProvider = PROVIDER_CLAUDE_CODE,
+            selectedSessionId = "claude-thread",
+        )
+
+        val beforeRecreation = rememberedSessionTarget(
+            persisted.selectedSessionProvider,
+            persisted.selectedSessionId,
+        )
+        val afterProcessRelaunch = rememberedSessionTarget(
+            persisted.selectedSessionProvider,
+            persisted.selectedSessionId,
+        )
+
+        assertEquals(beforeRecreation, afterProcessRelaunch)
+        assertEquals(PROVIDER_CLAUDE_CODE, afterProcessRelaunch?.provider)
+        assertEquals("claude-thread", afterProcessRelaunch?.sessionId)
+        assertEquals(Screen.Detail, restorationDestination(afterProcessRelaunch))
+    }
+
+    @Test
+    fun rememberedSessionsRemainIsolatedByStableHostIdentity() {
+        val persistedByHost = mapOf(
+            "home" to UiPreferences(
+                selectedSessionProvider = PROVIDER_CODEX,
+                selectedSessionId = "same-id",
+            ),
+            "work" to UiPreferences(
+                selectedSessionProvider = PROVIDER_CLAUDE_CODE,
+                selectedSessionId = "same-id",
+            ),
+        )
+
+        val home = requireNotNull(persistedByHost["home"]).let {
+            rememberedSessionTarget(it.selectedSessionProvider, it.selectedSessionId)
+        }
+        val work = requireNotNull(persistedByHost["work"]).let {
+            rememberedSessionTarget(it.selectedSessionProvider, it.selectedSessionId)
+        }
+
+        assertEquals(RememberedSessionTarget(PROVIDER_CODEX, "same-id"), home)
+        assertEquals(RememberedSessionTarget(PROVIDER_CLAUDE_CODE, "same-id"), work)
+        assertNull(rememberedSessionTarget(PROVIDER_CODEX, null))
+    }
+
+    @Test
+    fun restorationRejectsMissingDisabledAndUnknownProviderTargets() {
+        val codex = ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true)
+        val claudeDisabled = ProviderInfo(
+            PROVIDER_CLAUDE_CODE,
+            "Claude Code",
+            enabled = false,
+            available = true,
+        )
+        val session = SessionSummary(
+            id = "thread-1",
+            repository = "/repo",
+            title = "Thread",
+            status = "idle",
+            provider = PROVIDER_CODEX,
+        )
+
+        assertEquals(
+            session,
+            restorableSessionSummary(
+                RememberedSessionTarget(PROVIDER_CODEX, session.id),
+                listOf(codex, claudeDisabled),
+                listOf(session),
+            ),
+        )
+        assertNull(
+            restorableSessionSummary(
+                RememberedSessionTarget(PROVIDER_CODEX, "missing"),
+                listOf(codex),
+                listOf(session),
+            ),
+        )
+        assertNull(
+            restorableSessionSummary(
+                RememberedSessionTarget(PROVIDER_CLAUDE_CODE, "claude-thread"),
+                listOf(claudeDisabled),
+                listOf(session.copy(id = "claude-thread", provider = PROVIDER_CLAUDE_CODE)),
+            ),
+        )
+        assertNull(rememberedSessionTarget("future-provider", "thread-1"))
+        assertEquals("Provider", providerDisplayName("future-provider"))
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),

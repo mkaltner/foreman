@@ -9,6 +9,9 @@ import kotlinx.serialization.json.put
 const val PROVIDER_CODEX = "codex"
 const val PROVIDER_CLAUDE_CODE = "claude-code"
 
+internal fun supportedProvider(provider: String): Boolean =
+    provider == PROVIDER_CODEX || provider == PROVIDER_CLAUDE_CODE
+
 @Serializable
 data class ProviderInfo(
     val id: String,
@@ -150,8 +153,7 @@ internal fun legacySessionKey(value: String): String =
     ) value else providerSessionKey(PROVIDER_CODEX, value)
 
 internal fun sessionProvider(session: SessionSummary): String =
-    session.provider?.takeIf { it == PROVIDER_CODEX || it == PROVIDER_CLAUDE_CODE }
-        ?: PROVIDER_CODEX
+    session.provider?.takeIf { it.isNotBlank() } ?: PROVIDER_CODEX
 
 internal fun SessionSummary.providerKey(): String = providerSessionKey(sessionProvider(this), id)
 
@@ -159,7 +161,11 @@ internal fun SessionSummary.matches(provider: String, sessionId: String): Boolea
     id == sessionId && sessionProvider(this) == provider
 
 internal fun providerDisplayName(provider: String): String =
-    if (provider == PROVIDER_CLAUDE_CODE) "Claude Code" else "Codex"
+    when (provider) {
+        PROVIDER_CODEX -> "Codex"
+        PROVIDER_CLAUDE_CODE -> "Claude Code"
+        else -> "Provider"
+    }
 
 internal fun sessionDisplayStatus(session: SessionSummary): String =
     when {

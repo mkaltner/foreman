@@ -2,6 +2,10 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 export type ProviderId = "codex" | "claude-code";
 
+export function isProviderId(value: unknown): value is ProviderId {
+  return value === "codex" || value === "claude-code";
+}
+
 export interface ProviderInfo {
   id: ProviderId;
   displayName: string;

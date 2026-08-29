@@ -3,6 +3,7 @@ import {
   applySessionEvent,
   applySessionSummaryEventBatch,
   groupSessions,
+  isProviderId,
   liveActivityLabel,
   liveActivityMessage,
   reconcileSessionSummaries,
@@ -22,6 +23,12 @@ const session: SessionSummary = {
 };
 
 describe("session mapping and live events", () => {
+  it("accepts only the currently supported provider identities", () => {
+    expect(isProviderId("codex")).toBe(true);
+    expect(isProviderId("claude-code")).toBe(true);
+    expect(isProviderId("future-provider")).toBe(false);
+  });
+
   it("groups waiting, active, and recent sessions by recency", () => {
     const grouped = groupSessions([
       { ...session, id: "recent", lastActivity: 1 },

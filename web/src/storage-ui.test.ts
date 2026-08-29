@@ -11,6 +11,7 @@ import {
   loadNotificationsEnabled,
   loadHostNotificationOverride,
   loadNotificationPreferences,
+  loadRememberedSession,
   loadSessionOrganization,
   loadCollapsedRepositories,
   saveAppearance,
@@ -18,6 +19,7 @@ import {
   saveHostRegistry,
   saveNotificationsEnabled,
   saveNotificationPreferences,
+  saveRememberedSession,
   saveSessionOrganization,
   saveCollapsedRepositories,
   suggestedHostDisplayName,
@@ -46,6 +48,7 @@ describe("storage, appearance, and interaction helpers", () => {
     registry = addStoredHost(registry, work);
     saveHostRegistry(registry);
     saveCollapsedRepositories(new Set(["/projects/work"]), work.id);
+    saveRememberedSession({ hostId: work.id, provider: "claude-code", sessionId: "work-thread" });
     expect(loadHostRegistry().hosts.map(({ displayName }) => displayName)).toEqual(["Home", "Work"]);
     expect(localStorage.getItem("foreman.hosts.v2")).not.toContain("pairingKey");
     registry = forgetStoredHost(registry, work.id);
@@ -53,6 +56,29 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadHostRegistry().hosts).toHaveLength(1);
     expect(loadHostRegistry().hosts[0].deviceToken).toBe("fmt_home");
     expect(loadCollapsedRepositories(work.id)).toEqual(new Set());
+    expect(loadRememberedSession(work.id)).toBeNull();
+  });
+
+  it("restores a bounded provider-aware session identity per stable host ID", () => {
+    saveRememberedSession({ hostId: "home", provider: "codex", sessionId: "shared-id" });
+    saveRememberedSession({ hostId: "work", provider: "claude-code", sessionId: "shared-id" });
+
+    expect(loadRememberedSession("home")).toEqual({
+      hostId: "home",
+      provider: "codex",
+      sessionId: "shared-id",
+    });
+    expect(loadRememberedSession("work")).toEqual({
+      hostId: "work",
+      provider: "claude-code",
+      sessionId: "shared-id",
+    });
+
+    localStorage.setItem(
+      "foreman.last-session.v1.home",
+      JSON.stringify({ hostId: "home", provider: "future-provider", sessionId: "wrong" }),
+    );
+    expect(loadRememberedSession("home")).toBeNull();
   });
 
   it("does not resurrect a forgotten host when a stale socket update arrives", () => {
@@ -241,7 +267,7 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(parseWebRoute("/sessions")).toEqual({ view: "sessions" });
     expect(parseWebRoute("/not-a-route")).toEqual({ view: "sessions" });
     expect(webRoutePath({ view: "dashboard" })).toBe("/dashboard");
-    expect(webRoutePath({ view: "sessions" })).toBe("/");
+    expect(webRoutePath({ view: "sessions" })).toBe("/sessions");
     expect(webRoutePath({ view: "detail", provider: "claude-code", sessionId: "thread/one" }))
       .toBe("/sessions/claude-code/thread%2Fone");
     const deepLink = `${webRoutePath({ view: "detail", provider: "codex", sessionId: "same" })}${withHostInSearch("", "host-work")}`;

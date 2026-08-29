@@ -112,6 +112,21 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun unknownProviderIsNotSilentlyTreatedAsCodexOrClaude() {
+        val session = SessionSummary(
+            id = "future",
+            repository = "/repo",
+            title = "Future provider",
+            status = "idle",
+            provider = "future-provider",
+        )
+
+        assertEquals("future-provider", sessionProvider(session))
+        assertFalse(supportedProvider(sessionProvider(session)))
+        assertEquals("Provider", providerDisplayName(sessionProvider(session)))
+    }
+
+    @Test
     fun providerIdentityIsolatedAcrossHostsAndProviders() {
         val codex = sessionIdentityKey(SessionIdentity("host-a", PROVIDER_CODEX, "same"))
         val claude = sessionIdentityKey(SessionIdentity("host-a", PROVIDER_CLAUDE_CODE, "same"))
