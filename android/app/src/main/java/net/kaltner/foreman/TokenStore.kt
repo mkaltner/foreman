@@ -372,6 +372,9 @@ class PreferenceStore(context: Context, hostId: String?) {
             searchDateTo = preferences.getString("sessionSearchDateTo", "").orEmpty(),
             pinnedSessionIds = sessionIds("pinnedSessionIds"),
             hiddenSessionIds = sessionIds("hiddenSessionIds"),
+            collapsedRepositoryIds =
+                preferences.getStringSet("collapsedRepositoryIds", emptySet()).orEmpty()
+                    .filterTo(linkedSetOf()) { it.length <= 1000 },
             lastProvider = preferences.getString("lastProvider", PROVIDER_CODEX)
                 ?.takeIf { it in setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE) }
                 ?: PROVIDER_CODEX,
@@ -440,6 +443,11 @@ class PreferenceStore(context: Context, hostId: String?) {
     fun setHiddenSessionIds(ids: Set<String>) {
         preferences.edit().putStringSet("hiddenSessionIds", ids.toList().takeLast(1000).toSet()).apply()
     }
+    fun setCollapsedRepositoryIds(ids: Set<String>) {
+        preferences.edit()
+            .putStringSet("collapsedRepositoryIds", ids.toList().takeLast(1000).toSet())
+            .apply()
+    }
     fun retainSessionIds(ids: Set<String>) {
         setPinnedSessionIds(sessionIds("pinnedSessionIds").intersect(ids))
         setHiddenSessionIds(sessionIds("hiddenSessionIds").intersect(ids))
@@ -478,6 +486,7 @@ data class UiPreferences(
     val searchDateTo: String = "",
     val pinnedSessionIds: Set<String> = emptySet(),
     val hiddenSessionIds: Set<String> = emptySet(),
+    val collapsedRepositoryIds: Set<String> = emptySet(),
     val lastProvider: String = PROVIDER_CODEX,
     val claudeModel: String = "sonnet",
     val claudePermissionMode: String = "default",

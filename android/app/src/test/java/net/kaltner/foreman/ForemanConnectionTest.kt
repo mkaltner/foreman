@@ -611,6 +611,7 @@ class ForemanConnectionTest {
         assertEquals(KeyboardType.Text, composerKeyboardOptions.keyboardType)
         assertTrue(UiPreferences().hapticsEnabled)
         assertTrue(UiPreferences().groupSessionsByRepository)
+        assertTrue(UiPreferences().collapsedRepositoryIds.isEmpty())
     }
 
     @Test

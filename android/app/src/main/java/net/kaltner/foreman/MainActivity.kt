@@ -1018,6 +1018,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 accentColor = savedPreferences.accentColor,
                 activityDetail = savedPreferences.activityDetail,
                 groupSessionsByRepository = savedPreferences.groupSessionsByRepository,
+                collapsedRepositoriesByHost = activeHost?.id?.let { hostId ->
+                    savedPreferences.collapsedRepositoryIds.takeIf { it.isNotEmpty() }
+                        ?.let { mapOf(hostId to it) }
+                }.orEmpty(),
                 followNewMessages = savedPreferences.followNewMessages,
                 hapticsEnabled = savedPreferences.hapticsEnabled,
                 monitorActiveTurns = savedPreferences.monitorActiveTurns,
@@ -1567,14 +1571,17 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun toggleCollapsedRepository(repositoryId: String) {
-        state.update {
-            it.copy(
-                collapsedRepositoriesByHost = toggleCollapsedRepository(
-                    it.collapsedRepositoriesByHost,
-                    it.activeHostId,
-                    repositoryId,
-                ),
-            )
+        val hostId = state.value.activeHostId ?: return
+        val collapsed = toggleCollapsedRepository(
+            state.value.collapsedRepositoriesByHost,
+            hostId,
+            repositoryId,
+        )
+        preferences.setCollapsedRepositoryIds(collapsed[hostId].orEmpty())
+        state.update { current ->
+            if (current.activeHostId == hostId) {
+                current.copy(collapsedRepositoriesByHost = collapsed)
+            } else current
         }
     }
 
@@ -2057,6 +2064,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 showSearch = sessionSearchActive(filters),
                 pinnedSessionIds = restored.pinnedSessionIds,
                 hiddenSessionIds = restored.hiddenSessionIds,
+                collapsedRepositoriesByHost = if (restored.collapsedRepositoryIds.isEmpty()) {
+                    it.collapsedRepositoriesByHost - saved.id
+                } else {
+                    it.collapsedRepositoriesByHost + (saved.id to restored.collapsedRepositoryIds)
+                },
                 highlightedItemId = null,
                 focusedApprovalId = null,
                 approvals = emptyList(),

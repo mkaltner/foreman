@@ -95,12 +95,14 @@ import {
   forgetStoredHost,
   hostIdFromUrl,
   loadAppearance,
+  loadCollapsedRepositories,
   loadHostNotificationOverride,
   loadHostRegistry,
   loadNotificationPreferences,
   loadSessionSearch,
   loadSessionOrganization,
   saveAppearance,
+  saveCollapsedRepositories,
   clearHostNotificationOverride,
   saveHostRegistry,
   saveNotificationPreferences,
@@ -259,7 +261,11 @@ function App() {
   const [hostSnapshots, setHostSnapshots] = useState<Map<string, HostOverviewSnapshot>>(() => loadHostSnapshots());
   const [messageDrafts, setMessageDrafts] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [collapsedRepositoriesByHost, setCollapsedRepositoriesByHost] =
-    useState<CollapsedRepositoriesByHost>(() => new Map());
+    useState<CollapsedRepositoriesByHost>(() => {
+      const collapsed = new Map<string, ReadonlySet<string>>();
+      if (initialHostId) collapsed.set(initialHostId, loadCollapsedRepositories(initialHostId));
+      return collapsed;
+    });
   const scrollPositions = useRef(new Map<string, number>());
   const notificationPreferencesRef = useRef(notificationPreferences);
   const searchFiltersRef = useRef(initialFilters);
@@ -1117,6 +1123,11 @@ function App() {
       notificationPreferencesRef.current = nextNotifications;
       setHostNotificationOverride(loadHostNotificationOverride(hostId) !== null);
       setOrganization(nextOrganization);
+      setCollapsedRepositoriesByHost((previous) => {
+        const collapsed = new Map(previous);
+        collapsed.set(hostId, loadCollapsedRepositories(hostId));
+        return collapsed;
+      });
     }
     const filters = parseSessionFilters(filtersSearch ?? loadSessionSearch(hostId));
     searchFiltersRef.current = filters;
@@ -1507,8 +1518,11 @@ function App() {
           <SessionList
             collapsedRepositories={collapsedRepositoriesByHost.get(activeHost.id) ?? new Set()}
             onToggleRepository={(repositoryId) => {
-              setCollapsedRepositoriesByHost((previous) =>
-                toggleCollapsedRepository(previous, activeHost.id, repositoryId));
+              setCollapsedRepositoriesByHost((previous) => {
+                const next = toggleCollapsedRepository(previous, activeHost.id, repositoryId);
+                saveCollapsedRepositories(next.get(activeHost.id) ?? new Set(), activeHost.id);
+                return next;
+              });
             }}
             results={visibleSessions}
             groupByRepository={appearance.groupSessionsByRepository}
