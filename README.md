@@ -177,6 +177,10 @@ screen. Background monitoring is intentionally limited to the active host.
 Provider-aware Claude completion, failure, interruption, and attention alerts
 use the same privacy-safe Android notification preferences and open the exact
 host/provider/session. Merely resumable external sessions never notify.
+When a paired web or Android client is visibly focused on that exact session,
+other connected clients suppress its redundant event alerts. Android's quiet
+foreground-service monitoring card remains because the operating system
+requires it while global monitoring is enabled.
 
 ## Web
 
@@ -259,6 +263,10 @@ Dashboard behavior and limits:
 Browser notifications require HTTPS or localhost and work while Foreman remains
 open in a background tab for the active host only. Notification data includes
 the local host ID so a tap selects the right host before opening the session.
+Foreman reports only the focused provider/session pair over its authenticated
+connection. If that session is already visible on web or Android, both clients
+suppress its completion and attention alerts; viewing another session does not
+suppress them.
 For another LAN device, put the web listener behind a
 trusted same-origin HTTPS reverse proxy. For example, Caddy can terminate TLS
 and proxy both HTTP and WebSocket traffic:

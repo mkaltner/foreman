@@ -181,6 +181,9 @@ open in a background tab. A trusted same-origin HTTPS reverse proxy enables the
 feature for remote browsers.
 Notification taps include host identity, and background monitoring remains
 limited to the currently active host.
+Connected web and Android clients coordinate only the provider/session currently
+visible and focused. Matching alerts are suppressed across both surfaces; an
+open dashboard, background tab, or different session does not suppress them.
 
 Allow TCP port `8765` and web port `8766` only on a trusted LAN or secure
 overlay. Foreman authenticates both transports but doesn't terminate TLS. Do
@@ -273,6 +276,9 @@ on the active host are being monitored. Provider-aware lifecycle alerts use
 generic privacy-safe text and open the exact host/provider/session. Codex
 approval notifications likewise reveal no request content; tapping one reopens
 its exact pending card, and resolution elsewhere removes it.
+When the same session is visibly focused in web or Android, its event alert,
+sound, and badge are suppressed on both clients. Android still shows its quiet
+foreground-service card while global monitoring is enabled.
 
 Linux installation never runs Gradle or requires Java.
 

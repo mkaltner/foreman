@@ -42,7 +42,14 @@ import {
   TurnNotificationMonitor,
   type BrowserNotificationState,
   type NotificationDeliveryMethod,
+  type TurnNotification,
 } from "./notifications";
+import {
+  parseSessionPresence,
+  sessionIsFocused,
+  sessionPresenceKey,
+  type SessionPresence,
+} from "./session-presence";
 import {
   setRepositoryOverride,
   type NotificationPreferences,
@@ -265,6 +272,8 @@ function App() {
   const pendingDashboardEvents = useRef(new Map<string, SessionEvent[]>());
   const dashboardFrame = useRef<number | null>(null);
   const notificationMonitor = useRef(new TurnNotificationMonitor());
+  const focusedSessionsRef = useRef<Set<string>>(new Set());
+  const publishedPresenceRef = useRef<string | null | undefined>(undefined);
   const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
   const unifiedConnectionsRef = useRef<UnifiedHostConnections | null>(null);
@@ -308,15 +317,25 @@ function App() {
     window.history[replace ? "replaceState" : "pushState"](null, "", `${path}${search}`);
   }, []);
 
+  const shouldDisplayTurnNotification = useCallback((notification: TurnNotification) => {
+    const locallyFocused =
+      document.visibilityState === "visible" &&
+      document.hasFocus() &&
+      viewRef.current === "detail" &&
+      selectedProviderRef.current === "codex" &&
+      selectedIdRef.current === notification.sessionId;
+    return !locallyFocused && !sessionIsFocused(focusedSessionsRef.current, "codex", notification.sessionId);
+  }, []);
+
   useEffect(() => applyAppearance(appearance), [appearance]);
   useEffect(() => {
     notificationPreferencesRef.current = notificationPreferences;
     notificationMonitor.current.configure(notificationPreferences, (notification) => {
-      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+      if (shouldDisplayTurnNotification(notification)) {
         void showTurnNotification(notification).catch(() => undefined);
       }
     });
-  }, [notificationPreferences]);
+  }, [notificationPreferences, shouldDisplayTurnNotification]);
   useEffect(() => { searchFiltersRef.current = searchFilters; }, [searchFilters]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { repositoriesRef.current = repositories; }, [repositories]);
@@ -473,6 +492,10 @@ function App() {
   }, []);
 
   const onEvent = useCallback((message: WireMessage) => {
+    if (message.type === "session.presence.event") {
+      focusedSessionsRef.current = parseSessionPresence(message.payload);
+      return;
+    }
     if (message.type === "service.event") {
       setServiceStatus({ ...(message.payload as unknown as ServiceStatus), receivedAt: Date.now() });
       void clientRef.current?.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list")
@@ -523,7 +546,7 @@ function App() {
           approval.id,
           repositoryId,
         );
-        if (notification && (document.visibilityState !== "visible" || !document.hasFocus())) {
+        if (notification && shouldDisplayTurnNotification(notification)) {
           void showTurnNotification(notification).catch(() => undefined);
         }
       }
@@ -571,7 +594,7 @@ function App() {
       } else if (feedSession && message.type === "input.requested") {
         const repositoryId = repositoryIdentity(feedSession.repository, repositoriesRef.current, repositoryRootRef.current).id;
         const notification = notificationMonitor.current.observeApproval(hostId, pending.sessionId, pending.id, repositoryId);
-        if (notification && (document.visibilityState !== "visible" || !document.hasFocus())) {
+        if (notification && shouldDisplayTurnNotification(notification)) {
           void showTurnNotification(notification).catch(() => undefined);
         }
       }
@@ -670,7 +693,9 @@ function App() {
           waitType: payload.event.waitType ?? observedSession?.waitType,
         },
       ) : { notification: null };
-      const displayNotification = document.visibilityState !== "visible" || !document.hasFocus();
+      const displayNotification = notificationDecision.notification
+        ? shouldDisplayTurnNotification(notificationDecision.notification)
+        : false;
       if (notificationDecision.clearTag) {
         void clearTurnNotification(notificationDecision.clearTag)
           .then(() => notificationDecision.notification && displayNotification
@@ -722,7 +747,7 @@ function App() {
         session?.id === payload.sessionId && sessionProvider(session) === provider ? applySessionEvent(session, payload.event) : session,
       );
     }
-  }, [queueDashboardEvent]);
+  }, [queueDashboardEvent, shouldDisplayTurnNotification]);
 
   const clearHostProjections = useCallback(() => {
     searchGeneration.current += 1;
@@ -733,10 +758,12 @@ function App() {
     notificationMonitor.current.dispose();
     notificationMonitor.current = new TurnNotificationMonitor();
     notificationMonitor.current.configure(notificationPreferencesRef.current, (notification) => {
-      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+      if (shouldDisplayTurnNotification(notification)) {
         void showTurnNotification(notification).catch(() => undefined);
       }
     });
+    focusedSessionsRef.current = new Set();
+    publishedPresenceRef.current = undefined;
     sessionsRef.current = [];
     currentRef.current = null;
     selectedIdRef.current = null;
@@ -766,7 +793,7 @@ function App() {
     setBusy(false);
     setNewSessionOpen(false);
     setError("");
-  }, []);
+  }, [shouldDisplayTurnNotification]);
 
   const client = useMemo(
     () =>
@@ -794,6 +821,47 @@ function App() {
     [clearHostProjections, mutateHost, onEvent],
   );
   clientRef.current = client;
+
+  const publishSessionPresence = useCallback(() => {
+    if (connection !== "connected" || hello?.capabilities.sessionPresence !== true) {
+      publishedPresenceRef.current = undefined;
+      if (connection !== "connected") focusedSessionsRef.current = new Set();
+      return;
+    }
+    const focused =
+      document.visibilityState === "visible" &&
+      document.hasFocus() &&
+      viewRef.current === "detail" &&
+      selectedIdRef.current !== null;
+    const key = focused
+      ? sessionPresenceKey(selectedProviderRef.current, selectedIdRef.current!)
+      : null;
+    if (publishedPresenceRef.current === key) return;
+    publishedPresenceRef.current = key;
+    const payload = focused
+      ? { provider: selectedProviderRef.current, sessionId: selectedIdRef.current! }
+      : {};
+    void client.request<{ sessions: SessionPresence[] } & Record<string, unknown>>(
+      "session.presence",
+      payload,
+    ).then((result) => {
+      focusedSessionsRef.current = parseSessionPresence(result);
+    }).catch(() => {
+      if (publishedPresenceRef.current === key) publishedPresenceRef.current = undefined;
+    });
+  }, [client, connection, hello?.capabilities.sessionPresence]);
+
+  useEffect(() => {
+    publishSessionPresence();
+    window.addEventListener("focus", publishSessionPresence);
+    window.addEventListener("blur", publishSessionPresence);
+    document.addEventListener("visibilitychange", publishSessionPresence);
+    return () => {
+      window.removeEventListener("focus", publishSessionPresence);
+      window.removeEventListener("blur", publishSessionPresence);
+      document.removeEventListener("visibilitychange", publishSessionPresence);
+    };
+  }, [publishSessionPresence, selectedId, selectedProvider, view]);
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {

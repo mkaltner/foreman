@@ -386,6 +386,11 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        foremanViewModel.onWindowFocusChanged(hasFocus)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -427,6 +432,15 @@ internal fun reconnectDestination(current: Screen, selectedSessionId: String?): 
         current == Screen.Dashboard -> Screen.Dashboard
         else -> Screen.Sessions
     }
+
+internal fun focusedSessionPresenceKey(
+    focused: Boolean,
+    screen: Screen,
+    selected: SessionSummary?,
+): String? =
+    selected
+        ?.takeIf { focused && screen == Screen.Detail }
+        ?.let { providerSessionKey(sessionProvider(it), it.id) }
 
 internal fun dashboardBackDestination(): Screen = Screen.Overview
 
@@ -1032,11 +1046,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var lastSearchRequestKey = ""
     private val overviewNavigation = OverviewNavigationState()
     private var overviewJob: Job? = null
+    private var presenceSyncJob: Job? = null
+    private var desiredPresenceKey: String? = null
+    private var publishedPresenceKey: String? = null
+    private var presenceInitialized = false
+    private var windowFocused = false
     private val overviewClient = ForemanClient(viewModelScope, onEvent = {}, onDisconnect = {})
     private val client = ForemanClient(
         viewModelScope,
         onEvent = ::handleEvent,
         onDisconnect = { message ->
+            presenceSyncJob?.cancel()
+            presenceSyncJob = null
+            presenceInitialized = false
             state.value.activeHostId?.let { hostId ->
                 hosts.updateConnection(hostId, "disconnected")
             }
@@ -1141,7 +1163,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         showOverview()
     }
 
-    fun showOverview() = state.update { it.copy(screen = dashboardBackDestination(), selected = null, error = null) }
+    fun showOverview() {
+        state.update { it.copy(screen = dashboardBackDestination(), selected = null, error = null) }
+        synchronizeSessionPresence()
+    }
 
     fun hasOverviewReturnTarget(): Boolean = overviewNavigation.hasReturnTarget()
 
@@ -1155,9 +1180,15 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun showDashboard() = state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
+    fun showDashboard() {
+        state.update { it.copy(screen = Screen.Dashboard, selected = null, error = null) }
+        synchronizeSessionPresence()
+    }
 
-    fun showSessions() = state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
+    fun showSessions() {
+        state.update { it.copy(screen = Screen.Sessions, selected = null, error = null) }
+        synchronizeSessionPresence()
+    }
 
     fun openOverviewHost(hostId: String) {
         if (hostId == state.value.activeHostId) {
@@ -1936,6 +1967,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         restartRequested = false
         searchJob?.cancel()
         searchJob = null
+        presenceSyncJob?.cancel()
+        presenceSyncJob = null
+        desiredPresenceKey = null
+        publishedPresenceKey = null
+        presenceInitialized = false
         synchronized(sessionDiscoveryLock) {
             sessionDiscoveryJob?.cancel()
             sessionDiscoveryJob = null
@@ -2028,6 +2064,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun onForeground() {
         overviewLifecycle.onForeground()
+        synchronizeSessionPresence()
         startOverviewPolling()
         val saved = state.value.activeHostId?.let(hosts::load) ?: return
         if (state.value.loading || reconnectJob?.isActive == true) return
@@ -2052,9 +2089,56 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun onBackground() {
         overviewLifecycle.onBackground()
+        windowFocused = false
+        synchronizeSessionPresence()
         overviewJob?.cancel()
         overviewJob = null
         overviewClient.close()
+    }
+
+    private fun synchronizeSessionPresence() {
+        desiredPresenceKey =
+            focusedSessionPresenceKey(
+                overviewLifecycle.foreground && windowFocused,
+                state.value.screen,
+                state.value.selected,
+            )
+        if (!state.value.connected || "sessionPresence" !in state.value.capabilities) {
+            presenceInitialized = false
+            return
+        }
+        if (presenceSyncJob?.isActive == true) return
+        presenceSyncJob =
+            viewModelScope.launch {
+                while (true) {
+                    val target = desiredPresenceKey
+                    if (presenceInitialized && publishedPresenceKey == target) break
+                    val identity = target?.let(::parseProviderSessionKey)
+                    val payload =
+                        if (identity == null) {
+                            buildJsonObject { }
+                        } else {
+                            buildJsonObject {
+                                put("provider", identity.first)
+                                put("sessionId", identity.second)
+                            }
+                        }
+                    if (runCatching { client.request("session.presence", payload) }.isFailure) {
+                        presenceInitialized = false
+                        break
+                    }
+                    publishedPresenceKey = target
+                    presenceInitialized = true
+                }
+                presenceSyncJob = null
+            }
+    }
+
+    fun onVisibleSessionChanged() = synchronizeSessionPresence()
+
+    fun onWindowFocusChanged(hasFocus: Boolean) {
+        windowFocused = hasFocus
+        synchronizeSessionPresence()
     }
 
     fun refreshOverview() {
@@ -2270,6 +2354,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 state.update {
                     it.copy(selected = selected, loading = false).withProviderRoute(selected)
                 }
+                synchronizeSessionPresence()
                 monitorIfActive(selected)
             }.onFailure(::fail)
         }
@@ -2459,6 +2544,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         scheduleSearch(0)
         startGlobalTurnMonitoring()
         updateActiveOverview()
+        synchronizeSessionPresence()
     }
 
     private suspend fun listSessions(provider: String = PROVIDER_CODEX): List<SessionSummary> {
@@ -2548,6 +2634,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         restorationSessionId = null
         preferences.setSelectedSession(PROVIDER_CODEX, null)
         state.update { it.copy(screen = Screen.Sessions, selected = null, error = null, highlightedItemId = null, focusedApprovalId = null) }
+        synchronizeSessionPresence()
         refresh()
     }
 
@@ -3414,6 +3501,14 @@ private fun ForemanApp(
     requestTurnMonitoring: (Boolean) -> Unit = viewModel::setMonitorActiveTurns,
 ) {
     val state by viewModel.state.collectAsState()
+    LaunchedEffect(
+        state.screen,
+        state.selected?.id,
+        state.selected?.let(::sessionProvider),
+        state.connected,
+    ) {
+        viewModel.onVisibleSessionChanged()
+    }
     val systemDark = isSystemInDarkTheme()
     val darkTheme =
         when (state.themeMode) {

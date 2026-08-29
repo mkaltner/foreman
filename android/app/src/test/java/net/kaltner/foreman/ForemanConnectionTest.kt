@@ -28,6 +28,69 @@ import org.junit.Test
 
 class ForemanConnectionTest {
     @Test
+    fun focusedSessionPresenceIsProviderAwareAndOnlyPublishedFromVisibleDetail() {
+        val codex = SessionSummary("same", "/repo", "Codex", "working")
+        val claude = codex.copy(provider = PROVIDER_CLAUDE_CODE)
+
+        assertEquals(
+            providerSessionKey(PROVIDER_CODEX, "same"),
+            focusedSessionPresenceKey(true, Screen.Detail, codex),
+        )
+        assertEquals(
+            providerSessionKey(PROVIDER_CLAUDE_CODE, "same"),
+            focusedSessionPresenceKey(true, Screen.Detail, claude),
+        )
+        assertNull(focusedSessionPresenceKey(false, Screen.Detail, codex))
+        assertNull(focusedSessionPresenceKey(true, Screen.Sessions, codex))
+        assertNull(focusedSessionPresenceKey(true, Screen.Detail, null))
+    }
+
+    @Test
+    fun focusedSessionProjectionRejectsMalformedOrUnknownEntries() {
+        val sessions =
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "one")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "one")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CLAUDE_CODE)
+                        put("sessionId", "two")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", "unknown")
+                        put("sessionId", "ignored")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("provider", PROVIDER_CODEX)
+                        put("sessionId", "")
+                    },
+                )
+            }
+
+        assertEquals(
+            setOf(
+                providerSessionKey(PROVIDER_CODEX, "one"),
+                providerSessionKey(PROVIDER_CLAUDE_CODE, "two"),
+            ),
+            focusedSessionKeys(sessions),
+        )
+    }
+
+    @Test
     fun focusedActivityGroupsOnlyRoutineSuccessfulWork() {
         val messages =
             listOf(

@@ -45,6 +45,7 @@ Implemented types:
 - `usage.status`;
 - `diagnostics.list`, `service.restart`;
 - `client.list`, `client.revoke`;
+- `session.presence`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.settings`, `session.archive`,
   `session.delete`;
@@ -139,6 +140,14 @@ the caller uses that token. It includes offline paired tokens so they can be
 revoked. `client.revoke` accepts only the opaque `clientId`, deletes that token,
 and immediately disconnects all live connections authenticated with it. Neither
 request exposes a token or digest, and revocation does not alter Codex sessions.
+
+`session.presence` publishes the single provider/session currently visible and
+focused on that authenticated connection, or clears it when both fields are
+omitted. Its result and `session.presence.event` expose only the deduplicated
+focused provider/session pairs, never client or device identities. Presence is
+ephemeral, is removed when the connection closes or its token is revoked, and
+is intended only to suppress redundant notifications while another Foreman
+surface is already displaying the matching session.
 
 `diagnostics.list` returns at most 100 newest-first in-memory operational events.
 Every event uses a fixed safe message and one allowed category for service,

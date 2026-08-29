@@ -113,6 +113,11 @@ pause and their existing stale snapshots are the fallback.
 Completion and attention notifications retain their existing opt-in behavior.
 Android notification identities and routes carry host, provider, and session
 IDs; overview sockets and probes do not generate additional notifications.
+Each authenticated UI connection may publish one ephemeral focused
+provider/session pair. The service broadcasts only the deduplicated pairs, not
+client identities, and removes a pair on blur/background, navigation,
+disconnect, or token revocation. Web and Android notification monitors suppress
+only events matching one of those focused pairs.
 Claude alerts derive only from authoritative provider-tagged lifecycle for a
 monitored Foreman-managed query. Merely resumable external sessions do not
 notify. Opening a notification or a combined attention row selects the saved
