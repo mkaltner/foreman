@@ -9,6 +9,7 @@ import {
 import {
   browserNotificationState,
   notificationStateDescription,
+  showBrowserTestNotification,
   TurnNotificationMonitor,
   type TurnObservation,
 } from "./notifications";
@@ -108,20 +109,48 @@ describe("web turn notification lifecycle", () => {
     expect(emitted).toHaveBeenCalledTimes(1);
   });
 
-  it("clears a pending long-running alert when completion arrives first", () => {
+  it("cancels a pending long-running timer without racing the terminal notification", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T12:00:00Z"));
     const emitted = vi.fn();
-    const cleared = vi.fn();
     const monitor = new TurnNotificationMonitor();
-    monitor.configure({ ...DEFAULT_NOTIFICATION_PREFERENCES, notifyLongRunning: true }, emitted, cleared);
+    monitor.configure({ ...DEFAULT_NOTIFICATION_PREFERENCES, notifyLongRunning: true }, emitted);
     monitor.observe(working());
     const completed = monitor.observe(working({ status: "completed" }));
     expect(completed?.event).toBe("completion");
-    expect(cleared).toHaveBeenCalledWith("foreman-turn-home-one");
     vi.advanceTimersByTime(60 * 60_000);
     expect(emitted).not.toHaveBeenCalled();
     expect(monitor.observe(working({ status: "completed" }))).toBeNull();
+  });
+
+  it("sends an explicit test through the active service worker", async () => {
+    const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    const browserNotification = Object.getOwnPropertyDescriptor(window, "Notification");
+    const serviceWorker = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
+    const showNotification = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      value: { permission: "granted" },
+    });
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration: vi.fn().mockResolvedValue({ showNotification }) },
+    });
+    try {
+      await showBrowserTestNotification();
+      expect(showNotification).toHaveBeenCalledWith(
+        "Foreman notifications are working",
+        expect.objectContaining({ tag: "foreman-notification-test" }),
+      );
+    } finally {
+      if (secure) Object.defineProperty(window, "isSecureContext", secure);
+      else Reflect.deleteProperty(window, "isSecureContext");
+      if (browserNotification) Object.defineProperty(window, "Notification", browserNotification);
+      else Reflect.deleteProperty(window, "Notification");
+      if (serviceWorker) Object.defineProperty(navigator, "serviceWorker", serviceWorker);
+      else Reflect.deleteProperty(navigator, "serviceWorker");
+    }
   });
 
   it("deduplicates approval alerts and removes their lifecycle state on resolution", () => {

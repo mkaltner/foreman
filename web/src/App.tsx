@@ -37,6 +37,7 @@ import {
   clearTurnNotification,
   notificationStateDescription,
   requestBrowserNotifications,
+  showBrowserTestNotification,
   showTurnNotification,
   TurnNotificationMonitor,
   type BrowserNotificationState,
@@ -313,7 +314,7 @@ function App() {
       if (document.visibilityState !== "visible" || !document.hasFocus()) {
         void showTurnNotification(notification).catch(() => undefined);
       }
-    }, (tag) => { void clearTurnNotification(tag).catch(() => undefined); });
+    });
   }, [notificationPreferences]);
   useEffect(() => { searchFiltersRef.current = searchFilters; }, [searchFilters]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
@@ -730,7 +731,7 @@ function App() {
       if (document.visibilityState !== "visible" || !document.hasFocus()) {
         void showTurnNotification(notification).catch(() => undefined);
       }
-    }, (tag) => { void clearTurnNotification(tag).catch(() => undefined); });
+    });
     sessionsRef.current = [];
     currentRef.current = null;
     selectedIdRef.current = null;
@@ -1347,6 +1348,14 @@ function App() {
             const next = browserNotificationState();
             setNotificationState(next);
             if (!granted) setError(notificationStateDescription(next, false));
+          }}
+          onNotificationTest={async () => {
+            try {
+              await showBrowserTestNotification();
+            } catch (caught) {
+              const message = caught instanceof Error ? caught.message : "Test notification could not be shown";
+              setError(message);
+            }
           }}
           onProviderEnabled={async (provider, enabled) => {
             try {
@@ -2660,6 +2669,7 @@ function SettingsView({
   onNotificationPreferences,
   onHostNotificationOverride,
   onNotificationPermission,
+  onNotificationTest,
   onProviderEnabled,
   onAdd,
   onSelect,
@@ -2679,12 +2689,14 @@ function SettingsView({
   onNotificationPreferences: (preferences: NotificationPreferences) => void;
   onHostNotificationOverride: (enabled: boolean) => void;
   onNotificationPermission: () => Promise<void>;
+  onNotificationTest: () => Promise<void>;
   onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
   onAdd: () => void;
   onSelect: (hostId: string) => void;
   onRename: (hostId: string, displayName: string) => void;
   onForget: (hostId: string) => void;
 }) {
+  const [testingNotification, setTestingNotification] = useState(false);
   const permissionUnavailable = ["insecure", "unsupported", "denied"].includes(notificationState);
   const update = <K extends keyof NotificationPreferences>(key: K, value: NotificationPreferences[K]) =>
     onNotificationPreferences({ ...notificationPreferences, [key]: value });
@@ -2709,7 +2721,7 @@ function SettingsView({
     <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
-      <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p></div><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button></div>
+      <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p></div><div className="notification-actions"><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button>{notificationState === "granted" && <button className="secondary" disabled={testingNotification} onClick={() => { setTestingNotification(true); void onNotificationTest().finally(() => setTestingNotification(false)); }}>{testingNotification ? "Sending…" : "Send test"}</button>}</div></div>
       <label className="check-row"><input type="checkbox" checked={hostNotificationOverride} onChange={(event) => onHostNotificationOverride(event.target.checked)} /><span><strong>Override for {host.displayName}</strong><small>{hostNotificationOverride ? "This host uses its own local settings." : "This host inherits the global browser defaults."}</small></span></label>
       <div className="notification-toggle-grid">{eventToggles.map(([key, label]) => <label className="check-row single-line" key={key}><input type="checkbox" checked={notificationPreferences[key] as boolean} onChange={(event) => update(key, event.target.checked)} /><span>{label}</span></label>)}</div>
       <label>Long-running threshold (minutes)<input type="number" min="1" max="1440" value={notificationPreferences.longRunningMinutes} disabled={!notificationPreferences.notifyLongRunning} onChange={(event) => update("longRunningMinutes", Math.max(1, Math.min(1440, Number(event.target.value) || 1)))} /></label>

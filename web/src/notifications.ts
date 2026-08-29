@@ -69,7 +69,6 @@ export class TurnNotificationMonitor {
   private attentionTurns = new Set<string>();
   private preferences = DEFAULT_NOTIFICATION_PREFERENCES;
   private emitLongRunning: LongRunningEmitter = () => undefined;
-  private clearDisplayed: (tag: string) => void = () => undefined;
 
   constructor(
     private readonly now: () => number = () => Date.now(),
@@ -82,11 +81,9 @@ export class TurnNotificationMonitor {
   configure(
     preferences: NotificationPreferences,
     emitLongRunning: LongRunningEmitter,
-    clearDisplayed: (tag: string) => void = () => undefined,
   ): void {
     this.preferences = preferences;
     this.emitLongRunning = emitLongRunning;
-    this.clearDisplayed = clearDisplayed;
     for (const active of this.active.values()) this.scheduleLongRunning(active);
   }
 
@@ -117,7 +114,6 @@ export class TurnNotificationMonitor {
     this.active.delete(observation.sessionId);
     this.attentionTurns.delete(active.turnKey);
     const terminalTag = `foreman-turn-${observation.hostId}-${observation.sessionId}`;
-    this.clearDisplayed(terminalTag);
     if (!shouldNotify(outcome.event, this.preferences, active.observation.repositoryId, new Date(this.now()))) {
       return null;
     }
@@ -258,6 +254,31 @@ export async function showTurnNotification(notification: TurnNotification): Prom
     }));
     displayed.close();
     displayedNotifications.delete(notification.tag);
+  };
+}
+
+export async function showBrowserTestNotification(): Promise<void> {
+  if (browserNotificationState() !== "granted") {
+    throw new Error("Browser notification permission is not granted.");
+  }
+  const title = "Foreman notifications are working";
+  const tag = "foreman-notification-test";
+  const options: NotificationOptions = {
+    body: "This test bypasses session-event and background-tab checks.",
+    tag,
+  };
+  const registration = await navigator.serviceWorker?.getRegistration();
+  if (registration) {
+    await registration.showNotification(title, options);
+    return;
+  }
+  displayedNotifications.get(tag)?.close();
+  const displayed = new Notification(title, options);
+  displayedNotifications.set(tag, displayed);
+  displayed.onclick = () => {
+    window.focus();
+    displayed.close();
+    displayedNotifications.delete(tag);
   };
 }
 
