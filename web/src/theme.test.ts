@@ -6,6 +6,14 @@ import { CURATED_THEMES, DEFAULT_APPEARANCE, type Appearance } from "./storage";
 import { applyAppearance, resolvedTheme } from "./theme";
 
 describe("curated Foreman themes", () => {
+  it("loads startup theming as a same-origin script compatible with the production CSP", () => {
+    const html = readFileSync(join(process.cwd(), "index.html"), "utf8");
+    expect(html).toContain('<script src="/assets/theme-startup.js"></script>');
+    expect(html).not.toMatch(/<script>(.|\n)*foreman\.appearance/s);
+    expect(readFileSync(join(process.cwd(), "public/assets/theme-startup.js"), "utf8"))
+      .toContain("foreman.appearance.v2");
+  });
+
   it("uses the same stable IDs and names as Android", () => {
     expect(CURATED_THEMES.map(({ id, name }) => ({ id, name }))).toEqual([
       { id: "foreman", name: "Foreman" },
