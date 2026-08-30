@@ -1189,6 +1189,20 @@ class Foreman:
             snapshot = codex_rate_limit_update_snapshot(
                 message.get("params") or {}, self.account_usage.get("rateLimits")
             )
+            if not snapshot:
+                fresh = await self.codex.account_rate_limits()
+                refreshed = rate_limit_snapshot(fresh.get("rateLimits"))
+                if refreshed:
+                    self.account_usage = {
+                        "available": True,
+                        "rateLimits": refreshed,
+                        "observedAt": int(time.time()),
+                    }
+                    self.state.remember_provider_account_usage(
+                        "codex", self.account_usage
+                    )
+                    await self.broadcast_account_usage()
+                return
             if snapshot:
                 merged = merge_rate_limit_snapshots(
                     self.account_usage.get("rateLimits"), snapshot

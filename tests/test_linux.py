@@ -2409,6 +2409,90 @@ Tighten up this layout, please.
         self.assertEqual(merged["windows"][2]["usedPercent"], 9)
         self.assertEqual(merged["windows"][3]["usedPercent"], 4)
 
+    def test_ambiguous_sparse_codex_window_refetches_instead_of_corrupting_sibling(self) -> None:
+        previous = {
+            "windows": [
+                {
+                    "id": "provider:duration-300",
+                    "limitId": "provider",
+                    "usedPercent": 10,
+                    "windowDurationMins": 300,
+                    "resetsAt": 100,
+                },
+                {
+                    "id": "provider:duration-300-2",
+                    "limitId": "provider",
+                    "usedPercent": 20,
+                    "windowDurationMins": 300,
+                    "resetsAt": 200,
+                },
+            ]
+        }
+        ambiguous = {
+            "rateLimits": {
+                "limitId": "provider",
+                "windows": [{"usedPercent": 25, "windowDurationMins": 300}],
+            }
+        }
+        self.assertIsNone(codex_rate_limit_update_snapshot(ambiguous, previous))
+
+        identified = codex_rate_limit_update_snapshot(
+            {
+                "rateLimits": {
+                    "limitId": "provider",
+                    "windows": [
+                        {
+                            "usedPercent": 25,
+                            "windowDurationMins": 300,
+                            "resetsAt": 200,
+                        }
+                    ],
+                }
+            },
+            previous,
+        )
+        assert identified is not None
+        self.assertEqual(identified["windows"][0]["id"], "provider:duration-300-2")
+
+        with tempfile.TemporaryDirectory() as directory:
+            foreman = Foreman(
+                "127.0.0.1",
+                8765,
+                Path(directory),
+                State(Path(directory) / "state"),
+                "codex",
+                FakeCodex,
+            )
+            foreman.account_usage = {"available": True, "rateLimits": previous}
+            foreman.codex.rate_limits = {
+                "available": True,
+                "rateLimits": {
+                    "windows": [
+                        {
+                            "id": "provider:duration-300",
+                            "limitId": "provider",
+                            "usedPercent": 11,
+                            "windowDurationMins": 300,
+                            "resetsAt": 100,
+                        },
+                        {
+                            "id": "provider:duration-300-2",
+                            "limitId": "provider",
+                            "usedPercent": 25,
+                            "windowDurationMins": 300,
+                            "resetsAt": 200,
+                        },
+                    ]
+                },
+            }
+            asyncio.run(
+                foreman.codex_event(
+                    {"method": "account/rateLimits/updated", "params": ambiguous}
+                )
+            )
+            windows = foreman.account_usage["rateLimits"]["windows"]
+            self.assertEqual([window["usedPercent"] for window in windows], [11, 25])
+
     def test_sparse_account_usage_event_preserves_other_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             foreman = Foreman(

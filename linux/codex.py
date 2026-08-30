@@ -1611,6 +1611,7 @@ def codex_rate_limit_update_snapshot(
     group_name = _bounded_rate_limit_text(update.get("limitName"))
     older = rate_limit_snapshot(previous)
     existing_ids: dict[str, str] = {}
+    existing_windows: list[dict[str, Any]] = []
     if older and group_id:
         for window in older["windows"]:
             window_id = _bounded_rate_limit_text(window.get("id"))
@@ -1618,11 +1619,13 @@ def codex_rate_limit_update_snapshot(
                 continue
             window_group_id = _bounded_rate_limit_text(window.get("limitId"))
             if window_group_id == group_id:
+                existing_windows.append(window)
                 existing_ids[window_id.rsplit(":", 1)[-1]] = window_id
             elif older.get("limitId") == group_id and window_id in (
                 "primary",
                 "secondary",
             ):
+                existing_windows.append(window)
                 existing_ids[window_id] = window_id
 
     windows: list[dict[str, int | float | str]] = []
@@ -1633,7 +1636,31 @@ def codex_rate_limit_update_snapshot(
             or f"window-{index + 1}"
         )
         if group_id:
-            projected["id"] = existing_ids.get(slot_id, f"{group_id}:{slot_id}")[
+            target_id = existing_ids.get(slot_id)
+            family = derived_rate_limit_id_family(slot_id)
+            if family:
+                candidates = [
+                    candidate
+                    for candidate in existing_windows
+                    if derived_rate_limit_id_family(
+                        str(candidate.get("id", "")).rsplit(":", 1)[-1]
+                    )
+                    == family
+                ]
+                if len(candidates) > 1:
+                    resets_at = projected.get("resetsAt")
+                    matched = [
+                        candidate
+                        for candidate in candidates
+                        if resets_at is not None
+                        and candidate.get("resetsAt") == resets_at
+                    ]
+                    if len(matched) != 1:
+                        # The sparse event contains less identity than the full
+                        # snapshot. Refetch rather than corrupting a sibling.
+                        return None
+                    target_id = str(matched[0]["id"])
+            projected["id"] = (target_id or f"{group_id}:{slot_id}")[
                 :MAX_RATE_LIMIT_TEXT
             ]
             projected["limitId"] = group_id
@@ -1649,6 +1676,11 @@ def codex_rate_limit_update_snapshot(
         if (value := metadata_source.get(key)) is not None
     }
     return rate_limit_snapshot({**metadata, "windows": windows})
+
+
+def derived_rate_limit_id_family(window_id: str) -> str | None:
+    match = re.fullmatch(r"(duration-\d+|label-.+?)(?:-\d+)?", window_id)
+    return match.group(1) if match else None
 
 
 def merge_rate_limit_snapshots(previous: Any, incoming: Any) -> dict[str, Any] | None:
