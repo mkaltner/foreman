@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#69 Fail closed when tagged release assets are
-  incomplete](https://github.com/mkaltner/foreman/issues/69).
 - [ ] [#55 Add About information to web and
   Android](https://github.com/mkaltner/foreman/issues/55).
 - [ ] [#56 Replace accent selection with coherent
@@ -63,6 +61,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Fail closed when tagged release assets are incomplete
+  ([PR #70](https://github.com/mkaltner/foreman/pull/70)).
 - [x] Hide provider UI when only one provider is enabled
   ([PR #68](https://github.com/mkaltner/foreman/pull/68)).
 - [x] Remember the last-opened session per host across navigation and relaunch
