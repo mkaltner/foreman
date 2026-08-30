@@ -18,8 +18,6 @@ update the applicable boundary documentation before implementation starts.
 
 - [ ] [#52 Preserve session activity times across service
   restarts](https://github.com/mkaltner/foreman/issues/52).
-- [ ] [#73 Hide redundant repository metadata on grouped session
-  cards](https://github.com/mkaltner/foreman/issues/73).
 - [ ] [#74 View and restore archived sessions from
   filters](https://github.com/mkaltner/foreman/issues/74).
 - [ ] [#56 Replace accent selection with coherent
@@ -70,6 +68,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Hide redundant repository metadata on grouped session cards
+  ([PR #76](https://github.com/mkaltner/foreman/pull/76)).
 - [x] Add About information to web and Android
   ([PR #72](https://github.com/mkaltner/foreman/pull/72)).
 - [x] Fail closed when tagged release assets are incomplete
