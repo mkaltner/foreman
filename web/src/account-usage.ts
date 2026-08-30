@@ -26,6 +26,8 @@ function normalizeWindow(value: unknown, fallbackId: string): RateLimitWindow | 
   return {
     id: text(raw.id) ?? fallbackId,
     ...(text(raw.label) ? { label: text(raw.label) } : {}),
+    ...(text(raw.limitId) ? { limitId: text(raw.limitId) } : {}),
+    ...(text(raw.limitName) ? { limitName: text(raw.limitName) } : {}),
     usedPercent: Math.round(Math.max(0, Math.min(100, raw.usedPercent)) * 10) / 10,
     ...(duration ? { windowDurationMins: duration } : {}),
     ...(timestamp(raw.resetsAt) !== undefined ? { resetsAt: timestamp(raw.resetsAt) } : {}),

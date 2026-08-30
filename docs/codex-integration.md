@@ -132,8 +132,11 @@ replay.
   summary itself.
 - Account rate-limit projections contain only bounded percentages, durations,
   reset times, and labels. They omit account identity, credits, and usage
-  history. Every reported window is retained in an extensible `windows`
-  collection; compatibility `primary`/`secondary` aliases remain available.
+  history. Foreman reads both the backward-compatible `rateLimits` bucket and
+  every distinct bucket in Codex's `rateLimitsByLimitId` response, retaining
+  all reported windows in an extensible `windows` collection. Model-specific
+  buckets keep their bounded `limitId`/`limitName`; compatibility
+  `primary`/`secondary` aliases remain available.
   Rolling sparse updates merge by stable window identity, and the bounded
   snapshot survives a Foreman restart.
 - Access presets use allowed `:workspace` and `:danger-full-access` permission

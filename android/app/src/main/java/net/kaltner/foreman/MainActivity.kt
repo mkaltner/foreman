@@ -5621,6 +5621,15 @@ private fun AccountUsageDialog(
                                         Text(rateLimitLabel(window, index, windows.size), style = MaterialTheme.typography.labelMedium)
                                         Text("$remaining% left", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                     }
+                                    window.limitName?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                     LinearProgressIndicator(
                                         progress = { (window.usedPercent / 100).toFloat().coerceIn(0f, 1f) },
                                         modifier = Modifier.fillMaxWidth(),

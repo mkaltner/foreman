@@ -27,6 +27,8 @@ from codex import (  # noqa: E402
     access_params,
     bound_message_images,
     compact_session_title,
+    codex_rate_limit_snapshot,
+    codex_rate_limit_update_snapshot,
     display_user_text,
     model,
     merge_rate_limit_snapshots,
@@ -2338,6 +2340,73 @@ Tighten up this layout, please.
         self.assertEqual(weekly["usedPercent"], 40)
         self.assertEqual(weekly["windowDurationMins"], 10_080)
 
+    def test_flattens_codex_per_limit_collection_without_duplicating_default(self) -> None:
+        snapshot = codex_rate_limit_snapshot(
+            {
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {
+                        "usedPercent": 15,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": 1_800_000_000,
+                    },
+                    "secondary": None,
+                    "planType": "prolite",
+                },
+                "rateLimitsByLimitId": {
+                    "codex_spark": {
+                        "limitId": "codex_spark",
+                        "limitName": "GPT-5.3-Codex-Spark",
+                        "primary": {
+                            "usedPercent": 2,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1_799_000_000,
+                        },
+                        "secondary": {
+                            "usedPercent": 4,
+                            "windowDurationMins": 10_080,
+                            "resetsAt": 1_800_100_000,
+                        },
+                    },
+                    "codex": {
+                        "limitId": "codex",
+                        "primary": {"usedPercent": 15, "windowDurationMins": 10_080},
+                    },
+                },
+            }
+        )
+
+        assert snapshot is not None
+        self.assertEqual(
+            [window["id"] for window in snapshot["windows"]],
+            ["primary", "codex_spark:primary", "codex_spark:secondary"],
+        )
+        self.assertEqual(
+            [window["windowDurationMins"] for window in snapshot["windows"]],
+            [10_080, 300, 10_080],
+        )
+        self.assertEqual(snapshot["windows"][1]["limitName"], "GPT-5.3-Codex-Spark")
+        self.assertEqual(snapshot["windows"][1]["limitId"], "codex_spark")
+        self.assertNotIn("label", snapshot["windows"][1])
+
+        update = codex_rate_limit_update_snapshot(
+            {
+                "rateLimits": {
+                    "limitId": "codex_spark",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {"usedPercent": 9, "windowDurationMins": 300},
+                    "secondary": None,
+                }
+            },
+            snapshot,
+        )
+        merged = merge_rate_limit_snapshots(snapshot, update)
+        assert merged is not None
+        self.assertEqual(len(merged["windows"]), 3)
+        self.assertEqual(merged["windows"][1]["id"], "codex_spark:primary")
+        self.assertEqual(merged["windows"][1]["usedPercent"], 9)
+        self.assertEqual(merged["windows"][2]["usedPercent"], 4)
+
     def test_sparse_account_usage_event_preserves_other_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             foreman = Foreman(
@@ -2351,6 +2420,7 @@ Tighten up this layout, please.
             foreman.account_usage = {
                 "available": True,
                 "rateLimits": {
+                    "limitId": "codex",
                     "primary": {"usedPercent": 2, "windowDurationMins": 300},
                     "secondary": {"usedPercent": 11, "windowDurationMins": 10_080},
                 },
@@ -2727,7 +2797,15 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
                     "secondary": None,
                     "planType": "plus",
                     "accountEmail": "do-not-project@example.com",
-                }
+                },
+                "rateLimitsByLimitId": {
+                    "codex_spark": {
+                        "limitId": "codex_spark",
+                        "limitName": "GPT-5.3-Codex-Spark",
+                        "primary": {"usedPercent": 5, "windowDurationMins": 300},
+                        "secondary": {"usedPercent": 7, "windowDurationMins": 10_080},
+                    }
+                },
             }
         )
 
@@ -2737,10 +2815,14 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["rateLimits"]["primary"]["usedPercent"], 24)
         self.assertEqual(
             [window["id"] for window in result["rateLimits"]["windows"]],
-            ["primary"],
+            ["primary", "codex_spark:primary", "codex_spark:secondary"],
         )
-        self.assertIsNone(result["rateLimits"]["secondary"])
+        self.assertEqual(result["rateLimits"]["secondary"]["usedPercent"], 5)
         self.assertEqual(result["rateLimits"]["planType"], "plus")
+        self.assertEqual(
+            result["rateLimits"]["windows"][1]["limitName"],
+            "GPT-5.3-Codex-Spark",
+        )
         self.assertNotIn("accountEmail", str(result))
         adapter.request.assert_awaited_once_with("account/rateLimits/read")
 

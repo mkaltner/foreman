@@ -204,8 +204,10 @@ exposes only quota percentages, window durations, reset timestamps, and bounded
 limit labels. Account identity, token activity history, credits, and raw
 provider payloads are not projected. Each `rateLimits` object carries an
 ordered, bounded `windows` collection. Every window has a stable `id`, bounded
-`usedPercent`, and optional provider `label`, `windowDurationMins`, and
-`resetsAt`. The legacy `primary` and `secondary` aliases remain populated from
+`usedPercent`, and optional provider `label`, `limitId`, `limitName`,
+`windowDurationMins`, and `resetsAt`. Per-limit identity keeps model-specific
+Codex buckets distinct without exposing account identity. The legacy `primary`
+and `secondary` aliases remain populated from
 the first two windows for protocol-v1 clients. Sparse rolling updates merge by
 window ID without clearing an unmentioned quota window.
 Claude account limits come from an explicitly experimental Agent SDK method

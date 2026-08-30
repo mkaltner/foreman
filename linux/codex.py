@@ -1049,7 +1049,7 @@ class Codex:
             result = await self.request("account/rateLimits/read")
         except CodexError:
             return {"available": False}
-        snapshot = rate_limit_snapshot(result.get("rateLimits"))
+        snapshot = codex_rate_limit_snapshot(result)
         return {
             "available": snapshot is not None,
             **({"rateLimits": snapshot} if snapshot else {}),
@@ -1428,7 +1428,6 @@ def rate_limit_window(
     label = (
         _bounded_rate_limit_text(raw.get("label"))
         or _bounded_rate_limit_text(raw.get("name"))
-        or _bounded_rate_limit_text(raw.get("limitName"))
     )
     window_id = _bounded_rate_limit_text(raw.get("id"))
     if not window_id and fallback_id and fallback_id.startswith("window-"):
@@ -1441,6 +1440,10 @@ def rate_limit_window(
         result["id"] = window_id
     if label:
         result["label"] = label
+    for key in ("limitId", "limitName"):
+        value = _bounded_rate_limit_text(raw.get(key))
+        if value:
+            result[key] = value
     if duration is not None and duration > 0:
         result["windowDurationMins"] = min(duration, MAX_RATE_LIMIT_DURATION_MINS)
     if resets_at is not None:
@@ -1489,6 +1492,125 @@ def rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
         if value:
             result[key] = value
     return result
+
+
+def codex_rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
+    """Flatten Codex's complete per-limit collection into protocol windows.
+
+    Current Codex releases keep the default account limit in ``rateLimits`` and
+    expose additional model-defined limits in ``rateLimitsByLimitId``. The
+    latter may contain the default limit again, so retain the top-level aliases
+    and append only distinct limit groups with scoped, stable window IDs.
+    """
+    if not isinstance(raw, dict):
+        return None
+    default = rate_limit_snapshot(raw.get("rateLimits"))
+    raw_groups = raw.get("rateLimitsByLimitId")
+    if not isinstance(raw_groups, dict) or not raw_groups:
+        return default
+
+    windows: list[dict[str, int | float | str]] = []
+    default_limit_id = (
+        _bounded_rate_limit_text(default.get("limitId")) if default else None
+    )
+    if default:
+        for window in default["windows"]:
+            projected = dict(window)
+            if default_limit_id:
+                projected["limitId"] = default_limit_id
+            default_limit_name = _bounded_rate_limit_text(default.get("limitName"))
+            if default_limit_name:
+                projected["limitName"] = default_limit_name
+            windows.append(projected)
+
+    for raw_group_id, raw_group in list(raw_groups.items())[
+        :MAX_RATE_LIMIT_WINDOWS
+    ]:
+        if len(windows) >= MAX_RATE_LIMIT_WINDOWS:
+            break
+        group = rate_limit_snapshot(raw_group)
+        if not group:
+            continue
+        group_id = (
+            _bounded_rate_limit_text(group.get("limitId"))
+            or _bounded_rate_limit_text(raw_group_id)
+        )
+        if group_id and group_id == default_limit_id:
+            continue
+        group_name = _bounded_rate_limit_text(group.get("limitName"))
+        for index, window in enumerate(group["windows"]):
+            if len(windows) >= MAX_RATE_LIMIT_WINDOWS:
+                break
+            projected = dict(window)
+            slot_id = (
+                _bounded_rate_limit_text(projected.get("id"))
+                or f"window-{index + 1}"
+            )
+            if group_id:
+                projected["id"] = f"{group_id}:{slot_id}"[:MAX_RATE_LIMIT_TEXT]
+                projected["limitId"] = group_id
+            if group_name:
+                projected["limitName"] = group_name
+            windows.append(projected)
+
+    if not windows:
+        return default
+    metadata = {
+        key: value
+        for key in ("limitId", "limitName", "planType", "rateLimitReachedType")
+        if default and (value := default.get(key)) is not None
+    }
+    return rate_limit_snapshot({**metadata, "windows": windows})
+
+
+def codex_rate_limit_update_snapshot(
+    raw: Any, previous: Any
+) -> dict[str, Any] | None:
+    """Give a sparse single-limit Codex event the IDs used by the full read."""
+    if not isinstance(raw, dict):
+        return None
+    update = rate_limit_snapshot(raw.get("rateLimits"))
+    if not update:
+        return None
+    group_id = _bounded_rate_limit_text(update.get("limitId"))
+    group_name = _bounded_rate_limit_text(update.get("limitName"))
+    older = rate_limit_snapshot(previous)
+    existing_ids: dict[str, str] = {}
+    if older and group_id:
+        for window in older["windows"]:
+            window_id = _bounded_rate_limit_text(window.get("id"))
+            if not window_id:
+                continue
+            window_group_id = _bounded_rate_limit_text(window.get("limitId"))
+            if window_group_id == group_id:
+                existing_ids[window_id.rsplit(":", 1)[-1]] = window_id
+            elif older.get("limitId") == group_id and window_id in (
+                "primary",
+                "secondary",
+            ):
+                existing_ids[window_id] = window_id
+
+    windows: list[dict[str, int | float | str]] = []
+    for index, window in enumerate(update["windows"]):
+        projected = dict(window)
+        slot_id = (
+            _bounded_rate_limit_text(projected.get("id"))
+            or f"window-{index + 1}"
+        )
+        if group_id:
+            projected["id"] = existing_ids.get(slot_id, f"{group_id}:{slot_id}")[
+                :MAX_RATE_LIMIT_TEXT
+            ]
+            projected["limitId"] = group_id
+        if group_name:
+            projected["limitName"] = group_name
+        windows.append(projected)
+    metadata = {
+        key: value
+        for key in ("limitId", "limitName", "planType", "rateLimitReachedType")
+        if (value := update.get(key)) is not None
+    }
+    return rate_limit_snapshot({**metadata, "windows": windows})
 
 
 def merge_rate_limit_snapshots(previous: Any, incoming: Any) -> dict[str, Any] | None:

@@ -2264,6 +2264,7 @@ export function AccountUsageDock({ usage, providers: providerInfo, providerCatal
             const windowLabel = rateLimitLabel(window, index, windows.length);
             return <section key={window.id ?? `${window.windowDurationMins ?? "window"}-${index}`}>
               <div><strong>{windowLabel}</strong><span>{remaining}% left</span></div>
+              {window.limitName && <small className="account-limit-name">{window.limitName}</small>}
               <div className="context-meter" role="meter" aria-label={`${showProviderIdentity ? `${label} ` : ""}${windowLabel} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
               <small>{rateLimitResetLabel(window.resetsAt)}</small>
             </section>;

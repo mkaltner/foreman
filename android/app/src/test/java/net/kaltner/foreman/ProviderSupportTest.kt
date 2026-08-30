@@ -135,7 +135,13 @@ class ProviderSupportTest {
             available = true,
             rateLimits = RateLimitSnapshot(
                 windows = listOf(
-                    RateLimitWindow(id = "five-hour", usedPercent = 12.0, windowDurationMins = 300),
+                    RateLimitWindow(
+                        id = "five-hour",
+                        limitId = "codex_spark",
+                        limitName = "GPT-5.3-Codex-Spark",
+                        usedPercent = 12.0,
+                        windowDurationMins = 300,
+                    ),
                     RateLimitWindow(id = "weekly", usedPercent = 46.0, windowDurationMins = 10_080),
                     RateLimitWindow(id = "rolling", label = "Rolling month", usedPercent = 8.0),
                 ),
@@ -145,6 +151,8 @@ class ProviderSupportTest {
         val windows = accountUsageWindows(usage)
         assertEquals(3, windows.size)
         assertEquals("5-hour limit", rateLimitLabel(windows[0], 0, windows.size))
+        assertEquals("codex_spark", windows[0].limitId)
+        assertEquals("GPT-5.3-Codex-Spark", windows[0].limitName)
         assertEquals("Weekly limit", rateLimitLabel(windows[1], 1, windows.size))
         assertEquals("Rolling month", rateLimitLabel(windows[2], 2, windows.size))
         assertEquals("54% left", accountUsageRemaining(usage))

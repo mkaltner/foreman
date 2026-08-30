@@ -75,6 +75,8 @@ data class PermissionModeInfo(
 data class RateLimitWindow(
     val id: String? = null,
     val label: String? = null,
+    val limitId: String? = null,
+    val limitName: String? = null,
     val usedPercent: Double,
     val windowDurationMins: Long? = null,
     val resetsAt: Long? = null,
@@ -153,6 +155,8 @@ private fun RateLimitWindow.normalized(fallbackId: String): RateLimitWindow? {
     return copy(
         id = id?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null } ?: fallbackId,
         label = label?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+        limitId = limitId?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+        limitName = limitName?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
         usedPercent = usedPercent.coerceIn(0.0, 100.0),
         windowDurationMins = windowDurationMins?.takeIf { it > 0 }
             ?.coerceAtMost(MAX_RATE_LIMIT_DURATION_MINS),

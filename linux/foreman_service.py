@@ -30,6 +30,7 @@ from codex import (
     SEARCH_SNIPPETS_PER_SESSION,
     Codex,
     CodexError,
+    codex_rate_limit_update_snapshot,
     matching_snippet,
     merge_rate_limit_snapshots,
     normalize_event,
@@ -1185,8 +1186,8 @@ class Foreman:
             self.diagnostics.record("runtime.reconnected")
             return
         if method == "account/rateLimits/updated":
-            snapshot = rate_limit_snapshot(
-                (message.get("params") or {}).get("rateLimits")
+            snapshot = codex_rate_limit_update_snapshot(
+                message.get("params") or {}, self.account_usage.get("rateLimits")
             )
             if snapshot:
                 merged = merge_rate_limit_snapshots(

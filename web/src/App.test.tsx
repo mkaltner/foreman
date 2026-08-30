@@ -821,7 +821,7 @@ describe("session context usage", () => {
   it("shows all extensible windows while keeping the narrow dock concise", () => {
     render(<AccountUsageDock
       usage={{ providers: { codex: { available: true, rateLimits: { windows: [
-        { id: "short", usedPercent: 20, windowDurationMins: 300 },
+        { id: "short", limitId: "codex_spark", limitName: "GPT-5.3-Codex-Spark", usedPercent: 20, windowDurationMins: 300 },
         { id: "week", usedPercent: 60, windowDurationMins: 10_080 },
         { id: "rolling", usedPercent: 10, label: "Rolling month" },
         { id: "anonymous", usedPercent: 5 },
@@ -835,6 +835,7 @@ describe("session context usage", () => {
     fireEvent.click(trigger);
     const panel = screen.getByRole("complementary", { name: "Account usage" });
     expect(within(panel).getByText("5-hour limit")).toBeInTheDocument();
+    expect(within(panel).getByText("GPT-5.3-Codex-Spark")).toBeInTheDocument();
     expect(within(panel).getByText("Weekly limit")).toBeInTheDocument();
     expect(within(panel).getByText("Rolling month")).toBeInTheDocument();
     expect(within(panel).getByText("Usage limit 4")).toBeInTheDocument();

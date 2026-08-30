@@ -26,6 +26,8 @@ describe("account usage protocol compatibility and retention", () => {
       codex: { available: true, observedAt: Number.MAX_SAFE_INTEGER, rateLimits: { windows: Array.from({ length: 20 }, (_, index) => ({
         id: `window-${index}`,
         label: "x".repeat(150),
+        limitId: "limit-id".repeat(20),
+        limitName: "Provider model".repeat(20),
         usedPercent: index === 0 ? 140 : -4,
         windowDurationMins: Number.MAX_SAFE_INTEGER,
         resetsAt: Number.MAX_SAFE_INTEGER,
@@ -37,6 +39,8 @@ describe("account usage protocol compatibility and retention", () => {
     expect(windows).toHaveLength(16);
     expect(windows[0]).toMatchObject({ usedPercent: 100, windowDurationMins: 525_600, resetsAt: 253_402_300_799 });
     expect(windows[0].label).toHaveLength(100);
+    expect(windows[0].limitId).toHaveLength(100);
+    expect(windows[0].limitName).toHaveLength(100);
     expect(normalized?.providers).not.toHaveProperty("secret");
   });
 
