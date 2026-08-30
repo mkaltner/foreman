@@ -7,9 +7,12 @@ import java.util.Locale
 
 enum class SessionSearchStatus { All, Active, Waiting, Completed, Failed, Interrupted }
 enum class SessionDateRange { All, Today, Last7Days, Last30Days, Custom }
+enum class SessionDiscoveryScope { Normal, Archived }
 
 data class SessionSearchFilters(
     val query: String = "",
+    val scope: SessionDiscoveryScope = SessionDiscoveryScope.Normal,
+    val provider: String = "",
     val repository: String = "",
     val status: SessionSearchStatus = SessionSearchStatus.All,
     val dateRange: SessionDateRange = SessionDateRange.All,
@@ -142,6 +145,8 @@ internal fun filterSessions(
     val query = filters.query.trim().lowercase()
     val bounds = sessionDateBounds(filters, nowMillis)
     return source.values.mapNotNull { session ->
+        if (session.archived != (filters.scope == SessionDiscoveryScope.Archived)) return@mapNotNull null
+        if (filters.provider.isNotBlank() && sessionProvider(session) != filters.provider) return@mapNotNull null
         val key = session.providerKey()
         val hidden = key in normalizedHiddenIds
         if (filters.hiddenOnly != hidden) return@mapNotNull null
@@ -185,13 +190,16 @@ internal fun sessionDateBounds(
 }
 
 internal fun sessionSearchActive(filters: SessionSearchFilters): Boolean =
-    filters.query.isNotBlank() || filters.repository.isNotBlank() ||
+    filters.query.isNotBlank() || filters.scope == SessionDiscoveryScope.Archived ||
+        filters.provider.isNotBlank() || filters.repository.isNotBlank() ||
         filters.status != SessionSearchStatus.All || filters.dateRange != SessionDateRange.All ||
         filters.pinnedOnly || filters.hiddenOnly
 
 internal fun sessionSearchRequestKey(filters: SessionSearchFilters): String =
     listOf(
         filters.query.trim().lowercase(),
+        filters.scope.name,
+        filters.provider,
         filters.repository,
         filters.status.name,
         filters.dateRange.name,

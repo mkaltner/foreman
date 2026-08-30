@@ -114,11 +114,13 @@ one paired client can use every provider available on that host.
 - Search Codex session titles and bounded, normalized visible transcript text;
   Claude transcript search is not currently available.
 - Filter by repository/workspace, status, local date range, pins, and hidden sessions.
+- Select an explicitly capability-backed Archived filter for Codex, inspect its
+  safely normalized transcript read-only, and restore it with a deliberate action.
 - Organize sessions into collapsible repository and workspace groups whose
   expanded state is retained per host across browser and Android relaunches.
 - Pin important sessions or non-destructively hide noisy sessions per client.
-- List, read, start, resume, and delete sessions. Codex also supports archive;
-  Claude Code does not expose an archive operation.
+- List, read, start, resume, and delete sessions. Supported Codex versions also
+  expose archive discovery and restore; Claude Code does not expose an archive lifecycle.
 - Prompt and interrupt managed work; Codex additionally supports steering.
 - Stream live status, assistant deltas, tool activity, and progress updates.
 - Review command, file-change, and permission approvals inline, including
@@ -177,11 +179,16 @@ Foreman**.
 For development builds, open [`android`](android) in a current Android Studio.
 Android protects the persistent device token with Android Keystore.
 The Sessions screen provides expandable search and a compact filter dialog for
-repository/workspace, status, Today/7/30-day or custom date ranges, pinned-only,
+normal or archived provider scope, repository/workspace, provider, status,
+Today/7/30-day or custom date ranges, pinned-only,
 and Hidden management. Repository and non-Git workspace groups are collapsible,
 bubble active work upward, and preserve their state across app relaunches.
 Search choices, group state, pins, and hidden IDs use per-host local preferences;
 transcripts and image data are never stored there.
+Archived scope appears only when an enabled provider explicitly advertises it.
+Archived Codex cards are visually distinct, open read-only without resuming the
+thread, and replace active controls with Restore. Claude sessions never present
+archive or restore controls.
 Activity detail defaults to **Focused** on Android and web. It groups consecutive
 routine, successfully completed command/tool cards from finished turns behind
 an expandable summary. Current-turn, running, failed, denied, or unknown work,

@@ -89,6 +89,7 @@ CODEX_OPERATIONS = {
     "session.subscribe",
     "session.unsubscribe",
     "session.archive",
+    "session.restore",
     "session.delete",
     "session.settings",
     "turn.prompt",
@@ -231,6 +232,7 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        self.codex_archive_state: dict[str, bool] = {}
         self.session_activity_sources: dict[tuple[str, str], str] = {}
         for thread_id, settings in self.state.session_settings("codex").items():
             self.session_overlays[thread_id] = dict(settings)
@@ -771,6 +773,14 @@ class Foreman:
             "model.select",
             "permission.select",
         ]
+        if self.codex.supports("thread/archive"):
+            codex_capabilities.append("session.archive")
+        if self.codex.supports("thread/delete"):
+            codex_capabilities.append("session.delete")
+        if self.codex.supports("thread/list:archived"):
+            codex_capabilities.append("session.archived.list")
+        if self.codex.supports("thread/unarchive"):
+            codex_capabilities.append("session.restore")
         claude_capabilities = [
             "session.list",
             "session.read",
@@ -1179,6 +1189,13 @@ class Foreman:
             return
         if method == "foreman/runtime/reconnected":
             self.diagnostics.record("runtime.reconnected")
+            return
+        if method in ("thread/archived", "thread/unarchived"):
+            thread_id = (message.get("params") or {}).get("threadId")
+            if isinstance(thread_id, str) and thread_id:
+                await self.reconcile_codex_archive_state(
+                    thread_id, method == "thread/archived"
+                )
             return
         if method == "account/rateLimits/updated":
             snapshot = rate_limit_snapshot(
@@ -1649,7 +1666,11 @@ class Foreman:
             self.remember_session_settings(
                 "codex", projected["id"], discovered
             )
-        merged = {**projected, **self.session_overlays.get(projected["id"], {})}
+        merged = {
+            **projected,
+            **self.session_overlays.get(projected["id"], {}),
+            "capabilities": self.codex_session_capabilities(),
+        }
         return self.restore_session_timestamps(
             "codex",
             projected["id"],
@@ -1661,6 +1682,22 @@ class Foreman:
                 and self.timestamp(provider_activity) is not None
             ),
         )
+
+    def codex_session_capabilities(self, archived: bool = False) -> list[str]:
+        if archived:
+            return [
+                "session.read",
+                *(
+                    ["session.restore"]
+                    if self.codex.supports("thread/unarchive")
+                    else []
+                ),
+            ]
+        return [
+            "session.read",
+            *(["session.archive"] if self.codex.supports("thread/archive") else []),
+            *(["session.delete"] if self.codex.supports("thread/delete") else []),
+        ]
 
     @staticmethod
     def timestamp(value: Any) -> int | float | None:
@@ -1993,6 +2030,29 @@ class Foreman:
                 if client.authenticated
             ),
             return_exceptions=True,
+        )
+
+    async def reconcile_codex_archive_state(
+        self,
+        thread_id: str,
+        archived: bool,
+        projected: dict[str, Any] | None = None,
+    ) -> None:
+        """Broadcast one lifecycle transition for local or external changes."""
+        previous = self.codex_archive_state.get(thread_id)
+        self.codex_archive_state[thread_id] = archived
+        if previous is archived:
+            return
+        if archived:
+            self.discard_subscriptions(thread_id)
+        await self.broadcast_lifecycle(
+            thread_id,
+            "archived" if archived else "restored",
+            (
+                {**projected, "provider": "codex", "sessionId": thread_id}
+                if projected is not None
+                else None
+            ),
         )
 
     async def broadcast_account_usage(self) -> None:
@@ -2451,6 +2511,9 @@ class Foreman:
                     "steer": codex_enabled,
                     "interrupt": codex_enabled,
                     "archive": codex_enabled and self.codex.supports("thread/archive"),
+                    "archivedDiscovery": codex_enabled
+                    and self.codex.supports("thread/list:archived"),
+                    "restore": codex_enabled and self.codex.supports("thread/unarchive"),
                     "delete": codex_enabled and self.codex.supports("thread/delete"),
                     "approvals": codex_enabled,
                     "structuredInput": codex_enabled and bool(
@@ -2532,9 +2595,23 @@ class Foreman:
         if message_type == "provider.session.list":
             provider = self.required_provider(payload)
             self.require_provider_enabled(provider)
+            scope = payload.get("scope", "normal")
+            if scope not in ("normal", "archived"):
+                raise ValueError("session scope is unavailable")
+            archived = scope == "archived"
             if provider == "codex":
+                if archived and not self.codex.supports("thread/list:archived"):
+                    raise CapabilityError(
+                        "The installed Codex version does not support archived session discovery"
+                    )
                 sessions = []
-                for item in await self.codex.list_threads():
+                items = await (
+                    self.codex.list_threads(archived=True)
+                    if archived
+                    else self.codex.list_threads()
+                )
+                for item in items:
+                    self.codex_archive_state[item["id"]] = archived
                     projected = self.projected_session(item)
                     sessions.append(
                         {
@@ -2543,12 +2620,23 @@ class Foreman:
                             "sessionId": item["id"],
                             "source": "managed",
                             "state": projected.get("status", "idle"),
+                            "archived": archived,
+                            "readOnly": archived,
+                            "capabilities": (
+                                ["session.read", "session.restore"]
+                                if archived and self.codex.supports("thread/unarchive")
+                                else ["session.read"] if archived else projected.get("capabilities", [])
+                            ),
                         }
                     )
                 return {
                     "provider": provider,
                     "sessions": self.sort_session_projections(sessions),
                 }
+            if archived:
+                raise CapabilityError(
+                    "Claude Code does not expose supported archived session discovery"
+                )
             return {
                 "provider": provider,
                 "sessions": await self.discover_claude_sessions(),
@@ -2558,9 +2646,20 @@ class Foreman:
             self.require_provider_enabled(provider)
             session_id = required_text(payload, "sessionId", 160)
             if provider == "codex":
+                archived = payload.get("scope") == "archived" or payload.get("archived") is True
+                if archived and not self.codex.supports("thread/list:archived"):
+                    raise CapabilityError(
+                        "The installed Codex version does not support archived session discovery"
+                    )
                 projected = self.projected_session(
-                    await self.codex.read_thread(session_id), True
+                    await (
+                        self.codex.read_archived_thread(session_id)
+                        if archived
+                        else self.codex.read_thread(session_id)
+                    ),
+                    True,
                 )
+                self.codex_archive_state[session_id] = archived
                 return {
                     "session": {
                         **projected,
@@ -2568,6 +2667,13 @@ class Foreman:
                         "sessionId": session_id,
                         "source": "managed",
                         "state": projected.get("status", "idle"),
+                        "archived": archived,
+                        "readOnly": archived,
+                        "capabilities": (
+                            ["session.read", "session.restore"]
+                            if archived and self.codex.supports("thread/unarchive")
+                            else ["session.read"] if archived else projected.get("capabilities", [])
+                        ),
                     }
                 }
             repository_id = required_text(payload, "repositoryId", 500)
@@ -2857,11 +2963,34 @@ class Foreman:
             pending = await self.codex.respond_input(input_id, input_response)
             return {"accepted": True, "input": pending}
         if message_type == "session.list":
+            archived = payload.get("archived") is True
+            if archived and not self.codex.supports("thread/list:archived"):
+                raise CapabilityError(
+                    "The installed Codex version does not support archived session discovery"
+                )
+            items = await (
+                self.codex.list_threads(archived=True)
+                if archived
+                else self.codex.list_threads()
+            )
+            for item in items:
+                self.codex_archive_state[item["id"]] = archived
             return {
                 "sessions": self.sort_session_projections(
                     [
-                        self.projected_session(item)
-                        for item in await self.codex.list_threads()
+                        {
+                            **self.projected_session(item),
+                            "archived": archived,
+                            "readOnly": archived,
+                            "capabilities": (
+                                ["session.read", "session.restore"]
+                                if archived and self.codex.supports("thread/unarchive")
+                                else ["session.read"]
+                                if archived
+                                else self.codex_session_capabilities()
+                            ),
+                        }
+                        for item in items
                     ]
                 )
             }
@@ -2878,10 +3007,26 @@ class Foreman:
                     client.search_task = None
         if message_type == "session.read":
             thread_id = required_text(payload, "sessionId", 100)
-            return {
-                "session": self.projected_session(
-                    await self.codex.read_thread(thread_id), True
+            archived = payload.get("archived") is True
+            if archived and not self.codex.supports("thread/list:archived"):
+                raise CapabilityError(
+                    "The installed Codex version does not support archived session discovery"
                 )
+            projected = self.projected_session(
+                await (
+                    self.codex.read_archived_thread(thread_id)
+                    if archived
+                    else self.codex.read_thread(thread_id)
+                ),
+                True,
+            )
+            return {
+                "session": {
+                    **projected,
+                    "archived": archived,
+                    "readOnly": archived,
+                    "capabilities": self.codex_session_capabilities(archived),
+                }
             }
 
         if message_type == "session.start":
@@ -2926,17 +3071,32 @@ class Foreman:
             async with self.thread_lock(thread_id):
                 await self.require_inactive_session(thread_id)
                 await self.codex.archive_thread(thread_id)
-            self.discard_subscriptions(thread_id)
-            self.session_overlays.pop(thread_id, None)
-            self.session_activity_sources.pop(("codex", thread_id), None)
-            self.state.forget_session_token_usage(thread_id)
-            self.state.forget_session_settings("codex", thread_id)
-            await self.flush_session_timestamp_persistence()
-            await asyncio.to_thread(
-                self.state.forget_session_timestamps, "codex", thread_id
-            )
-            await self.broadcast_lifecycle(thread_id, "removed")
+            await self.reconcile_codex_archive_state(thread_id, True)
             return {"archived": True}
+        if message_type == "session.restore":
+            thread_id = required_text(payload, "sessionId", 100)
+            if not self.codex.supports("thread/unarchive"):
+                raise CapabilityError(
+                    "The installed Codex version does not support session restoration"
+                )
+            async with self.thread_lock(thread_id):
+                if self.codex_archive_state.get(thread_id) is False:
+                    raise ValueError("session is not archived")
+                thread = await self.codex.unarchive_thread(thread_id)
+                projected = self.projected_session(thread)
+                await self.reconcile_codex_archive_state(thread_id, False, projected)
+            return {
+                "restored": True,
+                "session": {
+                    **projected,
+                    "provider": "codex",
+                    "sessionId": thread_id,
+                    "source": "managed",
+                    "state": projected.get("status", "idle"),
+                    "archived": False,
+                    "readOnly": False,
+                },
+            }
         if message_type == "session.delete":
             thread_id = required_text(payload, "sessionId", 100)
             if payload.get("confirm") is not True:
@@ -2949,6 +3109,7 @@ class Foreman:
             self.session_activity_sources.pop(("codex", thread_id), None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
+            self.codex_archive_state.pop(thread_id, None)
             await self.flush_session_timestamp_persistence()
             await asyncio.to_thread(
                 self.state.forget_session_timestamps, "codex", thread_id
@@ -3094,11 +3255,31 @@ class Foreman:
             raise ValueError("limit must be a positive integer")
         limit = min(raw_limit, MAX_SEARCH_RESULTS)
 
-        threads = await self.codex.list_threads()
+        archived = payload.get("archived") is True
+        if archived and not self.codex.supports("thread/list:archived"):
+            raise CapabilityError(
+                "The installed Codex version does not support archived session search"
+            )
+        threads = await (
+            self.codex.list_threads(archived=True)
+            if archived
+            else self.codex.list_threads()
+        )
         repository_roots = await asyncio.to_thread(self.search_repository_roots)
         candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
         for thread in threads:
-            summary = self.projected_session(thread)
+            summary = {
+                **self.projected_session(thread),
+                "archived": archived,
+                "readOnly": archived,
+                "capabilities": (
+                    ["session.read", "session.restore"]
+                    if archived and self.codex.supports("thread/unarchive")
+                    else ["session.read"]
+                    if archived
+                    else self.codex_session_capabilities()
+                ),
+            }
             identity = self.search_repository_identity(
                 summary.get("repository", ""), repository_roots
             )
@@ -3351,7 +3532,12 @@ class Foreman:
             )
 
     def thread_lock(self, thread_id: str) -> asyncio.Lock:
-        return self.thread_locks.setdefault(thread_id, asyncio.Lock())
+        identity = (
+            thread_id
+            if thread_id.startswith(("codex:", "claude-code:"))
+            else self.provider_subscription("codex", thread_id)
+        )
+        return self.thread_locks.setdefault(identity, asyncio.Lock())
 
     def discard_subscriptions(self, thread_id: str) -> None:
         for connected in self.clients:

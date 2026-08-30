@@ -366,6 +366,9 @@ class PreferenceStore(context: Context, hostId: String?) {
             model = preferences.getString("model", null),
             reasoningEffort = preferences.getString("reasoningEffort", null),
             searchQuery = preferences.getString("sessionSearchQuery", "").orEmpty().take(500),
+            searchScope = enumPreference("sessionSearchScope", SessionDiscoveryScope.Normal),
+            searchProvider = preferences.getString("sessionSearchProvider", "").orEmpty()
+                .takeIf { it.isBlank() || supportedProvider(it) }.orEmpty(),
             searchRepository = preferences.getString("sessionSearchRepository", "").orEmpty(),
             searchStatus = enumPreference("sessionSearchStatus", SessionSearchStatus.All),
             searchDateRange = enumPreference("sessionSearchDateRange", SessionDateRange.All),
@@ -432,6 +435,8 @@ class PreferenceStore(context: Context, hostId: String?) {
     fun setSessionSearch(filters: SessionSearchFilters) {
         preferences.edit()
             .putString("sessionSearchQuery", filters.query.take(500))
+            .putString("sessionSearchScope", filters.scope.name)
+            .putString("sessionSearchProvider", filters.provider)
             .putString("sessionSearchRepository", filters.repository)
             .putString("sessionSearchStatus", filters.status.name)
             .putString("sessionSearchDateRange", filters.dateRange.name)
@@ -481,6 +486,8 @@ data class UiPreferences(
     val model: String? = null,
     val reasoningEffort: String? = null,
     val searchQuery: String = "",
+    val searchScope: SessionDiscoveryScope = SessionDiscoveryScope.Normal,
+    val searchProvider: String = "",
     val searchRepository: String = "",
     val searchStatus: SessionSearchStatus = SessionSearchStatus.All,
     val searchDateRange: SessionDateRange = SessionDateRange.All,

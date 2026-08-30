@@ -367,6 +367,18 @@ class Codex:
                 schema = json.loads(Path(directory, "ClientRequest.json").read_text())
             except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
                 return set()
+            try:
+                notification_schema = json.loads(
+                    Path(directory, "ServerNotification.json").read_text()
+                )
+            except (OSError, json.JSONDecodeError):
+                notification_schema = {}
+            try:
+                thread_list = json.loads(
+                    Path(directory, "v2", "ThreadListParams.json").read_text()
+                )
+            except (OSError, json.JSONDecodeError):
+                thread_list = {}
 
         methods: set[str] = set()
 
@@ -384,6 +396,12 @@ class Codex:
                     visit(child)
 
         visit(schema)
+        visit(notification_schema)
+        if isinstance(thread_list.get("properties", {}).get("archived"), dict):
+            # The list method predates its archived scope. Keep field support
+            # explicit so older Codex binaries fail closed instead of being
+            # identified by provider name or by thread/list alone.
+            methods.add("thread/list:archived")
         return methods
 
     async def stop(self) -> None:
@@ -868,7 +886,7 @@ class Codex:
             self._stderr.append(line.decode(errors="replace").rstrip())
             self._stderr = self._stderr[-100:]
 
-    async def list_threads(self) -> list[dict[str, Any]]:
+    async def list_threads(self, archived: bool = False) -> list[dict[str, Any]]:
         threads: list[dict[str, Any]] = []
         cursor: str | None = None
         seen_cursors: set[str] = set()
@@ -878,6 +896,8 @@ class Codex:
                 "sortKey": "recency_at",
                 "sortDirection": "desc",
             }
+            if archived:
+                params["archived"] = True
             if cursor:
                 params["cursor"] = cursor
             result = await self.request("thread/list", params)
@@ -946,6 +966,10 @@ class Codex:
 
     async def search_thread(self, thread_id: str) -> dict[str, Any]:
         """Read authoritative history without subscribing or resuming the thread."""
+        return await self._read_thread_with_history(thread_id)
+
+    async def read_archived_thread(self, thread_id: str) -> dict[str, Any]:
+        """Read archived history without loading, resuming, or subscribing it."""
         return await self._read_thread_with_history(thread_id)
 
     async def start_thread(
@@ -1197,8 +1221,15 @@ class Codex:
         await self.request("thread/archive", {"threadId": thread_id})
         self._loaded.discard(thread_id)
         self._subscribed.discard(thread_id)
-        self._routes.pop(thread_id, None)
-        self._access_levels.pop(thread_id, None)
+
+    async def unarchive_thread(self, thread_id: str) -> dict[str, Any]:
+        result = await self.request("thread/unarchive", {"threadId": thread_id})
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            # Keep the response useful across compatible versions whose
+            # unarchive result doesn't include the full thread projection.
+            return await self.read_archived_thread(thread_id)
+        return self._with_route(thread)
 
     async def delete_thread(self, thread_id: str) -> None:
         await self.request("thread/delete", {"threadId": thread_id})

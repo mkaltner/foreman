@@ -48,7 +48,7 @@ Implemented types:
 - `session.presence`;
 - `session.list`, `session.search`, `session.read`, `session.start`, `session.resume`,
   `session.subscribe`, `session.unsubscribe`, `session.settings`, `session.archive`,
-  `session.delete`;
+  `session.restore`, `session.delete`;
 - `turn.prompt`, `turn.steer`, `turn.interrupt`;
 - `approval.list`, `approval.respond`;
 - `input.list`, `input.respond`.
@@ -85,6 +85,14 @@ and publishes refreshed `provider.event` and `usage.event` projections. At least
 one provider must remain enabled. A provider with active or waiting work cannot
 be disabled. Disabled providers remain in the catalog but expose no capabilities;
 their sessions and account usage are omitted without deleting provider data.
+
+Archived Codex support is advertised explicitly and independently. A provider
+catalog entry includes `session.archived.list` only when the installed schema
+defines the `archived` field for `thread/list`, and includes `session.restore`
+only when it advertises `thread/unarchive`. `hello.capabilities` exposes the
+matching `archivedDiscovery` and `restore` compatibility flags. Provider name
+alone never enables either surface; disabled or unavailable providers expose no
+capability. Claude Code advertises neither capability.
 
 Every provider-aware session projection and event contains `provider` and
 `sessionId`. Client identity is `hostId + provider + sessionId`; durable web
@@ -135,6 +143,16 @@ It permanently removes managed or external resumable history and its
 subagent-transcript directory. The SDK has no archive/unarchive operation, so
 Foreman does not present a Claude archive action. Claude session search, images,
 notification events, and approval responses are not supported by this surface.
+
+Codex `provider.session.list` accepts `scope: "normal" | "archived"`, defaulting
+to `normal`. Normal discovery never returns archived threads. Archived scope is
+a separate, bounded `thread/list` traversal with `archived: true`; it is not
+combined with the normal cursor stream. Each archived summary has
+`archived: true`, `readOnly: true`, and only the advertised `session.read` and
+optional `session.restore` capabilities. `provider.session.read` with archived
+scope reads the transcript without resuming or subscribing. Direct clients may
+use the equivalent additive `archived: true` fields on the unprefixed
+`session.list`, `session.read`, and `session.search` operations.
 
 Claude model listing is an adapter-supported, non-dynamic list containing
 `sonnet` and `haiku`. Permission listing returns the exact SDK values `default`,
@@ -258,7 +276,7 @@ An installed-contract MCP form with an empty `properties` object is treated as
 a zero-field confirmation: Allow sends `action: "accept"` with empty content,
 while Decline and Cancel retain their distinct contract actions.
 
-`session.search` is authenticated and accepts `query`, one canonical
+`session.search` is authenticated and accepts `query`, optional `archived`, one canonical
 `repository`/workspace path or `null`, a `statuses` array, `dateFrom`, `dateTo`,
 and a requested `limit`. Search is case-insensitive plain substring matching.
 It matches compact titles, canonical workspace paths, and normalized visible
@@ -268,13 +286,24 @@ summary projections plus at most three 200-character snippets; they never
 contain full histories or image data. The server caps results at 100 and lazy
 transcript reads at 100 candidates, cancels an older in-flight search from the
 same client, and maintains no persistent index or transcript mirror.
+When `archived: true`, its candidates come only from the separately bounded
+archived Codex list and transcript reads use the same non-resuming history path,
+normalization, candidate/read/result/snippet limits, and privacy exclusions.
 
-`session.archive` moves an inactive Codex thread out of the active list and is
-reversible through Codex's `thread/unarchive` API. `session.delete` requires
+`session.archive` moves an inactive Codex thread out of the active list.
+`session.restore` is an explicit authenticated operation that sends exactly one
+Codex `thread/unarchive`, retains provider/session identity, and returns the
+restored normal summary. `thread/archived` and `thread/unarchived` notifications
+produce `session.event` lifecycle actions `archived` and `restored`; clients
+refetch the applicable provider scope, so external changes, reconnects, and
+service restarts converge on Codex's authoritative lists without replay.
+`session.delete` requires
 `confirm: true` and permanently deletes the inactive thread plus its spawned
 descendants. Foreman rejects both operations while a session is working or
 waiting for input. Per-session locks serialize this check and mutation with
-prompt, steer, and interrupt requests from other connected Foreman clients.
+prompt, steer, interrupt, archive, restore, and delete requests from other
+connected Foreman clients. Archive, client-local Hide, host-state Forget, and
+permanent Delete remain distinct operations.
 
 `model.list` returns only picker fields from Codex's installed catalog.
 `access.list` returns the access levels allowed by Codex's installed permission

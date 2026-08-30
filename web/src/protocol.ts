@@ -159,6 +159,8 @@ export interface SessionSummary {
   source?: "managed" | "external";
   state?: string;
   capabilities?: string[];
+  archived?: boolean;
+  readOnly?: boolean;
   liveAttached?: boolean;
   externalLimitation?: string | null;
   activeTurnStartedAt?: number | null;
@@ -374,7 +376,7 @@ export interface SessionEvent {
   accessLevel?: string;
   permissionMode?: string;
   settingsRevision?: number;
-  action?: "created" | "removed";
+  action?: "created" | "archived" | "restored" | "removed";
   session?: SessionSummary;
   startedAt?: number | null;
   completedAt?: number | null;
