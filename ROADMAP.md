@@ -16,6 +16,12 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
+- [ ] [#52 Preserve session activity times across service
+  restarts](https://github.com/mkaltner/foreman/issues/52).
+- [ ] [#73 Hide redundant repository metadata on grouped session
+  cards](https://github.com/mkaltner/foreman/issues/73).
+- [ ] [#74 View and restore archived sessions from
+  filters](https://github.com/mkaltner/foreman/issues/74).
 - [ ] [#56 Replace accent selection with coherent
   themes](https://github.com/mkaltner/foreman/issues/56).
 
@@ -29,6 +35,11 @@ update the applicable boundary documentation before implementation starts.
   Play Store](https://github.com/mkaltner/foreman/issues/59).
 
 ## Later — product foundations
+
+- [ ] [#71 Show and retain every provider account-usage
+  limit](https://github.com/mkaltner/foreman/issues/71).
+- [ ] [#67 Show transient success feedback on copy
+  actions](https://github.com/mkaltner/foreman/issues/67).
 
 ### Architecture gate: [#60 First-class project management](https://github.com/mkaltner/foreman/issues/60)
 
@@ -67,8 +78,7 @@ adapter and complete web/Android parity.
   ([PR #68](https://github.com/mkaltner/foreman/pull/68)).
 - [x] Remember the last-opened session per host across navigation and relaunch
   ([PR #66](https://github.com/mkaltner/foreman/pull/66)).
-- [x] Preserve provider session activity and terminal timestamps across
-  service restarts
+- [x] Add durable provider session timestamp storage and restoration groundwork
   ([PR #64](https://github.com/mkaltner/foreman/pull/64)).
 - [x] Consolidate Android monitoring, attention, and foreground outcomes into
   one user-visible notification
