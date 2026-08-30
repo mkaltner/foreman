@@ -66,7 +66,7 @@ function forgetButton(displayName: string): HTMLButtonElement {
 
 function mockConnectedState(
   sessions: SessionSummary[],
-  providers: Array<{ id: "codex" | "claude-code"; displayName: string; enabled: boolean; available: boolean }> = [
+  providers: Array<{ id: "codex" | "claude-code"; displayName: string; enabled: boolean; available: boolean; capabilities?: string[] }> = [
     { id: "codex", displayName: "Codex", enabled: true, available: true },
   ],
   read: (session: SessionSummary) => Promise<{ session: SessionSummary }> = async (session) => ({ session }),
@@ -83,20 +83,30 @@ function mockConnectedState(
   clientMock.request.mockImplementation(async (type: string, payload?: Record<string, unknown>) => {
     switch (type) {
       case "provider.list":
-        return { providers: providers.map((provider) => ({ ...provider, capabilities: [], limitations: [] })) };
+        return { providers: providers.map((provider) => ({ ...provider, capabilities: provider.capabilities ?? [], limitations: [] })) };
       case "approval.list": return { approvals: [] };
       case "input.list": return { inputs: [] };
       case "provider.session.list":
         if (failedSessionLists.has(payload?.provider as "codex" | "claude-code")) {
           throw new Error("Provider session list is temporarily unavailable");
         }
-        return { sessions: sessions.filter((session) => (session.provider ?? "codex") === payload?.provider) };
+        return { sessions: sessions.filter((session) =>
+          (session.provider ?? "codex") === payload?.provider &&
+          Boolean(session.archived) === (payload?.scope === "archived")
+        ) };
       case "provider.session.read": {
         const session = sessions.find((candidate) =>
           candidate.id === payload?.sessionId && (candidate.provider ?? "codex") === payload?.provider
         );
         if (!session) throw new Error("Session is missing");
         return read(session);
+      }
+      case "session.restore": {
+        const session = sessions.find((candidate) =>
+          candidate.id === payload?.sessionId && (candidate.provider ?? "codex") === "codex"
+        );
+        if (!session) throw new Error("Session is missing");
+        return { restored: true, session: { ...session, archived: false, readOnly: false, capabilities: ["session.read", "session.archive", "session.delete"] } };
       }
       case "model.list": return { models: [] };
       case "access.list": return { levels: [] };
@@ -220,6 +230,134 @@ describe("host navigation history", () => {
 
     await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
     expect(window.location.pathname).toBe(`/sessions/codex/${session.id}`);
+  });
+
+  it("deep-opens an archived transcript through the read-only provider scope after reload", async () => {
+    const archived: SessionSummary = {
+      provider: "codex",
+      id: "archived-reopen",
+      repository: "/projects/foreman",
+      title: "Archived reopen",
+      status: "idle",
+      archived: true,
+      readOnly: true,
+      capabilities: ["session.read", "session.restore"],
+      messages: [{ id: "answer", kind: "assistant", text: "Safe archived transcript" }],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: archived.id });
+    window.history.replaceState(null, "", `/sessions/codex/${archived.id}?host=${home.id}&scope=archived`);
+    mockConnectedState([archived], [{
+      id: "codex",
+      displayName: "Codex",
+      enabled: true,
+      available: true,
+      capabilities: ["session.archived.list", "session.restore"],
+    }]);
+
+    const first = render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(archived.title));
+    expect(screen.getByText("Archived · Read only")).toBeInTheDocument();
+    expect(document.querySelector(".composer")).toBeNull();
+    expect(clientMock.request).toHaveBeenCalledWith("provider.session.list", { provider: "codex", scope: "archived" });
+    expect(clientMock.request).toHaveBeenCalledWith("provider.session.read", {
+      provider: "codex",
+      sessionId: archived.id,
+      scope: "archived",
+    });
+    expect(clientMock.request).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(clientMock.request).not.toHaveBeenCalledWith("provider.session.subscribe", expect.objectContaining({ sessionId: archived.id }));
+
+    first.unmount();
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(archived.title));
+    expect(screen.getByText("Safe archived transcript")).toBeInTheDocument();
+  });
+
+  it("restores an archived card once and moves the same identity to normal scope", async () => {
+    const archived: SessionSummary = {
+      provider: "codex",
+      id: "restore-once",
+      repository: "/projects/foreman",
+      title: "Restore once",
+      status: "idle",
+      archived: true,
+      readOnly: true,
+      capabilities: ["session.read", "session.restore"],
+      messages: [],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveRememberedSession({ hostId: home.id, provider: "codex", sessionId: archived.id });
+    window.history.replaceState(null, "", `/sessions/codex/${archived.id}?host=${home.id}&scope=archived`);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockConnectedState([archived], [{
+      id: "codex",
+      displayName: "Codex",
+      enabled: true,
+      available: true,
+      capabilities: ["session.archived.list", "session.restore"],
+    }]);
+    render(<App />);
+    await screen.findByText("Archived · Read only");
+    const restore = document.querySelector<HTMLButtonElement>(".archived-read-only button")!;
+
+    fireEvent.click(restore);
+    fireEvent.click(restore);
+
+    await waitFor(() => expect(screen.queryByText("Archived · Read only")).not.toBeInTheDocument());
+    expect(clientMock.request.mock.calls.filter(([type]) => type === "session.restore")).toHaveLength(1);
+    expect(document.querySelectorAll(".session-card h3")).toHaveLength(1);
+    await waitFor(() => expect(window.location.search).not.toContain("scope=archived"));
+    expect(loadRememberedSession(home.id)).toEqual({ hostId: home.id, provider: "codex", sessionId: archived.id });
+  });
+
+  it("reconciles external archive and restore events across provider scopes", async () => {
+    const session: SessionSummary = {
+      provider: "codex",
+      id: "external-lifecycle",
+      repository: "/projects/foreman",
+      title: "External lifecycle",
+      status: "idle",
+      capabilities: ["session.read", "session.archive", "session.delete"],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([session], [{
+      id: "codex",
+      displayName: "Codex",
+      enabled: true,
+      available: true,
+      capabilities: ["session.archived.list", "session.restore"],
+    }]);
+    render(<App />);
+    await screen.findByRole("heading", { name: session.title });
+
+    session.archived = true;
+    session.readOnly = true;
+    session.capabilities = ["session.read", "session.restore"];
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: { provider: "codex", sessionId: session.id, event: { kind: "lifecycle", action: "archived" } },
+    }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: session.title })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByText("Filters"));
+    fireEvent.change(screen.getByLabelText("Sessions"), { target: { value: "archived" } });
+    await waitFor(() => expect(screen.getByRole("heading", { name: session.title })).toBeInTheDocument());
+    expect(document.querySelector(".status-pill.archived")).toBeInTheDocument();
+
+    session.archived = false;
+    session.readOnly = false;
+    session.capabilities = ["session.read", "session.archive", "session.delete"];
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: { provider: "codex", sessionId: session.id, event: { kind: "lifecycle", action: "restored" } },
+    }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: session.title })).not.toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Sessions"), { target: { value: "normal" } });
+    await waitFor(() => expect(screen.getByRole("heading", { name: session.title })).toBeInTheDocument());
+    expect(document.querySelector(".status-pill.archived")).not.toBeInTheDocument();
   });
 
   it("uses server activity for live work and ignores metadata observation time", async () => {
@@ -783,6 +921,37 @@ describe("session card repository context", () => {
     expect(screen.getByText("/home/operator")).toBeInTheDocument();
     expect(screen.getByLabelText("Unpin Repository work")).toBeInTheDocument();
   });
+
+  it("preserves repository grouping and collapsed state in Archived scope", () => {
+    const restore = vi.fn();
+    const archivedResults = results.map((item) => ({
+      ...item,
+      session: {
+        ...item.session,
+        status: "idle",
+        archived: true,
+        readOnly: true,
+        capabilities: ["session.read", "session.restore"],
+      },
+    }));
+    render(<SessionList
+      {...baseProps}
+      results={archivedResults}
+      filters={{ ...DEFAULT_SESSION_FILTERS, scope: "archived" }}
+      groupByRepository
+      onRestore={restore}
+    />);
+
+    const group = screen.getByRole("button", { name: /Collapse Repository: foreman/ });
+    expect(group).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText("Archived").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("heading", { name: "Repository work" }).closest("article")!).getByRole("button", { name: "Restore" }));
+    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ id: "repository-session", archived: true }));
+    fireEvent.click(group);
+    expect(group).toHaveAttribute("aria-expanded", "false");
+  });
 });
 
 describe("user message links", () => {
@@ -1220,6 +1389,48 @@ describe("conversation drafts", () => {
     view.rerender(renderConversation(session("two"), ""));
 
     expect(screen.getByRole("textbox")).not.toBe(firstComposer);
+  });
+
+  it("renders archived transcripts read-only and suppresses active-session mutations", () => {
+    const restore = vi.fn();
+    render(<ConversationView
+      session={{
+        ...session("archived"),
+        archived: true,
+        readOnly: true,
+        capabilities: ["session.read", "session.restore"],
+        messages: [{ id: "answer", kind: "assistant", text: "Archived answer" }],
+      }}
+      approvals={[{
+        id: "approval-archived",
+        sessionId: "archived",
+        itemId: "answer",
+        type: "command",
+        title: "Must not be actionable",
+        createdAt: 1,
+        status: "pending",
+        availableDecisions: [],
+      }]}
+      models={[{ id: "gpt-test", displayName: "Test", reasoningEfforts: [], visible: true, isDefault: true }]}
+      accessLevels={[{ id: "ask", displayName: "Ask" }]}
+      connected
+      highlightItemId={null}
+      focusedApprovalId={null}
+      draft="stale draft"
+      onDraftChange={vi.fn()}
+      onBack={vi.fn()}
+      onRequest={vi.fn().mockResolvedValue({})}
+      onError={vi.fn()}
+      onRestore={restore}
+    />);
+
+    expect(screen.getByText("Archived answer")).toBeInTheDocument();
+    expect(screen.getByText("Archived · Read only")).toBeInTheDocument();
+    expect(screen.queryByText("Must not be actionable")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(restore).toHaveBeenCalledOnce();
   });
 
   it("keeps following live messages when the saved scroll position updates", () => {

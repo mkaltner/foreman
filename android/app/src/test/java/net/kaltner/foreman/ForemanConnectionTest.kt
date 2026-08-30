@@ -986,6 +986,11 @@ class ForemanConnectionTest {
                 loading = true,
                 submitting = true,
                 error = "Old connection error",
+                archivedSessions = listOf(
+                    SessionSummary("archived", "/repo", "Archived", "idle", archived = true),
+                ),
+                archivedLoading = true,
+                archivedError = "Old archived error",
                 showNewSession = true,
                 themeMode = ThemeMode.Dark,
                 monitorActiveTurns = true,
@@ -1003,6 +1008,9 @@ class ForemanConnectionTest {
         assertFalse(forgotten.loading)
         assertFalse(forgotten.submitting)
         assertNull(forgotten.error)
+        assertTrue(forgotten.archivedSessions.isEmpty())
+        assertFalse(forgotten.archivedLoading)
+        assertNull(forgotten.archivedError)
         assertFalse(forgotten.showNewSession)
         assertNull(forgotten.pendingSessionAction)
         assertTrue(forgotten.capabilities.isEmpty())
@@ -1137,6 +1145,7 @@ class ForemanConnectionTest {
         assertFalse(sessionRouteEditable(session.copy(status = "working")))
         assertFalse(sessionRouteEditable(session.copy(status = "waiting")))
         assertFalse(sessionRouteEditable(session.copy(status = "stopping")))
+        assertFalse(sessionRouteEditable(session.copy(archived = true, readOnly = true)))
     }
 
     @Test
@@ -1241,12 +1250,18 @@ class ForemanConnectionTest {
                   "title":"First prompt",
                   "status":"working",
                   "lastActivity":123,
-                  "attention":false
+                  "attention":false,
+                  "archived":true,
+                  "readOnly":true,
+                  "capabilities":["session.read","session.restore"]
                 }
                 """.trimIndent(),
             )
         assertEquals("thread-1", session.id)
         assertEquals("working", session.status)
+        assertTrue(session.archived)
+        assertTrue(session.readOnly)
+        assertEquals(listOf("session.read", "session.restore"), session.capabilities)
         assertEquals(emptyList<ConversationItem>(), session.messages)
         assertEquals("", session.activityLabel)
         assertEquals("", session.activityText)
@@ -1514,6 +1529,18 @@ class ForemanConnectionTest {
         assertTrue(sessionActionCanBeConfirmed(true, setOf("delete"), SessionAction.Delete))
         assertFalse(sessionActionCanBeConfirmed(false, setOf("delete"), SessionAction.Delete))
         assertFalse(sessionActionCanBeConfirmed(true, emptySet(), SessionAction.Delete))
+        val archived = SessionSummary(
+            id = "archived",
+            repository = "/repo",
+            title = "Archived",
+            status = "idle",
+            archived = true,
+            readOnly = true,
+            capabilities = listOf("session.read", "session.restore"),
+        )
+        assertTrue(sessionActionSupported(archived, emptySet(), SessionAction.Restore))
+        assertFalse(sessionActionSupported(archived, setOf("archive", "delete"), SessionAction.Archive))
+        assertFalse(sessionActionSupported(archived, setOf("archive", "delete"), SessionAction.Delete))
     }
 
     @Test
@@ -2033,6 +2060,62 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun archivedScopeStaysDisjointAndComposesProviderRepositoryDateSearchAndGrouping() {
+        val repositories = listOf(RepositoryInfo("foreman", "foreman", "foreman", "main", false))
+        val normal = SessionSummary(
+            id = "normal",
+            repository = "/projects/foreman",
+            title = "Socket work",
+            status = "idle",
+            lastActivity = 1_700_000_100,
+            provider = PROVIDER_CODEX,
+        )
+        val archived = normal.copy(
+            id = "archived",
+            title = "Archived socket work",
+            lastActivity = 1_700_000_200,
+            archived = true,
+            readOnly = true,
+            capabilities = listOf("session.read", "session.restore"),
+        )
+        assertEquals(
+            listOf("normal"),
+            filterSessions(
+                listOf(normal, archived),
+                SessionSearchFilters(),
+                emptySet(),
+                emptySet(),
+                emptyList(),
+                repositories,
+                "/projects",
+            ).map { it.session.id },
+        )
+
+        val filters = SessionSearchFilters(
+            query = "socket",
+            scope = SessionDiscoveryScope.Archived,
+            provider = PROVIDER_CODEX,
+            repository = "/projects/foreman",
+            status = SessionSearchStatus.Completed,
+            dateRange = SessionDateRange.Custom,
+            dateFrom = "2023-11-14",
+            dateTo = "2023-11-15",
+        )
+        val visible = filterSessions(
+            listOf(normal, archived),
+            filters,
+            emptySet(),
+            emptySet(),
+            emptyList(),
+            repositories,
+            "/projects",
+            nowMillis = 1_700_000_400_000,
+        )
+        assertEquals(listOf("archived"), visible.map { it.session.id })
+        assertEquals("archived", repositorySessionGroups(visible, repositories, "/projects").single().sessions.single().session.id)
+    }
+
+    @Test
     fun sessionSearchKeepsPinsFirstAndHiddenSessionsRestorable() {
         val sessions = listOf(
             SessionSummary("active", "/repo", "Active", "working", 300),
@@ -2192,6 +2275,14 @@ class ForemanConnectionTest {
         assertFalse(
             sessionSearchRequestKey(base) ==
                 sessionSearchRequestKey(base.copy(status = SessionSearchStatus.Active)),
+        )
+        assertFalse(
+            sessionSearchRequestKey(base) ==
+                sessionSearchRequestKey(base.copy(scope = SessionDiscoveryScope.Archived)),
+        )
+        assertFalse(
+            sessionSearchRequestKey(base) ==
+                sessionSearchRequestKey(base.copy(provider = PROVIDER_CODEX)),
         )
     }
 }

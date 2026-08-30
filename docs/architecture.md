@@ -68,7 +68,15 @@ Linux files:
 The React/TypeScript SPA under `web/` and the Compose app under `android/` reload
 provider-authoritative sessions and history after reconnect, resubscribe to the
 open compound identity, and never replay prompt, steer, interrupt, archive, or
-delete requests. Claude deletion is provider-aware and
+delete requests. Normal and archived Codex discovery are separate bounded
+provider scopes: clients request `thread/list` with `archived: true` only while
+the Archived filter is selected, never merge its cursor stream with normal
+pagination, and reconcile both lists from lifecycle events and authoritative
+reloads. Archived history is projected through `thread/read` plus bounded turn
+history without `thread/resume`, subscription, approvals, inputs, or other
+session mutations. Explicit restore is serialized on the same compound
+provider/session lock as active operations and sends one `thread/unarchive`.
+Claude deletion is provider-aware and
 uses the official SDK; Claude archive is absent because the SDK has no matching
 operation. Durable routes, selection, drafts, subscriptions, notifications, and
 relevant local UI state use `hostId + provider + sessionId`; legacy Android keys

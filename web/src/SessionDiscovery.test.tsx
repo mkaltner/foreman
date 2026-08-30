@@ -4,6 +4,15 @@ import { SessionSearchControls, SessionSearchResults } from "./SessionDiscovery"
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
 
 describe("SessionSearchControls", () => {
+  const codexArchiveProvider = {
+    id: "codex" as const,
+    displayName: "Codex",
+    enabled: true,
+    available: true,
+    capabilities: ["session.archived.list", "session.restore"],
+    limitations: [],
+  };
+
   it("clears, searches immediately, and exposes active filter count", () => {
     const change = vi.fn();
     const search = vi.fn();
@@ -36,6 +45,18 @@ describe("SessionSearchControls", () => {
     fireEvent.click(screen.getByText("Filters"));
     fireEvent.mouseDown(document.body);
     expect(details).not.toHaveAttribute("open");
+  });
+
+  it("gates Archived on explicit enabled-provider capability and explains unsupported hosts", () => {
+    const change = vi.fn();
+    const { rerender } = render(<SessionSearchControls filters={DEFAULT_SESSION_FILTERS} repositories={[]} providers={[]} loading={false} onChange={change} onSearchNow={vi.fn()} />);
+    fireEvent.click(screen.getByText("Filters"));
+    expect(screen.getByRole("option", { name: "Archived" })).toBeDisabled();
+    expect(screen.getByText(/no enabled provider advertises support/i)).toBeInTheDocument();
+
+    rerender(<SessionSearchControls filters={DEFAULT_SESSION_FILTERS} repositories={[]} providers={[codexArchiveProvider]} loading={false} onChange={change} onSearchNow={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Sessions"), { target: { value: "archived" } });
+    expect(change).toHaveBeenCalledWith(expect.objectContaining({ scope: "archived" }));
   });
 
   it("shows loading, empty, error, snippets, and accessible local actions", () => {
@@ -86,5 +107,25 @@ describe("SessionSearchControls", () => {
     expect(document.querySelector(".search-result .provider-badge")).toBeNull();
     fireEvent.click(screen.getByText("Claude result"));
     expect(open).toHaveBeenCalledWith("claude-code", "same-id", undefined);
+  });
+
+  it("distinguishes archived results and keeps Restore beside the session", () => {
+    const restore = vi.fn();
+    const archived = {
+      provider: "codex" as const,
+      id: "archived-one",
+      title: "Archived work",
+      repository: "/repo",
+      status: "idle",
+      archived: true,
+      readOnly: true,
+      capabilities: ["session.read", "session.restore"],
+    };
+    render(<SessionSearchResults results={[{ session: archived, matches: [], pinned: false, hidden: false }]} query="" loading={false} error="" onOpen={vi.fn()} onPin={vi.fn()} onHide={vi.fn()} onRestore={restore} />);
+
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getByText("Archived").closest("article")).toHaveClass("archived");
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(restore).toHaveBeenCalledWith(archived);
   });
 });

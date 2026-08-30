@@ -15,7 +15,7 @@ Sources:
 - [Codex app-server manual](https://developers.openai.com/codex/codex-manual.md#codex-app-server)
 - [Codex open-source app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-The installed version verified on 2026-07-30 is `codex-cli 0.145.0`. Foreman
+The installed version verified again on 2026-08-30 is `codex-cli 0.145.0`. Foreman
 generated that binary's JSON schemas with:
 
 ```sh
@@ -27,13 +27,14 @@ codex app-server generate-json-schema --experimental --out /tmp/schema
 Foreman initializes each connection with `initialize` and `initialized`, then
 uses:
 
-- `thread/list`, `thread/read`, `thread/start`, `thread/resume`,
-  `thread/archive`, and `thread/delete`;
+- `thread/list`, `thread/read`, `thread/turns/list`, `thread/start`, `thread/resume`,
+  `thread/archive`, `thread/unarchive`, and `thread/delete`;
 - `turn/start`, `turn/steer`, and `turn/interrupt`;
 - `model/list`;
 - `permissionProfile/list`;
 - `thread/status/changed`, `thread/tokenUsage/updated`, `turn/started`, and
   `turn/completed`;
+- `thread/archived` and `thread/unarchived` lifecycle notifications;
 - `account/rateLimits/read` and `account/rateLimits/updated` for account-wide
   quota windows shown separately from thread context;
 - `item/started`, `item/completed`, `item/agentMessage/delta`, and command
@@ -41,6 +42,10 @@ uses:
 
 At startup, Foreman generates the installed app-server JSON schema and only
 advertises optional archive/delete capabilities present in that Codex version.
+Archived discovery additionally requires the generated `ThreadListParams`
+schema to define `archived`; restoration independently requires
+`thread/unarchive`. This keeps older binaries fail-closed even though they may
+advertise the older unscoped `thread/list` method.
 If schema discovery is unavailable, those destructive UI actions stay disabled.
 
 Foreman handles these server-initiated requests separately from notifications:
@@ -126,7 +131,8 @@ replay.
   session activity and are never treated as context occupancy. Because the
   installed app-server has no thread-usage read method, Foreman keeps up to 500
   last-known bounded numeric snapshots in its private state file and removes
-  them when their sessions are archived or deleted.
+  them when their sessions are permanently deleted. Archive/restore preserves
+  the stable session identity and its safe settings/timestamp overlays.
 - `contextCompaction` items are projected as metadata-only conversation items
   so the client can count compactions. Foreman never projects the compaction
   summary itself.
@@ -141,6 +147,18 @@ replay.
   no response is retried or replayed.
 
 ## Proof result
+
+Installed contract verification on 2026-08-30 traversed 156 real archived
+threads one item per page with `thread/list {archived:true}` and stable
+newest-first cursors. A disposable archived thread was then read with
+`thread/read(includeTurns:false)` plus bounded `thread/turns/list`; it retained
+its archived membership and emitted no archive/unarchive notification. One
+`thread/unarchive` call removed that same ID from archived discovery, made it
+appear once in normal discovery, and emitted one `thread/unarchived`; the
+preceding single `thread/archive` emitted one `thread/archived`. This proves
+Foreman's archived read path does not rely on `thread/resume` or implicitly
+restore. Generated-schema fixtures also verify that binaries lacking the
+archived list field or unarchive method do not advertise those capabilities.
 
 `scripts/codex_poc.py` is the opt-in installed-Codex proof. It attaches to the
 requested Desktop socket or uses the separate Foreman fallback, opens an empty

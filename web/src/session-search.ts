@@ -4,9 +4,12 @@ export type SearchStatus = "active" | "waiting" | "completed" | "failed" | "inte
 export type DateRange = "all" | "today" | "7d" | "30d" | "custom";
 export type HiddenMode = "visible" | "hidden";
 export type SearchSort = "relevance" | "recent" | "oldest" | "status";
+export type SessionScope = "normal" | "archived";
 
 export interface SessionFilters {
   query: string;
+  scope: SessionScope;
+  provider: "" | "codex" | "claude-code";
   repository: string;
   statuses: SearchStatus[];
   dateRange: DateRange;
@@ -57,6 +60,8 @@ export function toggleCollapsedRepository(
 
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
+  scope: "normal",
+  provider: "",
   repository: "",
   statuses: [],
   dateRange: "all",
@@ -170,6 +175,8 @@ export function filterSessions(
   });
   const bounds = dateBounds(filters, now);
   const visible = [...source.values()].filter((session) => {
+    if ((session.archived === true) !== (filters.scope === "archived")) return false;
+    if (filters.provider && sessionProvider(session) !== filters.provider) return false;
     const key = providerSessionKey(sessionProvider(session), session.id);
     const hidden = identitySetHas(hiddenIds, session);
     if ((filters.hidden === "hidden") !== hidden) return false;
@@ -197,6 +204,7 @@ export function filterSessions(
 
 export function activeFilterCount(filters: SessionFilters): number {
   return Number(!!filters.query.trim()) + Number(!!filters.repository) +
+    Number(filters.scope === "archived") + Number(!!filters.provider) +
     Number(filters.statuses.length > 0) + Number(filters.dateRange !== "all") +
     Number(filters.pinnedOnly) + Number(filters.hidden === "hidden") +
     Number(filters.sort !== "relevance");
@@ -212,6 +220,9 @@ export function parseSessionFilters(search: string): SessionFilters {
   return {
     ...DEFAULT_SESSION_FILTERS,
     query: (params.get("q") ?? "").slice(0, 500),
+    scope: params.get("scope") === "archived" ? "archived" : "normal",
+    provider: params.get("provider") === "codex" || params.get("provider") === "claude-code"
+      ? params.get("provider") as "codex" | "claude-code" : "",
     repository: params.get("repo") ?? "",
     statuses: [...new Set(statuses)],
     dateRange,
@@ -226,6 +237,8 @@ export function parseSessionFilters(search: string): SessionFilters {
 export function sessionFiltersSearch(filters: SessionFilters): string {
   const params = new URLSearchParams();
   if (filters.query.trim()) params.set("q", filters.query.trim());
+  if (filters.scope === "archived") params.set("scope", "archived");
+  if (filters.provider) params.set("provider", filters.provider);
   if (filters.repository) params.set("repo", filters.repository);
   filters.statuses.forEach((status) => params.append("status", status));
   if (filters.dateRange !== "all") params.set("date", filters.dateRange);

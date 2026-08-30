@@ -19,6 +19,7 @@ const sessions: SessionSummary[] = [
   { id: "active", title: "Build WebSocket endpoint", repository: "/projects/foreman/src", status: "working", lastActivity: 1_700_000_300 },
   { id: "waiting", title: "Review release", repository: "/home/operator", status: "waiting", lastActivity: 1_700_000_200 },
   { id: "done", title: "Long completed title", repository: "/projects/foreman", status: "idle", lastActivity: 1_700_000_100 },
+  { provider: "codex", id: "archived", title: "Archived socket work", repository: "/projects/foreman", status: "idle", lastActivity: 1_700_000_150, archived: true, readOnly: true },
 ];
 
 describe("session discovery semantics", () => {
@@ -119,11 +120,42 @@ describe("session discovery semantics", () => {
   });
 
   it("round trips robust, bookmarkable URL state without local ID lists", () => {
-    const filters = parseSessionFilters("?q=websocket&status=active&status=failed&repo=%2Fprojects%2Fforeman&date=7d&pinned=1&hidden=1&sort=recent");
+    const filters = parseSessionFilters("?q=websocket&scope=archived&provider=codex&status=active&status=failed&repo=%2Fprojects%2Fforeman&date=7d&pinned=1&hidden=1&sort=recent");
     expect(filters.statuses).toEqual(["active", "failed"]);
+    expect(filters.scope).toBe("archived");
+    expect(filters.provider).toBe("codex");
     const search = sessionFiltersSearch(filters);
     expect(parseSessionFilters(search)).toEqual(filters);
     expect(search).not.toContain("session-id");
+  });
+
+  it("keeps normal and archived discovery scopes disjoint while composing other filters", () => {
+    const normal = filterSessions(sessions, DEFAULT_SESSION_FILTERS, new Set(), new Set(), [], repositories, "/projects");
+    expect(normal.map(({ session }) => session.id)).not.toContain("archived");
+
+    const archived = filterSessions(
+      sessions,
+      {
+        ...DEFAULT_SESSION_FILTERS,
+        scope: "archived",
+        provider: "codex",
+        query: "socket",
+        repository: "/projects/foreman",
+        statuses: ["completed"],
+        dateRange: "custom",
+        dateFrom: "2023-11-14",
+        dateTo: "2023-11-15",
+      },
+      new Set(),
+      new Set(),
+      [],
+      repositories,
+      "/projects",
+      new Date("2023-11-15T12:00:00"),
+    );
+    expect(archived.map(({ session }) => session.id)).toEqual(["archived"]);
+    expect(repositorySessionGroups(archived, repositories, "/projects")[0].sessions[0].session.id)
+      .toBe("archived");
   });
 
   it("uses local-day bounds", () => {

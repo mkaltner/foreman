@@ -79,6 +79,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -662,7 +663,7 @@ internal fun diagnosticsText(events: List<DiagnosticEvent>): String =
         "${event.timestamp} ${event.severity.uppercase()} ${event.category}$request: ${event.message}"
     }
 
-internal enum class SessionAction { Archive, Delete }
+internal enum class SessionAction { Archive, Restore, Delete }
 
 internal enum class SessionHapticEvent { Completed, Attention, Failed }
 
@@ -681,18 +682,33 @@ internal fun sessionCanBeManaged(status: String): Boolean =
     status !in setOf("working", "waiting", "stopping")
 
 internal fun sessionRouteEditable(session: SessionSummary?): Boolean =
-    session == null || sessionCanBeManaged(session.status)
+    session == null || (!session.archived && !session.readOnly && sessionCanBeManaged(session.status))
 
 internal fun sessionActionSupported(capabilities: Set<String>, action: SessionAction): Boolean =
-    capabilities.contains(if (action == SessionAction.Archive) "archive" else "delete")
+    capabilities.contains(
+        when (action) {
+            SessionAction.Archive -> "archive"
+            SessionAction.Restore -> "restore"
+            SessionAction.Delete -> "delete"
+        },
+    )
 
 internal fun sessionActionSupported(
     session: SessionSummary,
     capabilities: Set<String>,
     action: SessionAction,
 ): Boolean =
-    if (sessionProvider(session) == PROVIDER_CLAUDE_CODE) {
+    if (session.archived) {
+        action == SessionAction.Restore && "session.restore" in session.capabilities
+    } else if (sessionProvider(session) == PROVIDER_CLAUDE_CODE) {
         action == SessionAction.Delete && "session.delete" in session.capabilities
+    } else if (session.capabilities.isNotEmpty()) {
+        val required = when (action) {
+            SessionAction.Archive -> "session.archive"
+            SessionAction.Restore -> "session.restore"
+            SessionAction.Delete -> "session.delete"
+        }
+        required in session.capabilities
     } else {
         sessionActionSupported(capabilities, action)
     }
@@ -975,6 +991,9 @@ internal data class UiState(
     val openingWorkspaceFile: String? = null,
     val workspaceFile: WorkspaceFile? = null,
     val sessions: List<SessionSummary> = emptyList(),
+    val archivedSessions: List<SessionSummary> = emptyList(),
+    val archivedLoading: Boolean = false,
+    val archivedError: String? = null,
     val providers: List<ProviderInfo> = emptyList(),
     val providerCatalogLoaded: Boolean = false,
     val accountUsage: AccountUsage = AccountUsage(),
@@ -1149,6 +1168,8 @@ private data class SyncSnapshot(
 private fun UiPreferences.searchFilters(): SessionSearchFilters =
     SessionSearchFilters(
         query = searchQuery,
+        scope = searchScope,
+        provider = searchProvider,
         repository = searchRepository,
         status = searchStatus,
         dateRange = searchDateRange,
@@ -1173,6 +1194,9 @@ internal fun UiState.withForgottenConnection(): UiState =
         submitting = false,
         error = null,
         sessions = emptyList(),
+        archivedSessions = emptyList(),
+        archivedLoading = false,
+        archivedError = null,
         providers = emptyList(),
         providerCatalogLoaded = false,
         accountUsage = AccountUsage(),
@@ -1227,6 +1251,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private val savedSearchFilters =
         SessionSearchFilters(
             query = savedPreferences.searchQuery,
+            scope = savedPreferences.searchScope,
+            provider = savedPreferences.searchProvider,
             repository = savedPreferences.searchRepository,
             status = savedPreferences.searchStatus,
             dateRange = savedPreferences.searchDateRange,
@@ -1290,6 +1316,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var providerCatalogRevision = 0L
     private var sessionSyncGeneration = 0L
     private var searchJob: Job? = null
+    private var archivedDiscoveryJob: Job? = null
+    private var archivedDiscoveryGeneration = 0L
     private var workspaceFileJob: Job? = null
     private var lastSearchRequestKey = ""
     private val overviewNavigation = OverviewNavigationState()
@@ -1524,9 +1552,12 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun setSearchFilters(filters: SessionSearchFilters, immediate: Boolean = false) {
-        val requestChanged = sessionSearchRequestKey(state.value.searchFilters) != sessionSearchRequestKey(filters)
+        val previous = state.value.searchFilters
+        val requestChanged = sessionSearchRequestKey(previous) != sessionSearchRequestKey(filters)
+        val discoveryChanged = previous.scope != filters.scope || previous.provider != filters.provider
         preferences.setSessionSearch(filters)
         state.update { it.copy(searchFilters = filters, searchError = null) }
+        if (discoveryChanged) refreshArchivedSessions()
         if (requestChanged) scheduleSearch(if (immediate) 0 else 300)
     }
 
@@ -1570,7 +1601,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val requestKey = sessionSearchRequestKey(filters)
         val changed = requestKey != lastSearchRequestKey
         lastSearchRequestKey = requestKey
-        if (!state.value.connected || "search" !in state.value.capabilities) {
+        val codexSearchAllowed = filters.provider.isBlank() || filters.provider == PROVIDER_CODEX
+        val archivedSearchAllowed = filters.scope != SessionDiscoveryScope.Archived || state.value.providers.any {
+            it.id == PROVIDER_CODEX && it.enabled && it.available && "session.archived.list" in it.capabilities
+        }
+        if (!state.value.connected || "search" !in state.value.capabilities || !codexSearchAllowed || !archivedSearchAllowed) {
             if (changed) state.update { it.copy(searchResults = emptyList(), searchLoading = false) }
             return
         }
@@ -1594,6 +1629,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         put("statuses", buildJsonArray { searchStatusProtocol(filters.status).forEach { add(JsonPrimitive(it)) } })
                         bounds.first?.let { put("dateFrom", it) } ?: put("dateFrom", JsonNull)
                         bounds.second?.let { put("dateTo", it) } ?: put("dateTo", JsonNull)
+                        put("archived", filters.scope == SessionDiscoveryScope.Archived)
                         put("limit", 100)
                     },
                 ).payload.getValue("results").jsonArray
@@ -1607,6 +1643,71 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         searchLoading = false,
                         searchError = error.message ?: "Search failed",
                     )
+                }
+            }
+        }
+    }
+
+    private fun refreshArchivedSessions() {
+        archivedDiscoveryJob?.cancel()
+        val current = state.value
+        val generation = ++archivedDiscoveryGeneration
+        val hostId = current.activeHostId
+        if (current.searchFilters.scope != SessionDiscoveryScope.Archived || !current.connected) {
+            state.update { it.copy(archivedSessions = emptyList(), archivedLoading = false, archivedError = null) }
+            return
+        }
+        val candidates = current.providers.filter { provider ->
+            provider.enabled && provider.available &&
+                "session.archived.list" in provider.capabilities &&
+                (current.searchFilters.provider.isBlank() || current.searchFilters.provider == provider.id)
+        }
+        if (candidates.isEmpty()) {
+            state.update { it.copy(archivedSessions = emptyList(), archivedLoading = false, archivedError = null) }
+            return
+        }
+        state.update { it.copy(archivedSessions = emptyList(), archivedLoading = true, archivedError = null) }
+        archivedDiscoveryJob = viewModelScope.launch {
+            runCatching {
+                coroutineScope {
+                    candidates.map { provider ->
+                        async {
+                            client.request(
+                                "provider.session.list",
+                                buildJsonObject {
+                                    put("provider", provider.id)
+                                    put("scope", "archived")
+                                },
+                            ).payload.getValue("sessions").jsonArray.map {
+                                json.decodeFromJsonElement<SessionSummary>(it).copy(
+                                    provider = provider.id,
+                                    archived = true,
+                                    readOnly = true,
+                                )
+                            }
+                        }
+                    }.flatMap { it.await() }
+                }.sortedWith(
+                    compareByDescending<SessionSummary> { it.lastActivity ?: 0L }
+                        .thenBy { it.providerKey() },
+                )
+            }.onSuccess { archived ->
+                if (generation != archivedDiscoveryGeneration || hostId != state.value.activeHostId) return@onSuccess
+                state.update { it.copy(archivedSessions = archived, archivedLoading = false) }
+                val selectedId = restorationSessionId
+                if (
+                    state.value.screen == Screen.Detail && state.value.selected == null && selectedId != null &&
+                    archived.any { it.matches(restorationProvider, selectedId) }
+                ) openSession(selectedId, provider = restorationProvider)
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) return@onFailure
+                if (generation == archivedDiscoveryGeneration && hostId == state.value.activeHostId) {
+                    state.update {
+                        it.copy(
+                            archivedLoading = false,
+                            archivedError = error.message ?: "Archived sessions could not be loaded",
+                        )
+                    }
                 }
             }
         }
@@ -2189,6 +2290,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         pairingKey = "",
                         capabilities = client.capabilities,
                         sessions = emptyList(),
+                        archivedSessions = emptyList(),
+                        archivedLoading = false,
+                        archivedError = null,
                         providers = emptyList(),
                         providerCatalogLoaded = false,
                         accountUsage = AccountUsage(),
@@ -2497,6 +2601,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         restartRequested = false
         searchJob?.cancel()
         searchJob = null
+        archivedDiscoveryJob?.cancel()
+        archivedDiscoveryJob = null
         presenceSyncJob?.cancel()
         presenceSyncJob = null
         desiredPresenceKey = null
@@ -2551,6 +2657,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 submitting = false,
                 error = null,
                 sessions = emptyList(),
+                archivedSessions = emptyList(),
+                archivedLoading = false,
+                archivedError = null,
                 providers = emptyList(),
                 providerCatalogLoaded = false,
                 accountUsage = AccountUsage(),
@@ -2950,6 +3059,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         val approvalsAtOpen = state.value.approvals.filter { it.sessionId == id }
         val inputsAtOpen = state.value.inputs.filter { it.sessionId == id }
+        val openingSummary = (state.value.archivedSessions + state.value.sessions)
+            .firstOrNull { it.matches(provider, id) }
+        val archived = openingSummary?.archived == true ||
+            state.value.searchFilters.scope == SessionDiscoveryScope.Archived
         restorationProvider = provider
         restorationSessionId = id
         preferences.setSelectedSession(provider, id)
@@ -2958,10 +3071,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             runCatching {
                 val (selected, refreshedApprovals, refreshedInputs) =
                     coroutineScope {
-                        val selectedRequest = async { readSession(provider, id) }
+                        val selectedRequest = async { readSession(provider, id, archived) }
                         val approvalsRequest =
                             async {
-                                if (provider == PROVIDER_CODEX) {
+                                if (provider == PROVIDER_CODEX && !archived) {
                                     client.request("approval.list").payload.getValue("approvals").jsonArray
                                         .map { json.decodeFromJsonElement<ApprovalRequest>(it) }
                                 } else {
@@ -2970,7 +3083,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             }
                         val inputsRequest =
                             async {
-                                if (provider == PROVIDER_CODEX) {
+                                if (provider == PROVIDER_CODEX && !archived) {
                                     runCatching {
                                         client.request("input.list").payload.getValue("inputs").jsonArray
                                             .map { json.decodeFromJsonElement<InputRequest>(it) }
@@ -2993,7 +3106,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         selected = reconciled,
                         loading = false,
                         approvals =
-                            if (provider == PROVIDER_CODEX) {
+                            if (provider == PROVIDER_CODEX && !archived) {
                                 reconcileSessionApprovals(
                                     it.approvals,
                                     refreshedApprovals,
@@ -3004,7 +3117,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                                 it.approvals
                             },
                         inputs =
-                            if (provider == PROVIDER_CODEX && refreshedInputs != null) {
+                            if (provider == PROVIDER_CODEX && !archived && refreshedInputs != null) {
                                 reconcileSessionInputs(
                                     it.inputs,
                                     refreshedInputs,
@@ -3017,7 +3130,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     ).withProviderRoute(reconciled)
                 }
                 synchronizeSessionPresence()
-                monitorIfActive(selected)
+                if (!archived) monitorIfActive(selected)
             }.onFailure { error ->
                 if (
                     generation == sessionOpenGeneration &&
@@ -3187,7 +3300,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         ) return
         var selectedReadError: String? = null
         var authoritativeSelectionInvalid = false
-        val selected = selectedSessionId?.let { sessionId ->
+        val archivedSelection = state.value.searchFilters.scope == SessionDiscoveryScope.Archived
+        val selected = if (archivedSelection) null else selectedSessionId?.let { sessionId ->
             val target = rememberedSessionTarget(selectedProvider, sessionId)
             val provider = providers.firstOrNull { it.id == selectedProvider }
             val validated = rememberedSessionForEntry(
@@ -3224,7 +3338,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             ) || syncGeneration != sessionSyncGeneration
         ) return
         nonAuthoritativeSessionProviders = snapshot.nonAuthoritativeSessionProviders
-        val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
+        val applySelection = !archivedSelection &&
+            (expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation))
         state.update {
             it.withSynchronizedSessions(
                     sessions = sessions,
@@ -3282,6 +3397,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 hiddenSessionIds = it.hiddenSessionIds.intersect(validIds),
             )
         }
+        refreshArchivedSessions()
         scheduleSearch(0)
         startGlobalTurnMonitoring()
         updateActiveOverview()
@@ -3349,18 +3465,28 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    private suspend fun readSession(provider: String, id: String): SessionSummary {
-        val summary = state.value.sessions.firstOrNull { it.matches(provider, id) }
+    private suspend fun readSession(
+        provider: String,
+        id: String,
+        archived: Boolean = false,
+    ): SessionSummary {
+        val summary = (state.value.archivedSessions + state.value.sessions)
+            .firstOrNull { it.matches(provider, id) }
         val providerPayload = buildJsonObject {
             put("provider", provider)
             put("sessionId", id)
+            if (archived) put("scope", "archived")
             if (provider == PROVIDER_CLAUDE_CODE) {
                 put("repositoryId", summary?.repositoryId ?: ".")
             }
         }
         val (subscribeType, readType, payload) =
             when (provider) {
-                PROVIDER_CODEX -> Triple(
+                PROVIDER_CODEX -> if (archived) Triple(
+                    null,
+                    "provider.session.read",
+                    providerPayload,
+                ) else Triple(
                     "session.subscribe",
                     "session.read",
                     buildJsonObject { put("sessionId", id) },
@@ -3368,7 +3494,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 PROVIDER_CLAUDE_CODE -> Triple("provider.session.subscribe", "provider.session.read", providerPayload)
                 else -> error("Unsupported session provider")
             }
-        client.request(subscribeType, payload)
+        subscribeType?.let { client.request(it, payload) }
         val response =
             client.request(readType, payload)
         return json.decodeFromJsonElement(
@@ -3397,7 +3523,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         if (!sessionCanBeManaged(session.status)) {
             state.update {
-                it.copy(error = "Interrupt the active session before archive or delete.")
+                it.copy(error = "Interrupt the active session before changing its lifecycle.")
             }
             return
         }
@@ -3429,7 +3555,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             val current = state.value
             val pendingSession =
                 current.selected?.takeIf { it.matches(pending.provider, pending.sessionId) }
-                    ?: current.sessions.firstOrNull {
+                    ?: (current.archivedSessions + current.sessions).firstOrNull {
                         it.matches(pending.provider, pending.sessionId)
                     }
             if (
@@ -3451,11 +3577,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             }
             state.update { it.copy(submitting = true, error = null) }
             runCatching {
-                client.request(
+                val response = client.request(
                     if (pending.provider == PROVIDER_CLAUDE_CODE) {
                         "provider.session.delete"
                     } else if (pending.action == SessionAction.Archive) {
                         "session.archive"
+                    } else if (pending.action == SessionAction.Restore) {
+                        "session.restore"
                     } else {
                         "session.delete"
                     },
@@ -3468,29 +3596,50 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         if (pending.action == SessionAction.Delete) put("confirm", true)
                     },
                 )
-                runCatching {
+                val restored = if (pending.action == SessionAction.Restore) {
+                    json.decodeFromJsonElement<SessionSummary>(response.payload.getValue("session"))
+                        .copy(provider = PROVIDER_CODEX, archived = false, readOnly = false)
+                } else null
+                if (pending.action != SessionAction.Restore) runCatching {
                     TurnMonitorService.cancel(getApplication(), pending.sessionId, pending.provider)
                 }
                 if (
+                    pending.action != SessionAction.Restore &&
                     restorationSessionId == pending.sessionId &&
                     restorationProvider == pending.provider
                 ) clearRememberedSession()
                 state.update { current ->
                     val wasSelected = current.selected?.matches(pending.provider, pending.sessionId) == true
                     val key = providerSessionKey(pending.provider, pending.sessionId)
-                    val pinned = current.pinnedSessionIds - key
-                    val hidden = current.hiddenSessionIds - key
-                    preferences.setPinnedSessionIds(pinned)
-                    preferences.setHiddenSessionIds(hidden)
-                    current.copy(
-                        submitting = false,
-                        pendingSessionAction = null,
-                        sessions = current.sessions.filterNot { it.matches(pending.provider, pending.sessionId) },
-                        selected = if (wasSelected) null else current.selected,
-                        screen = if (wasSelected) Screen.Sessions else current.screen,
-                        pinnedSessionIds = pinned,
-                        hiddenSessionIds = hidden,
-                    )
+                    if (restored != null) {
+                        val filters = current.searchFilters.copy(scope = SessionDiscoveryScope.Normal)
+                        preferences.setSessionSearch(filters)
+                        current.copy(
+                            submitting = false,
+                            pendingSessionAction = null,
+                            archivedSessions = current.archivedSessions.filterNot { it.matches(pending.provider, pending.sessionId) },
+                            sessions = listOf(restored) + current.sessions.filterNot { it.matches(pending.provider, pending.sessionId) },
+                            selected = if (wasSelected) restored else current.selected,
+                            searchFilters = filters,
+                        )
+                    } else {
+                        val pinned = if (pending.action == SessionAction.Delete) current.pinnedSessionIds - key else current.pinnedSessionIds
+                        val hidden = if (pending.action == SessionAction.Delete) current.hiddenSessionIds - key else current.hiddenSessionIds
+                        if (pending.action == SessionAction.Delete) {
+                            preferences.setPinnedSessionIds(pinned)
+                            preferences.setHiddenSessionIds(hidden)
+                        }
+                        current.copy(
+                            submitting = false,
+                            pendingSessionAction = null,
+                            sessions = current.sessions.filterNot { it.matches(pending.provider, pending.sessionId) },
+                            archivedSessions = if (pending.action == SessionAction.Delete) current.archivedSessions.filterNot { it.matches(pending.provider, pending.sessionId) } else current.archivedSessions,
+                            selected = if (wasSelected) null else current.selected,
+                            screen = if (wasSelected) Screen.Sessions else current.screen,
+                            pinnedSessionIds = pinned,
+                            hiddenSessionIds = hidden,
+                        )
+                    }
                 }
             }.onFailure(::fail)
         }
@@ -3610,7 +3759,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun send(text: String, images: List<ImagePayload>, accepted: () -> Unit) {
         val current = state.value
         val selected = current.selected ?: return
-        if (current.submitting || (text.isBlank() && images.isEmpty())) return
+        if (selected.archived || selected.readOnly || current.submitting || (text.isBlank() && images.isEmpty())) return
         val provider = sessionProvider(selected)
         if (provider == PROVIDER_CLAUDE_CODE &&
             (images.isNotEmpty() || selected.status in setOf("working", "waiting"))
@@ -3722,6 +3871,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun interrupt() {
         val selected = state.value.selected ?: return
+        if (selected.archived || selected.readOnly) return
         if (!providerInterruptEligible(selected)) return
         val turnId = selected.activeTurnId ?: return
         if (state.value.submitting) return
@@ -3749,6 +3899,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun respondToApproval(approval: ApprovalRequest, decision: JsonObject) {
         val current = state.value
+        if (current.selected?.let { it.matches(PROVIDER_CODEX, approval.sessionId) && (it.archived || it.readOnly) } == true) return
         if (!current.connected || approval.id in current.submittingApprovalIds || approval.status != "pending") return
         state.update {
             it.copy(
@@ -3828,6 +3979,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun respondToInput(input: InputRequest, response: JsonObject) {
         val current = state.value
+        if (current.selected?.let { it.matches(PROVIDER_CODEX, input.sessionId) && (it.archived || it.readOnly) } == true) return
         if (!current.connected || input.id in current.submittingInputIds || input.status != "pending") return
         state.update {
             it.copy(
@@ -3970,6 +4122,51 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val activityAt = activityTimestamp(event)
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
+            if (action == "archived") {
+                val wasSelected = state.value.selected?.matches(provider, sessionId) == true
+                state.update { current ->
+                    val filters = if (wasSelected) {
+                        current.searchFilters.copy(scope = SessionDiscoveryScope.Archived)
+                    } else current.searchFilters
+                    if (wasSelected) preferences.setSessionSearch(filters)
+                    current.copy(
+                        sessions = current.sessions.filterNot { it.matches(provider, sessionId) },
+                        searchResults = current.searchResults.filterNot { it.session.matches(provider, sessionId) },
+                        selected = if (wasSelected) null else current.selected,
+                        searchFilters = filters,
+                        loading = wasSelected,
+                    )
+                }
+                refreshArchivedSessions()
+                updateActiveOverview()
+                return
+            }
+            if (action == "restored") {
+                val projected = event["session"]?.let {
+                    runCatching { json.decodeFromJsonElement<SessionSummary>(it) }.getOrNull()
+                }?.copy(provider = provider, archived = false, readOnly = false)
+                state.update { current ->
+                    val wasSelected = current.selected?.matches(provider, sessionId) == true
+                    val filters = if (wasSelected) {
+                        current.searchFilters.copy(scope = SessionDiscoveryScope.Normal)
+                    } else current.searchFilters
+                    if (wasSelected) preferences.setSessionSearch(filters)
+                    current.copy(
+                        archivedSessions = current.archivedSessions.filterNot { it.matches(provider, sessionId) },
+                        sessions = if (projected == null) current.sessions else listOf(projected) + current.sessions.filterNot { it.matches(provider, sessionId) },
+                        selected = if (projected != null && wasSelected) projected else current.selected,
+                        searchFilters = filters,
+                    )
+                }
+                scheduleSearch(0)
+                if (projected == null) {
+                    viewModelScope.launch {
+                        runCatching { synchronizeSessions(sessionId, provider) }.onFailure(::fail)
+                    }
+                }
+                updateActiveOverview()
+                return
+            }
             if (action == "removed") {
                 val wasRemembered = restorationSessionId == sessionId && restorationProvider == provider
                 if (wasRemembered) clearRememberedSession()
@@ -3981,6 +4178,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     preferences.setHiddenSessionIds(hidden)
                     current.copy(
                         sessions = current.sessions.filterNot { it.matches(provider, sessionId) },
+                        archivedSessions = current.archivedSessions.filterNot { it.matches(provider, sessionId) },
                         searchResults = current.searchResults.filterNot { it.session.matches(provider, sessionId) },
                         selected = if (wasSelected) null else current.selected,
                         screen = if (wasSelected) Screen.Sessions else current.screen,
@@ -5394,13 +5592,16 @@ private fun SessionsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (state.loading && state.sessions.isEmpty()) {
+            val displayedSessions = if (state.searchFilters.scope == SessionDiscoveryScope.Archived) {
+                state.archivedSessions
+            } else state.sessions
+            if ((state.loading || state.archivedLoading) && displayedSessions.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else {
                 val visible = filterSessions(
-                    state.sessions,
+                    displayedSessions,
                     state.searchFilters,
                     state.pinnedSessionIds,
                     state.hiddenSessionIds,
@@ -5422,7 +5623,7 @@ private fun SessionsScreen(
                     state.repositoryRoot,
                 )
                 PullToRefreshBox(
-                    isRefreshing = state.loading,
+                    isRefreshing = state.loading || state.archivedLoading,
                     onRefresh = viewModel::refresh,
                     modifier = Modifier.fillMaxSize(),
                 ) {
@@ -5431,8 +5632,8 @@ private fun SessionsScreen(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        if (state.searchError != null) item { ErrorText(state.searchError, Modifier.fillMaxWidth()) }
-                        if (visible.isEmpty() && !state.searchLoading) item {
+                        if (state.searchError != null || state.archivedError != null) item { ErrorText(state.searchError ?: state.archivedError, Modifier.fillMaxWidth()) }
+                        if (visible.isEmpty() && !state.searchLoading && !state.archivedLoading) item {
                             Column(
                                 Modifier.fillParentMaxSize().padding(32.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -5442,7 +5643,7 @@ private fun SessionsScreen(
                                 Text("Try clearing a filter or using a shorter substring.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        if (state.groupSessionsByRepository && !sessionSearchActive(state.searchFilters)) {
+                        if (state.groupSessionsByRepository) {
                             repositoryGroups.forEach { group ->
                                 repositorySessionSection(
                                     group,
@@ -5520,7 +5721,12 @@ private fun SessionsScreen(
     if (state.showSearchFilters) {
         SessionFilterDialog(
             filters = state.searchFilters,
-            repositories = sessionRepositoryOptions(state.sessions, state.repositories, state.repositoryRoot),
+            repositories = sessionRepositoryOptions(
+                if (state.searchFilters.scope == SessionDiscoveryScope.Archived) state.archivedSessions else state.sessions,
+                state.repositories,
+                state.repositoryRoot,
+            ),
+            providers = state.providers,
             onChange = { viewModel.setSearchFilters(it, true) },
             onDismiss = { viewModel.setSearchFiltersOpen(false) },
         )
@@ -5921,7 +6127,14 @@ private fun SessionCard(
     capabilities: Set<String>,
     showProviderIdentity: Boolean,
 ) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (session.archived) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = if (session.archived) BorderStroke(1.dp, MaterialTheme.colorScheme.secondary) else null,
+    ) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 sessionDisplayTitle(session),
@@ -5938,7 +6151,7 @@ private fun SessionCard(
                     ProviderBadge(sessionProvider(session))
                     Spacer(Modifier.width(6.dp))
                 }
-                StatusPill(sessionDisplayStatus(session))
+                StatusPill(if (session.archived) "Archived" else sessionDisplayStatus(session))
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
                     Icon(
@@ -5953,6 +6166,7 @@ private fun SessionCard(
                 SessionActionsMenu(
                     enabled = sessionCanBeManaged(session.status),
                     archiveSupported = sessionActionSupported(session, capabilities, SessionAction.Archive),
+                    restoreSupported = sessionActionSupported(session, capabilities, SessionAction.Restore),
                     deleteSupported = sessionActionSupported(session, capabilities, SessionAction.Delete),
                     onAction = onAction,
                 )
@@ -5997,6 +6211,7 @@ private fun SessionCard(
 private fun SessionFilterDialog(
     filters: SessionSearchFilters,
     repositories: List<SessionRepositoryOption>,
+    providers: List<ProviderInfo>,
     onChange: (SessionSearchFilters) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -6008,6 +6223,35 @@ private fun SessionFilterDialog(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                val availableProviders = providers.filter { it.enabled && it.available }
+                val archivedProviders = availableProviders.filter { "session.archived.list" in it.capabilities }
+                SessionFilterMenu(
+                    label = "Sessions",
+                    selected = if (filters.scope == SessionDiscoveryScope.Archived) "Archived" else "Normal",
+                    options = listOf(SessionDiscoveryScope.Normal.name to "Normal") +
+                        if (archivedProviders.isNotEmpty()) listOf(SessionDiscoveryScope.Archived.name to "Archived") else emptyList(),
+                    onSelect = { onChange(filters.copy(scope = SessionDiscoveryScope.valueOf(it))) },
+                )
+                if (archivedProviders.isEmpty()) {
+                    Text(
+                        "Archived discovery is unavailable because no enabled provider advertises support.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                SessionFilterMenu(
+                    label = "Provider",
+                    selected = availableProviders.firstOrNull { it.id == filters.provider }?.displayName ?: "All enabled providers",
+                    options = listOf("" to "All enabled providers") + availableProviders.map { it.id to it.displayName },
+                    onSelect = { onChange(filters.copy(provider = it)) },
+                )
+                if (filters.scope == SessionDiscoveryScope.Archived && filters.provider.isNotBlank() && archivedProviders.none { it.id == filters.provider }) {
+                    Text(
+                        "${providers.firstOrNull { it.id == filters.provider }?.displayName ?: "This provider"} does not expose archived sessions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 SessionFilterMenu(
                     label = "Repository or workspace",
                     selected = repositories.firstOrNull { it.id == filters.repository }?.label ?: "All repositories and workspaces",
@@ -6114,12 +6358,13 @@ private fun SessionDetailScreen(
     requestTurnMonitoring: (Boolean) -> Unit,
 ) {
     val selected = state.selected
+    val readOnly = selected?.archived == true || selected?.readOnly == true
     val selectedProvider = selected?.let(::sessionProvider) ?: PROVIDER_CODEX
     val selectedApprovals = state.approvals.filter {
-        selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
+        !readOnly && selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
     }
     val selectedInputs = state.inputs.filter {
-        selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
+        !readOnly && selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
     }
     val messages = selected?.messages.orEmpty()
     val messageItemIds = messages.mapTo(mutableSetOf()) { it.id }
@@ -6206,7 +6451,7 @@ private fun SessionDetailScreen(
                         )
                         if (selected != null) {
                             Text(
-                                sessionDisplayStatus(selected),
+                                if (readOnly) "Archived · Read only" else sessionDisplayStatus(selected),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -6238,7 +6483,7 @@ private fun SessionDetailScreen(
             )
         },
         bottomBar = {
-            if (selected != null) PromptBox(
+            if (selected != null && !readOnly) PromptBox(
                 text = state.activeHostId?.let {
                     composerDraft(state.composerDrafts, it, selected.id, selectedProvider)
                 }.orEmpty(),
@@ -6295,6 +6540,31 @@ private fun SessionDetailScreen(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    if (readOnly) {
+                        item(key = "archived-read-only") {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary),
+                            ) {
+                                Column(
+                                    Modifier.fillMaxWidth().padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text("Archived · Read only", fontWeight = FontWeight.Bold)
+                                    Text("This transcript is being viewed without resuming or changing the Codex thread.")
+                                    if (selected.capabilities.contains("session.restore")) {
+                                        Button(
+                                            onClick = { viewModel.requestSessionAction(selected, SessionAction.Restore) },
+                                            enabled = state.connected && !state.submitting,
+                                            modifier = Modifier.align(Alignment.End),
+                                        ) { Text("Restore") }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -6335,7 +6605,7 @@ private fun SessionDetailScreen(
                             val item = block.items.single()
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 ConversationRow(item, viewModel::openWorkspaceFile)
-                                selectedApprovals.filter { it.itemId == item.id }.forEach { approval ->
+                                selectedApprovals.filter { !readOnly && it.itemId == item.id }.forEach { approval ->
                                     ApprovalCard(
                                         approval = approval,
                                         connected = state.connected,
@@ -6344,7 +6614,7 @@ private fun SessionDetailScreen(
                                         onRespond = { viewModel.respondToApproval(approval, it) },
                                     )
                                 }
-                                selectedInputs.filter { it.itemId == item.id }.forEach { input ->
+                                selectedInputs.filter { !readOnly && it.itemId == item.id }.forEach { input ->
                                     InputRequestCard(
                                         input = input,
                                         connected = state.connected,
@@ -6357,7 +6627,7 @@ private fun SessionDetailScreen(
                         }
                     }
                     items(
-                        detachedApprovals,
+                        if (readOnly) emptyList() else detachedApprovals,
                         key = { "approval-${it.id}" },
                     ) { approval ->
                         ApprovalCard(
@@ -6369,7 +6639,7 @@ private fun SessionDetailScreen(
                         )
                     }
                     items(
-                        detachedInputs,
+                        if (readOnly) emptyList() else detachedInputs,
                         key = { "input-${it.id}" },
                     ) { input ->
                         InputRequestCard(
@@ -6380,7 +6650,7 @@ private fun SessionDetailScreen(
                             onRespond = { viewModel.respondToInput(input, it) },
                         )
                     }
-                    if (selected.status == "working" && selected.source != "external") {
+                    if (!readOnly && selected.status == "working" && selected.source != "external") {
                         item(key = "live-activity") {
                             LiveActivityRow(selected)
                         }
@@ -7610,15 +7880,28 @@ private fun UiSettingsMenu(
                     val canManage = sessionCanBeManaged(session.status) && !state.submitting
                     val archiveSupported =
                         sessionActionSupported(session, state.capabilities, SessionAction.Archive)
+                    val restoreSupported =
+                        sessionActionSupported(session, state.capabilities, SessionAction.Restore)
                     val deleteSupported =
                         sessionActionSupported(session, state.capabilities, SessionAction.Delete)
-                    if (archiveSupported || deleteSupported) {
+                    if (archiveSupported || restoreSupported || deleteSupported) {
                         Text(
                             "Session",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         )
+                        if (restoreSupported) {
+                            DropdownMenuItem(
+                                text = { Text("Restore session") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                                enabled = canManage,
+                                onClick = {
+                                    expanded = false
+                                    onSessionAction(SessionAction.Restore)
+                                },
+                            )
+                        }
                         if (archiveSupported) {
                             DropdownMenuItem(
                                 text = { Text("Archive session") },
@@ -8042,6 +8325,7 @@ private fun AccentSwatch(color: AccentColor, selected: Boolean = false) {
 private fun SessionActionsMenu(
     enabled: Boolean,
     archiveSupported: Boolean,
+    restoreSupported: Boolean,
     deleteSupported: Boolean,
     onAction: (SessionAction) -> Unit,
 ) {
@@ -8049,7 +8333,7 @@ private fun SessionActionsMenu(
     Box {
         IconButton(
             onClick = { expanded = true },
-            enabled = enabled && (archiveSupported || deleteSupported),
+            enabled = enabled && (archiveSupported || restoreSupported || deleteSupported),
         ) {
             Icon(Icons.Default.MoreVert, contentDescription = "Session actions")
         }
@@ -8057,6 +8341,17 @@ private fun SessionActionsMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
+            if (restoreSupported) {
+                DropdownMenuItem(
+                    text = { Text("Restore") },
+                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                    onClick = {
+                        expanded = false
+                        onAction(SessionAction.Restore)
+                    },
+                )
+            }
+            if (archiveSupported) {
             DropdownMenuItem(
                 text = { Text("Archive") },
                 leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
@@ -8066,6 +8361,8 @@ private fun SessionActionsMenu(
                 },
                 enabled = archiveSupported,
             )
+            }
+            if (deleteSupported) {
             DropdownMenuItem(
                 text = { Text("Delete permanently") },
                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
@@ -8075,6 +8372,7 @@ private fun SessionActionsMenu(
                 },
                 enabled = deleteSupported,
             )
+            }
         }
     }
 }
@@ -8087,14 +8385,17 @@ private fun SessionActionDialog(
     onDismiss: () -> Unit,
 ) {
     val deleting = pending.action == SessionAction.Delete
+    val restoring = pending.action == SessionAction.Restore
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (deleting) "Delete session permanently?" else "Archive session?") },
+        title = { Text(if (deleting) "Delete session permanently?" else if (restoring) "Restore session?" else "Archive session?") },
         text = {
             Text(
                 if (deleting) {
                     "\u201c${pending.sessionTitle}\u201d and any sessions it spawned will be permanently " +
                         "deleted. This cannot be undone."
+                } else if (restoring) {
+                    "\u201c${pending.sessionTitle}\u201d will return to normal Codex sessions."
                 } else {
                     "\u201c${pending.sessionTitle}\u201d will be removed from the active list. " +
                         "It can be restored from the Codex archive."
@@ -8115,7 +8416,7 @@ private fun SessionActionDialog(
                         ButtonDefaults.buttonColors()
                     },
             ) {
-                Text(if (deleting) "Delete permanently" else "Archive")
+                Text(if (deleting) "Delete permanently" else if (restoring) "Restore" else "Archive")
             }
         },
         dismissButton = {

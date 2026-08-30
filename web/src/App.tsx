@@ -192,6 +192,9 @@ export function sessionActionRequest(
       },
     };
   }
+  if (!session.capabilities?.includes(`session.${action}`)) {
+    throw new Error(`This provider does not support session ${action}`);
+  }
   return {
     type: `session.${action}`,
     payload: {
@@ -262,6 +265,10 @@ function App() {
   const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState("");
+  const [archivedRevision, setArchivedRevision] = useState(0);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
     initialRoute.view === "detail" ? initialRoute.sessionId : null,
@@ -322,6 +329,9 @@ function App() {
   const lastBackendSearchKey = useRef("");
   const searchGeneration = useRef(0);
   const sessionsRef = useRef<SessionSummary[]>([]);
+  const archivedSessionsRef = useRef<SessionSummary[]>([]);
+  const restoringSessionsRef = useRef<Set<string>>(new Set());
+  const archivedGenerationRef = useRef(0);
   const sessionListAuthoritativeRef = useRef<Record<ProviderId, boolean>>({
     codex: false,
     "claude-code": false,
@@ -409,6 +419,7 @@ function App() {
   }, [notificationPreferences, shouldDisplayTurnNotification]);
   useEffect(() => { searchFiltersRef.current = searchFilters; }, [searchFilters]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { archivedSessionsRef.current = archivedSessions; }, [archivedSessions]);
   useEffect(() => { repositoriesRef.current = repositories; }, [repositories]);
   useEffect(() => {
     repositoryRootRef.current = serviceStatus?.repositoryRoot ?? "";
@@ -453,7 +464,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (viewRef.current === "dashboard" || viewRef.current === "sessions") {
+    if (viewRef.current !== "settings") {
       const filtersSearch = sessionFiltersSearch(searchFilters);
       if (activeHostIdRef.current) saveSessionSearch(activeHostIdRef.current, filtersSearch);
       const search = withHostInSearch(filtersSearch, activeHostIdRef.current);
@@ -466,7 +477,12 @@ function App() {
     const query = searchFilters.query.trim();
     const immediate = searchRevision !== lastImmediateSearch.current;
     lastImmediateSearch.current = searchRevision;
-    if (!query || connection !== "connected") {
+    const providerAllowsCodex = !searchFilters.provider || searchFilters.provider === "codex";
+    const archivedCodexAvailable = providers.some((provider) =>
+      provider.id === "codex" && providerEnabled(provider) && provider.available &&
+      provider.capabilities.includes("session.archived.list")
+    );
+    if (!query || connection !== "connected" || !providerAllowsCodex || (searchFilters.scope === "archived" && !archivedCodexAvailable)) {
       setSearchResults([]);
       setSearchLoading(false);
       setSearchError("");
@@ -479,6 +495,7 @@ function App() {
       searchFilters.dateRange,
       searchFilters.dateFrom,
       searchFilters.dateTo,
+      searchFilters.scope,
     ]);
     if (lastBackendSearchKey.current !== backendSearchKey) {
       lastBackendSearchKey.current = backendSearchKey;
@@ -496,6 +513,7 @@ function App() {
         statuses: searchFilters.statuses,
         dateFrom: bounds.dateFrom,
         dateTo: bounds.dateTo,
+        archived: searchFilters.scope === "archived",
         limit: 100,
       }).then((result) => {
         if (searchGeneration.current === generation) setSearchResults(result.results);
@@ -516,8 +534,64 @@ function App() {
     searchFilters.dateRange,
     searchFilters.dateFrom,
     searchFilters.dateTo,
+    searchFilters.scope,
+    searchFilters.provider,
+    providers,
     searchRevision,
   ]);
+
+  useEffect(() => {
+    const generation = ++archivedGenerationRef.current;
+    const archivedClient = clientRef.current;
+    if (searchFilters.scope !== "archived" || connection !== "connected" || !archivedClient) {
+      archivedSessionsRef.current = [];
+      setArchivedSessions([]);
+      setArchivedLoading(false);
+      setArchivedError("");
+      return;
+    }
+    const candidates = providers.filter((provider) =>
+      providerEnabled(provider) && provider.available &&
+      provider.capabilities.includes("session.archived.list") &&
+      (!searchFilters.provider || provider.id === searchFilters.provider)
+    );
+    if (!candidates.length) {
+      archivedSessionsRef.current = [];
+      setArchivedSessions([]);
+      setArchivedLoading(false);
+      setArchivedError("");
+      return;
+    }
+    archivedSessionsRef.current = [];
+    setArchivedSessions([]);
+    setArchivedLoading(true);
+    setArchivedError("");
+    void Promise.all(candidates.map((provider) =>
+      archivedClient.request<{ sessions: SessionSummary[] } & Record<string, unknown>>(
+        "provider.session.list", { provider: provider.id, scope: "archived" },
+      ).then((result) => result.sessions.map((session) => ({ ...session, provider: provider.id, archived: true, readOnly: true })))
+    )).then((groups) => {
+      if (generation !== archivedGenerationRef.current) return;
+      const next = groups.flat().sort((left, right) =>
+        (right.lastActivity ?? 0) - (left.lastActivity ?? 0) ||
+        providerSessionKey(sessionProvider(left), left.id).localeCompare(providerSessionKey(sessionProvider(right), right.id))
+      );
+      archivedSessionsRef.current = next;
+      setArchivedSessions(next);
+      if (
+        viewRef.current === "detail" && currentRef.current === null && selectedIdRef.current &&
+        next.some((session) => session.id === selectedIdRef.current && sessionProvider(session) === selectedProviderRef.current)
+      ) {
+        openSessionRef.current(selectedProviderRef.current, selectedIdRef.current, false);
+      }
+    }).catch((caught) => {
+      if (generation === archivedGenerationRef.current) {
+        setArchivedError(caught instanceof Error ? caught.message : "Archived sessions could not be loaded");
+      }
+    }).finally(() => {
+      if (generation === archivedGenerationRef.current) setArchivedLoading(false);
+    });
+  }, [archivedRevision, connection, providers, searchFilters.provider, searchFilters.scope]);
 
   useEffect(() => {
     if (window.isSecureContext && "serviceWorker" in navigator) {
@@ -748,7 +822,56 @@ function App() {
         : { ...previous, codex: { ...previous.codex, lastEvent } });
     }
     if (payload.event.kind === "lifecycle") {
-      if (payload.event.action === "removed") {
+      const action = payload.event.action;
+      if (action === "archived") {
+        setSessions((previous) => {
+          const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
+          sessionsRef.current = next;
+          return next;
+        });
+        setSearchResults((previous) => previous.filter(({ session }) => providerSessionKey(sessionProvider(session), session.id) !== identityKey));
+        setArchivedRevision((value) => value + 1);
+        if (selectedIdRef.current === payload.sessionId && selectedProviderRef.current === provider) {
+          const nextFilters = { ...searchFiltersRef.current, scope: "archived" as const };
+          searchFiltersRef.current = nextFilters;
+          setSearchFilters(nextFilters);
+          currentRef.current = null;
+          setCurrent(null);
+          setBusy(true);
+        }
+      } else if (action === "restored") {
+        setArchivedSessions((previous) => {
+          const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
+          archivedSessionsRef.current = next;
+          return next;
+        });
+        if (payload.event.session) {
+          const projected = { ...payload.event.session, provider, archived: false, readOnly: false };
+          setSessions((previous) => {
+            const next = previous.some((session) => providerSessionKey(sessionProvider(session), session.id) === identityKey)
+              ? previous.map((session) => providerSessionKey(sessionProvider(session), session.id) === identityKey ? projected : session)
+              : [projected, ...previous];
+            sessionsRef.current = next;
+            return next;
+          });
+          if (selectedIdRef.current === payload.sessionId && selectedProviderRef.current === provider) {
+            currentRef.current = projected;
+            setCurrent(projected);
+          }
+        }
+        setSearchRevision((value) => value + 1);
+        void clientRef.current?.request<{ sessions: SessionSummary[] } & Record<string, unknown>>(
+          "provider.session.list", { provider, scope: "normal" },
+        ).then((result) => {
+          const incoming = result.sessions.map((session) => ({ ...session, provider, archived: false, readOnly: false }));
+          setSessions((previous) => {
+            const retained = previous.filter((session) => sessionProvider(session) !== provider);
+            const next = reconcileSessionSummaries(previous, [...retained, ...incoming]);
+            sessionsRef.current = next;
+            return next;
+          });
+        }).catch(() => undefined);
+      } else if (action === "removed") {
         const hostId = activeHostIdRef.current;
         const remembered = loadRememberedSession(hostId);
         if (remembered?.provider === provider && remembered.sessionId === payload.sessionId) {
@@ -757,6 +880,11 @@ function App() {
         setSessions((previous) => {
           const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
           sessionsRef.current = next;
+          return next;
+        });
+        setArchivedSessions((previous) => {
+          const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
+          archivedSessionsRef.current = next;
           return next;
         });
         setSearchResults((previous) => previous.filter(({ session }) => providerSessionKey(sessionProvider(session), session.id) !== identityKey));
@@ -892,11 +1020,16 @@ function App() {
     focusedSessionsRef.current = new Set();
     publishedPresenceRef.current = undefined;
     sessionsRef.current = [];
+    archivedSessionsRef.current = [];
+    archivedGenerationRef.current += 1;
     sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
     currentRef.current = null;
     selectedIdRef.current = null;
     selectedProviderRef.current = "codex";
     setSessions([]);
+    setArchivedSessions([]);
+    setArchivedLoading(false);
+    setArchivedError("");
     setCurrent(null);
     setSelectedId(null);
     setSelectedProvider("codex");
@@ -1133,6 +1266,12 @@ function App() {
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
         const reopenProvider = selectedProviderRef.current;
+        if (searchFiltersRef.current.scope === "archived") {
+          // Archived discovery is a separate provider-backed request. Its
+          // effect will reopen the detail only after that authoritative list
+          // confirms the identity, without subscribing or resuming it.
+          return;
+        }
         const fallbackFromReopen = (clearStaleMemory: boolean) => {
           if (
             reopenGeneration !== sessionOpenGenerationRef.current ||
@@ -1235,16 +1374,19 @@ function App() {
       setView("detail");
       if (updateHistory) updateRoute({ view: "detail", provider, sessionId: id });
       try {
-        const summary = sessionsRef.current.find((session) => session.id === id && sessionProvider(session) === provider);
+        const summary = [...archivedSessionsRef.current, ...sessionsRef.current]
+          .find((session) => session.id === id && sessionProvider(session) === provider);
+        const archived = summary?.archived === true || searchFiltersRef.current.scope === "archived";
         const [result, pending] = await Promise.all([
           client.request<
             { session: SessionSummary } & Record<string, unknown>
           >("provider.session.read", {
             provider,
             sessionId: id,
+            ...(archived ? { scope: "archived" } : {}),
             ...(provider === "claude-code" ? { repositoryId: summary?.repositoryId ?? "." } : {}),
           }),
-          provider === "codex"
+          provider === "codex" && !archived
             ? Promise.all([
               client.request<{ approvals: ApprovalRequest[] } & Record<string, unknown>>("approval.list"),
               client.request<{ inputs: InputRequest[] } & Record<string, unknown>>("input.list")
@@ -1262,7 +1404,7 @@ function App() {
           selectedIdRef.current !== id ||
           selectedProviderRef.current !== provider
         ) return;
-        if (provider === "codex") {
+        if (provider === "codex" && !archived) {
           setApprovals((current) => reconcileSessionPending(current, pending.approvals, id, approvalsAtOpen));
           const refreshedInputs = pending.inputs;
           if (refreshedInputs !== null) {
@@ -1271,7 +1413,7 @@ function App() {
         }
         setCurrent((previous) => reconcileSessionSettings(previous, { ...result.session, provider }));
         if (hostId) saveRememberedSession({ hostId, provider, sessionId: id });
-        await client.request("provider.session.subscribe", { provider, sessionId: id });
+        if (!archived) await client.request("provider.session.subscribe", { provider, sessionId: id });
       } catch (caught) {
         if (
           generation === sessionOpenGenerationRef.current &&
@@ -1561,6 +1703,46 @@ function App() {
   const searchResultOpen = useCallback((provider: ProviderId, id: string, itemId?: string | null) => {
     void openSession(provider, id, true, itemId ?? null);
   }, [openSession]);
+  const restoreArchivedSession = useCallback(async (session: SessionSummary) => {
+    if (!session.archived || !session.capabilities?.includes("session.restore")) return;
+    const identityKey = providerSessionKey("codex", session.id);
+    if (restoringSessionsRef.current.has(identityKey)) return;
+    if (!window.confirm(`Restore “${session.title}”? It will return to normal Codex sessions.`)) return;
+    restoringSessionsRef.current.add(identityKey);
+    try {
+      const result = await client.request<{
+        restored: boolean;
+        session: SessionSummary;
+      } & Record<string, unknown>>("session.restore", { sessionId: session.id });
+      const restored = { ...result.session, provider: "codex" as const, archived: false, readOnly: false };
+      setArchivedSessions((previous) => {
+        const next = previous.filter((candidate) => providerSessionKey(sessionProvider(candidate), candidate.id) !== identityKey);
+        archivedSessionsRef.current = next;
+        return next;
+      });
+      setSessions((previous) => {
+        const next = previous.some((candidate) => providerSessionKey(sessionProvider(candidate), candidate.id) === identityKey)
+          ? previous.map((candidate) => providerSessionKey(sessionProvider(candidate), candidate.id) === identityKey ? restored : candidate)
+          : [restored, ...previous];
+        sessionsRef.current = next;
+        return next;
+      });
+      if (selectedIdRef.current === session.id && selectedProviderRef.current === "codex") {
+        currentRef.current = restored;
+        setCurrent(restored);
+      }
+      setSearchFilters((previous) => {
+        const next = { ...previous, scope: "normal" as const };
+        searchFiltersRef.current = next;
+        return next;
+      });
+      setSearchRevision((value) => value + 1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Session could not be restored");
+    } finally {
+      restoringSessionsRef.current.delete(identityKey);
+    }
+  }, [client]);
   const dashboardInterrupt = useCallback((session: SessionSummary) => {
     if (!session.activeTurnId) return;
     const provider = sessionProvider(session);
@@ -1595,13 +1777,14 @@ function App() {
       unifiedConnectionsRef.current?.reconnect(hostId);
     }
   }, [client, connectHost]);
+  const discoverySessions = searchFilters.scope === "archived" ? archivedSessions : sessions;
   const repositoryOptions = useMemo(
-    () => repositoryFilterOptions(sessions, repositories, serviceStatus?.repositoryRoot ?? ""),
-    [repositories, serviceStatus?.repositoryRoot, sessions],
+    () => repositoryFilterOptions(discoverySessions, repositories, serviceStatus?.repositoryRoot ?? ""),
+    [discoverySessions, repositories, serviceStatus?.repositoryRoot],
   );
   const visibleSessions = useMemo(
     () => filterSessions(
-      sessions,
+      discoverySessions,
       searchFilters,
       new Set(organization.pinnedIds),
       new Set(organization.hiddenIds),
@@ -1609,7 +1792,7 @@ function App() {
       repositories,
       serviceStatus?.repositoryRoot ?? "",
     ),
-    [organization, repositories, searchFilters, searchResults, serviceStatus?.repositoryRoot, sessions],
+    [discoverySessions, organization, repositories, searchFilters, searchResults, serviceStatus?.repositoryRoot],
   );
   const discoveryActive = activeFilterCount(searchFilters) > 0;
   const togglePin = useCallback((provider: ProviderId, id: string) => {
@@ -1765,9 +1948,9 @@ function App() {
               if (host && window.confirm(`Forget “${host.displayName}”? Its browser-local token and preferences will be removed.`)) forget(hostId);
             }}
           />
-          <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} loading={searchLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
-          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
-            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
+          <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} providers={providers} loading={searchLoading || archivedLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
+          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading || archivedLoading} error={searchError || archivedError} showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></main> : <>
+            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></section>}
             <Dashboard
             hostId={activeHost.id}
             sessions={visibleSessions.map(({ session }) => session)}
@@ -1823,8 +2006,8 @@ function App() {
             providerCatalogLoaded={providerCatalogLoaded}
             filters={searchFilters}
             repositoryOptions={repositoryOptions}
-            searchLoading={searchLoading}
-            searchError={searchError}
+            searchLoading={searchLoading || archivedLoading}
+            searchError={searchError || archivedError}
             selectedId={selectedId}
             selectedProvider={selectedProvider}
             disabled={!connected || !providerCatalogLoaded}
@@ -1848,6 +2031,7 @@ function App() {
             onSearchNow={() => setSearchRevision((value) => value + 1)}
             onPin={togglePin}
             onHide={toggleHidden}
+            onRestore={restoreArchivedSession}
             onAction={async (action, session) => {
               if (!confirmSessionAction(action, session.title)) return;
               try {
@@ -1911,6 +2095,7 @@ function App() {
                 onBack={() => showSessionList()}
                 onRequest={requestAndReconcile}
                 onError={setError}
+                onRestore={() => void restoreArchivedSession(current)}
               />
             ) : (
               <div className="empty-detail">
@@ -2097,6 +2282,7 @@ export function SessionList({
   onSearchNow,
   onPin,
   onHide,
+  onRestore = () => undefined,
 }: {
   collapsedRepositories?: ReadonlySet<string>;
   onToggleRepository?: (repositoryId: string) => void;
@@ -2122,6 +2308,7 @@ export function SessionList({
   onSearchNow: () => void;
   onPin: (provider: ProviderId, id: string) => void;
   onHide: (provider: ProviderId, id: string) => void;
+  onRestore?: (session: SessionSummary) => void;
 }) {
   const [localCollapsedRepositories, setLocalCollapsedRepositories] =
     useState<Set<string>>(() => new Set());
@@ -2145,6 +2332,7 @@ export function SessionList({
   };
   const repositoryGroups = repositorySessionGroups(results, repositories, repositoryRoot);
   const discoveryActive = activeFilterCount(filters) > 0;
+  const showSearchResults = discoveryActive && (filters.scope !== "archived" || !groupByRepository);
   const showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded);
   return (
     <aside className="session-pane">
@@ -2155,10 +2343,12 @@ export function SessionList({
           <button className="primary" onClick={onNew} disabled={disabled}>New</button>
         </div>
       </div>
-      <SessionSearchControls filters={filters} repositories={repositoryOptions} loading={searchLoading} onChange={onFilters} onSearchNow={onSearchNow} />
+      <SessionSearchControls filters={filters} repositories={repositoryOptions} providers={providers} loading={searchLoading} onChange={onFilters} onSearchNow={onSearchNow} />
       <div className="session-scroll">
-        {discoveryActive ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} showProviderIdentity={showProviderIdentity} onOpen={onOpen} onPin={onPin} onHide={onHide} /> : <>
-        {sessions.length === 0 && <div className="empty-list"><h3>No sessions yet</h3><p>Start one from a repository.</p></div>}
+        {showSearchResults ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} showProviderIdentity={showProviderIdentity} onOpen={onOpen} onPin={onPin} onHide={onHide} onRestore={onRestore} /> : <>
+        {searchError && <div className="search-state error" role="alert"><strong>Archived sessions could not be loaded</strong><span>{searchError}</span></div>}
+        {searchLoading && sessions.length === 0 && <div className="search-state" role="status">Loading archived sessions…</div>}
+        {!searchLoading && !searchError && sessions.length === 0 && <div className="empty-list"><h3>{filters.scope === "archived" ? "No archived sessions" : "No sessions yet"}</h3><p>{filters.scope === "archived" ? "Archived Codex sessions will appear here." : "Start one from a repository."}</p></div>}
         {groupByRepository ? repositoryGroups.map((group) => (
           <section className="session-group repository-session-group" key={group.repository.id}>
             <button
@@ -2198,10 +2388,10 @@ export function SessionList({
     const showRepository = showSessionCardRepository(session, repositories, repositoryRoot, context);
     return <article
       key={`${provider}:${session.id}`}
-      className={`session-card ${showRepository ? "" : "repository-metadata-suppressed"} ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
+      className={`session-card ${session.archived ? "archived" : ""} ${showRepository ? "" : "repository-metadata-suppressed"} ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
       onClick={() => onOpen(provider, session.id)}
     >
-      <div className="session-title-row"><h3>{session.title}</h3>{showProviderIdentity && <ProviderBadge provider={provider} />}<StatusPill status={session.status} /></div>
+      <div className="session-title-row"><h3>{session.title}</h3>{showProviderIdentity && <ProviderBadge provider={provider} />}{session.archived ? <span className="status-pill archived">Archived</span> : <StatusPill status={session.status} />}</div>
       {showRepository && <p className="repository">{shortRepository(session.repository)}</p>}
       {provider === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
       <div className="session-meta">
@@ -2209,8 +2399,9 @@ export function SessionList({
         <span className="card-actions">
           <button className={pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(provider, session.id); }} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`}>{pinned ? "★" : "☆"}</button>
           <button onClick={(event) => { event.stopPropagation(); onHide(provider, session.id); }}>Hide</button>
-          {provider === "codex" && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
-          {(provider === "codex" || session.capabilities?.includes("session.delete")) && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
+          {session.archived && session.capabilities?.includes("session.restore") && <button className="restore-link" onClick={(event) => { event.stopPropagation(); onRestore(session); }}>Restore</button>}
+          {!session.archived && session.capabilities?.includes("session.archive") && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
+          {!session.archived && session.capabilities?.includes("session.delete") && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
         </span>
       </div>
     </article>;
@@ -2303,6 +2494,7 @@ export function ConversationView({
   onBack,
   onRequest,
   onError,
+  onRestore,
 }: {
   session: SessionSummary;
   approvals: ApprovalRequest[];
@@ -2321,8 +2513,10 @@ export function ConversationView({
   onBack: () => void;
   onRequest: <T extends Record<string, unknown>>(type: string, payload?: Record<string, unknown>) => Promise<T>;
   onError: (message: string) => void;
+  onRestore?: () => void;
 }) {
   const provider = sessionProvider(session);
+  const readOnly = session.archived === true || session.readOnly === true;
   const initialRoute = useMemo(() => {
     if (provider === "codex") return routeForSession(session, models, accessLevels);
     const model = models.find((entry) => entry.id === session.model);
@@ -2399,7 +2593,7 @@ export function ConversationView({
   const selectedModel = models.find((entry) => entry.id === model);
   const active = session.status === "working" && !!session.activeTurnId;
   const hasActiveTurn = ["working", "waiting", "stopping"].includes(session.status);
-  const canSubmit = connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
+  const canSubmit = !readOnly && connected && !submitting && !updatingRoute && !processing && (provider === "codex" || !hasActiveTurn) && (!!draft.trim() || images.length > 0);
   const activityLabel = liveActivityLabel(session);
   const activityMessage = liveActivityMessage(session);
   const contextUsage = contextUsageView(session.tokenUsage);
@@ -2594,7 +2788,7 @@ export function ConversationView({
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
         <div className="conversation-title"><h1>{session.title}</h1><p>{showProviderIdentity && <ProviderBadge provider={provider} />} {shortRepository(session.repository)}</p></div>
-        <StatusPill status={session.status} />
+        {readOnly ? <span className="status-pill archived">Archived</span> : <StatusPill status={session.status} />}
         {contextUsage && <span className="session-context-control" ref={sessionInfoRef}>
           <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
           {sessionInfoOpen && <SessionInfoPanel session={session} usage={contextUsage} model={selectedModel?.displayName || model} effort={effort} access={accessLevels.find((level) => level.id === access)?.displayName || access} onClose={() => setSessionInfoOpen(false)} />}
@@ -2611,19 +2805,20 @@ export function ConversationView({
           if (atBottom) setJumpVisible(false);
         }}
       >
+        {readOnly && <div className="archived-read-only" role="note"><div><strong>Archived · Read only</strong><p>This transcript is being viewed without resuming or changing the Codex thread.</p></div>{session.capabilities?.includes("session.restore") && onRestore && <button className="primary" onClick={onRestore}>Restore</button>}</div>}
         {provider === "claude-code" && session.source === "external" && <div className="provider-limitation" role="note"><strong>Resumable · Not live-attached</strong><p>Open history here, then resume in Foreman to prompt, stream, or interrupt. Foreman cannot attach to the external running process.</p></div>}
         {provider === "claude-code" && session.status === "waiting" && <div className="provider-limitation warning" role="status"><strong>Permission required in Claude session.</strong><p>Foreman web approval support is not yet available.</p></div>}
-        {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>Ready when you are</h2><p>{provider === "claude-code" ? "Send a prompt using the Claude model and permission mode below." : "Choose a route below and send the first prompt."}</p></div>}
+        {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>{readOnly ? "No transcript content" : "Ready when you are"}</h2><p>{readOnly ? "This archived session has no projected messages." : provider === "claude-code" ? "Send a prompt using the Claude model and permission mode below." : "Choose a route below and send the first prompt."}</p></div>}
         {displayBlocks.map((block) => {
           if (block.collapsedActivity) {
             return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} onOpenWorkspaceFile={openWorkspaceFile} />;
           }
           const item = block.items[0];
-          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} onOpenWorkspaceFile={openWorkspaceFile} />{approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
+          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} onOpenWorkspaceFile={openWorkspaceFile} />{!readOnly && approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{!readOnly && inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
         })}
-        {approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
-        {inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
-        {(session.status === "working" || session.status === "waiting") && (
+        {!readOnly && approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
+        {!readOnly && inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
+        {!readOnly && (session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
             <div>{activityMessage ? <><Markdown text={activityMessage} onOpenWorkspaceFile={openWorkspaceFile} /><small>{activityLabel}…</small></> : <strong>{session.status === "waiting" ? "Waiting for attention…" : `${activityLabel}…`}</strong>}</div>
@@ -2631,7 +2826,7 @@ export function ConversationView({
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
-      <form className="composer" onSubmit={submit}>
+      {!readOnly && <form className="composer" onSubmit={submit}>
         <div className="route-row">
           <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateAccess(value)} />
           <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateModel(value)} />
@@ -2646,7 +2841,7 @@ export function ConversationView({
           <button className="send-button" disabled={!canSubmit}>{submitting ? "…" : provider === "claude-code" && session.source === "external" ? "Resume in Foreman" : active ? "Steer" : "Send"}</button>
         </div>
         {!connected && <p className="composer-note">Your draft is preserved while Foreman reconnects.</p>}
-      </form>
+      </form>}
       {openingWorkspaceFile && <div className="file-opening" role="status">Opening {openingWorkspaceFile}…</div>}
       {workspaceFile && <WorkspaceFileDialog file={workspaceFile} onOpenWorkspaceFile={openWorkspaceFile} onClose={() => setWorkspaceFile(null)} />}
     </div>

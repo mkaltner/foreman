@@ -225,6 +225,8 @@ data class SessionSummary(
     val source: String? = null,
     val state: String? = null,
     val capabilities: List<String> = emptyList(),
+    val archived: Boolean = false,
+    val readOnly: Boolean = false,
     val liveAttached: Boolean? = null,
     val externalLimitation: String? = null,
     val waitDescription: String? = null,

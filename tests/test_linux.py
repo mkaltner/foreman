@@ -102,7 +102,18 @@ class FakeCodex:
         self.socket_path = Path("/run/user/1000/codex.sock")
         self.process = None
         self.active: set[str] = set()
+        self.normal_threads: list[dict[str, Any]] = [{**THREAD, "turns": []}]
         self.archived: list[str] = []
+        self.archived_threads: list[dict[str, Any]] = [
+            {
+                **THREAD,
+                "id": "thread-archived",
+                "preview": "Archived Foreman session",
+                "recencyAt": 90,
+            }
+        ]
+        self.archived_reads: list[str] = []
+        self.unarchived: list[str] = []
         self.deleted: list[str] = []
         self.prompts: list[dict[str, Any]] = []
         self.settings_updates: list[dict[str, Any]] = []
@@ -141,6 +152,8 @@ class FakeCodex:
     def supports(self, method: str) -> bool:
         return method in {
             "thread/archive",
+            "thread/list:archived",
+            "thread/unarchive",
             "thread/delete",
             "model/list",
             "permissionProfile/list",
@@ -153,8 +166,8 @@ class FakeCodex:
     async def account_rate_limits(self) -> dict[str, Any]:
         return self.rate_limits
 
-    async def list_threads(self) -> list[dict[str, Any]]:
-        return [{**THREAD, "turns": []}]
+    async def list_threads(self, archived: bool = False) -> list[dict[str, Any]]:
+        return self.archived_threads if archived else self.normal_threads
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.reads.append(thread_id)
@@ -166,6 +179,16 @@ class FakeCodex:
                 if thread_id in self.active
                 else {"type": "idle"},
         }
+
+    async def read_archived_thread(self, thread_id: str) -> dict[str, Any]:
+        self.archived_reads.append(thread_id)
+        match = next(
+            (thread for thread in self.archived_threads if thread["id"] == thread_id),
+            None,
+        )
+        if match is None:
+            raise RuntimeError("archived thread was not found")
+        return {**match, "status": {"type": "idle"}}
 
     async def search_thread(self, thread_id: str) -> dict[str, Any]:
         return await self.read_thread(thread_id)
@@ -325,6 +348,20 @@ class FakeCodex:
 
     async def archive_thread(self, thread_id: str) -> None:
         self.archived.append(thread_id)
+
+    async def unarchive_thread(self, thread_id: str) -> dict[str, Any]:
+        self.unarchived.append(thread_id)
+        match = next(
+            (thread for thread in self.archived_threads if thread["id"] == thread_id),
+            {**THREAD, "id": thread_id, "turns": []},
+        )
+        self.archived_threads = [
+            thread for thread in self.archived_threads if thread["id"] != thread_id
+        ]
+        self.normal_threads = [match] + [
+            thread for thread in self.normal_threads if thread["id"] != thread_id
+        ]
+        return {**match, "status": {"type": "idle"}}
 
     async def delete_thread(self, thread_id: str) -> None:
         self.deleted.append(thread_id)
@@ -3145,6 +3182,34 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(threads), 500)
         self.assertEqual(len(requested), 5)
         self.assertTrue(all(params["limit"] == 100 for params in requested))
+        self.assertTrue(all("archived" not in params for params in requested))
+
+    async def test_lists_only_archived_threads_with_the_same_bounded_pagination(self) -> None:
+        adapter = Codex("unused", lambda _: asyncio.sleep(0))
+        requested: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            requested.append((method, params))
+            offset = len(requested) - 1
+            return {
+                "data": [
+                    {**THREAD, "id": f"archived-{offset * 100 + index}"}
+                    for index in range(100)
+                ],
+                "nextCursor": f"page-{offset + 1}" if offset < 4 else "page-5",
+            }
+
+        adapter.request = request  # type: ignore[method-assign]
+        threads = await adapter.list_threads(archived=True)
+
+        self.assertEqual(len(threads), 500)
+        self.assertEqual(len(requested), 5)
+        self.assertTrue(all(method == "thread/list" for method, _ in requested))
+        self.assertTrue(all(params["archived"] is True for _, params in requested))
+        self.assertEqual(
+            [params.get("cursor") for _, params in requested],
+            [None, "page-1", "page-2", "page-3", "page-4"],
+        )
 
     async def test_discovers_supported_methods_from_installed_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3168,6 +3233,42 @@ schema = {"oneOf": [
             methods = await asyncio.to_thread(adapter._discover_supported_methods)
 
             self.assertEqual(methods, {"thread/archive", "thread/delete"})
+
+    async def test_discovers_archived_contract_only_from_advertised_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory, "schema-codex")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import json, pathlib, sys
+output = pathlib.Path(sys.argv[-1])
+(output / "v2").mkdir(parents=True, exist_ok=True)
+(output / "ClientRequest.json").write_text(json.dumps({"oneOf": [
+    {"properties": {"method": {"enum": ["thread/list", "thread/unarchive"]}}},
+]}))
+(output / "ServerNotification.json").write_text(json.dumps({"oneOf": [
+    {"properties": {"method": {"enum": ["thread/archived", "thread/unarchived"]}}},
+]}))
+(output / "v2" / "ThreadListParams.json").write_text(json.dumps({"properties": {
+    "archived": {"type": ["boolean", "null"]}
+}}))
+""",
+                encoding="utf-8",
+            )
+            os.chmod(executable, 0o700)
+            adapter = Codex(str(executable), lambda _: asyncio.sleep(0))
+
+            methods = await asyncio.to_thread(adapter._discover_supported_methods)
+
+            self.assertEqual(
+                methods,
+                {
+                    "thread/list",
+                    "thread/list:archived",
+                    "thread/unarchive",
+                    "thread/archived",
+                    "thread/unarchived",
+                },
+            )
 
     async def test_steer_reconciles_a_stale_active_turn_id(self) -> None:
         adapter = Codex("unused", lambda _: asyncio.sleep(0))
@@ -3492,6 +3593,8 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         hello = await self.request("hello")
         self.assertTrue(hello["capabilities"]["steer"])
         self.assertTrue(hello["capabilities"]["archive"])
+        self.assertTrue(hello["capabilities"]["archivedDiscovery"])
+        self.assertTrue(hello["capabilities"]["restore"])
         self.assertTrue(hello["capabilities"]["delete"])
         self.assertTrue(hello["capabilities"]["search"])
         self.assertTrue(hello["capabilities"]["diagnostics"])
@@ -3757,6 +3860,189 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(deleted["deleted"])
         self.assertEqual(self.app.codex.deleted, [started["id"]])
+
+    async def test_archived_scope_is_authenticated_read_only_and_restores_once(self) -> None:
+        unauthorized = await self.request_error(
+            "provider.session.list", {"provider": "codex", "scope": "archived"}
+        )
+        self.assertEqual(unauthorized["code"], "unauthorized")
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Archive test"},
+        )
+
+        catalog = await self.request("provider.list")
+        codex = next(item for item in catalog["providers"] if item["id"] == "codex")
+        claude = next(item for item in catalog["providers"] if item["id"] == "claude-code")
+        self.assertIn("session.archived.list", codex["capabilities"])
+        self.assertIn("session.restore", codex["capabilities"])
+        self.assertNotIn("session.archived.list", claude["capabilities"])
+        self.assertNotIn("session.restore", claude["capabilities"])
+
+        normal = await self.request(
+            "provider.session.list", {"provider": "codex", "scope": "normal"}
+        )
+        self.assertNotIn("thread-archived", [item["id"] for item in normal["sessions"]])
+        archived = await self.request(
+            "provider.session.list", {"provider": "codex", "scope": "archived"}
+        )
+        self.assertEqual([item["id"] for item in archived["sessions"]], ["thread-archived"])
+        summary = archived["sessions"][0]
+        self.assertTrue(summary["archived"])
+        self.assertTrue(summary["readOnly"])
+        self.assertEqual(summary["capabilities"], ["session.read", "session.restore"])
+
+        reads_before = list(self.app.codex.reads)
+        viewed = await self.request(
+            "provider.session.read",
+            {
+                "provider": "codex",
+                "sessionId": "thread-archived",
+                "scope": "archived",
+            },
+        )
+        self.assertTrue(viewed["session"]["readOnly"])
+        self.assertEqual(self.app.codex.archived_reads, ["thread-archived"])
+        self.assertEqual(self.app.codex.reads, reads_before)
+        self.assertEqual(self.app.codex.unarchived, [])
+
+        restored = await self.request(
+            "session.restore", {"sessionId": "thread-archived"}
+        )
+        self.assertTrue(restored["restored"])
+        self.assertFalse(restored["session"]["archived"])
+        self.assertEqual(restored["session"]["id"], "thread-archived")
+        self.assertEqual(self.app.codex.unarchived, ["thread-archived"])
+        duplicate_restore = await self.request_error(
+            "session.restore", {"sessionId": "thread-archived"}
+        )
+        self.assertIn("not archived", duplicate_restore["message"])
+        self.assertEqual(self.app.codex.unarchived, ["thread-archived"])
+        archived_after = await self.request(
+            "provider.session.list", {"provider": "codex", "scope": "archived"}
+        )
+        normal_after = await self.request(
+            "provider.session.list", {"provider": "codex", "scope": "normal"}
+        )
+        self.assertEqual(archived_after["sessions"], [])
+        self.assertEqual(
+            [item["id"] for item in normal_after["sessions"]].count("thread-archived"),
+            1,
+        )
+        restored_events = [
+            message
+            for message in self.unsolicited
+            if message.get("type") == "session.event"
+            and message.get("payload", {}).get("sessionId") == "thread-archived"
+            and message["payload"].get("event", {}).get("action") == "restored"
+        ]
+        self.assertEqual(len(restored_events), 1)
+
+        claude_archived = await self.request_error(
+            "provider.session.list",
+            {"provider": "claude-code", "scope": "archived"},
+        )
+        self.assertEqual(claude_archived["code"], "capabilityUnavailable")
+
+    async def test_unsupported_codex_does_not_advertise_archived_controls(self) -> None:
+        original_supports = self.app.codex.supports
+        self.app.codex.supports = lambda method: (
+            False if method in {"thread/list:archived", "thread/unarchive"}
+            else original_supports(method)
+        )
+        hello = await self.request("hello")
+        self.assertFalse(hello["capabilities"]["archivedDiscovery"])
+        self.assertFalse(hello["capabilities"]["restore"])
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Old Codex test"},
+        )
+        catalog = await self.request("provider.list")
+        codex = next(item for item in catalog["providers"] if item["id"] == "codex")
+        self.assertNotIn("session.archived.list", codex["capabilities"])
+        self.assertNotIn("session.restore", codex["capabilities"])
+        archived = await self.request_error(
+            "provider.session.list", {"provider": "codex", "scope": "archived"}
+        )
+        restored = await self.request_error(
+            "session.restore", {"sessionId": "thread-archived"}
+        )
+        self.assertEqual(archived["code"], "capabilityUnavailable")
+        self.assertEqual(restored["code"], "capabilityUnavailable")
+
+    async def test_external_archive_events_reconcile_once_and_lists_remain_authoritative(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "External archive test"},
+        )
+        moved = self.app.codex.normal_threads.pop(0)
+        self.app.codex.archived_threads = [moved]
+
+        notification = {
+            "method": "thread/archived",
+            "params": {"threadId": moved["id"]},
+        }
+        await self.app.codex_event(notification)
+        await self.app.codex_event(notification)
+        await self.request("ping")
+        archived_events = [
+            message
+            for message in self.unsolicited
+            if message.get("type") == "session.event"
+            and message.get("payload", {}).get("sessionId") == moved["id"]
+            and message["payload"].get("event", {}).get("action") == "archived"
+        ]
+        self.assertEqual(len(archived_events), 1)
+        self.assertEqual(
+            (await self.request(
+                "provider.session.list", {"provider": "codex", "scope": "normal"}
+            ))["sessions"],
+            [],
+        )
+        self.assertEqual(
+            [item["id"] for item in (await self.request(
+                "provider.session.list", {"provider": "codex", "scope": "archived"}
+            ))["sessions"]],
+            [moved["id"]],
+        )
+
+        self.app.codex.archived_threads = []
+        self.app.codex.normal_threads = [moved]
+        restored_notification = {
+            "method": "thread/unarchived",
+            "params": {"threadId": moved["id"]},
+        }
+        await self.app.codex_event(restored_notification)
+        await self.app.codex_event(restored_notification)
+        await self.request("ping")
+        restored_events = [
+            message
+            for message in self.unsolicited
+            if message.get("type") == "session.event"
+            and message.get("payload", {}).get("sessionId") == moved["id"]
+            and message["payload"].get("event", {}).get("action") == "restored"
+        ]
+        self.assertEqual(len(restored_events), 1)
+        normal = await self.request(
+            "provider.session.list", {"provider": "codex", "scope": "normal"}
+        )
+        self.assertEqual([item["id"] for item in normal["sessions"]], [moved["id"]])
+
+    async def test_archived_search_uses_the_bounded_safe_transcript_projection(self) -> None:
+        await self.request(
+            "pair",
+            {"pairingKey": self.pairing_key, "deviceName": "Archived search test"},
+        )
+        result = await self.request(
+            "session.search",
+            {"query": "Hello", "archived": True, "limit": 10},
+        )
+        self.assertEqual(len(result["results"]), 1)
+        self.assertTrue(result["results"][0]["session"]["archived"])
+        self.assertEqual(result["results"][0]["matches"][0]["kind"], "user")
+        self.assertLessEqual(result["transcriptsScanned"], 100)
+        self.assertNotIn("messages", result["results"][0]["session"])
+        self.assertEqual(self.app.codex.unarchived, [])
 
     async def test_approval_protocol_requires_authentication_and_validates_ids(self) -> None:
         unauthenticated = await self.request_error("approval.list")
@@ -4043,6 +4329,46 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         release_read.set()
         self.assertTrue((await archive)["archived"])
         self.assertTrue((await prompt)["accepted"])
+
+    async def test_serializes_restore_with_same_compound_session_identity(self) -> None:
+        restore_started = asyncio.Event()
+        release_restore = asyncio.Event()
+        original_unarchive = self.app.codex.unarchive_thread
+
+        async def paused_unarchive(thread_id: str) -> dict[str, Any]:
+            restore_started.set()
+            await release_restore.wait()
+            return await original_unarchive(thread_id)
+
+        self.app.codex.unarchive_thread = paused_unarchive
+        client = Client(self.writer, "test", authenticated=True)
+        restore = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "session.restore",
+                    "payload": {"sessionId": "thread-archived"},
+                },
+            )
+        )
+        await restore_started.wait()
+        prompt = asyncio.create_task(
+            self.app.dispatch(
+                client,
+                {
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-archived", "text": "Hello"},
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(prompt.done())
+        self.assertEqual(self.app.codex.unarchived, [])
+
+        release_restore.set()
+        self.assertTrue((await restore)["restored"])
+        self.assertTrue((await prompt)["accepted"])
+        self.assertEqual(self.app.codex.unarchived, ["thread-archived"])
 
     async def test_prompt_race_rejects_a_late_settings_mutation(self) -> None:
         client = Client(self.writer, "test", authenticated=True)
