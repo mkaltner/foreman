@@ -33,6 +33,11 @@ data class RepositorySessionGroup(
     val sessions: List<VisibleSession>,
 )
 
+internal data class SessionCardRenderContext(
+    val groupSessionsByRepository: Boolean = false,
+    val repositoryGroupId: String? = null,
+)
+
 internal fun toggleCollapsedRepository(
     collapsedByHost: Map<String, Set<String>>,
     hostId: String?,
@@ -93,6 +98,18 @@ internal fun repositorySessionGroups(
                     .thenBy { it.index },
             ).map { it.value },
         )
+    }
+}
+
+internal fun sessionCardRepositoryLabel(
+    session: SessionSummary,
+    repositories: List<RepositoryInfo>,
+    repositoryRoot: String,
+    context: SessionCardRenderContext,
+): String? {
+    val identity = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot)
+    return identity.label.takeUnless {
+        context.groupSessionsByRepository && context.repositoryGroupId == identity.id
     }
 }
 

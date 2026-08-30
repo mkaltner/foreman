@@ -5840,7 +5840,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
             repositories,
             repositoryRoot,
             showProviderIdentity,
-            showRepositoryLabel = false,
+            renderContext = SessionCardRenderContext(
+                groupSessionsByRepository = true,
+                repositoryGroupId = group.repository.id,
+            ),
         )
     }
 }
@@ -5880,7 +5883,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
     showProviderIdentity: Boolean,
-    showRepositoryLabel: Boolean = true,
+    renderContext: SessionCardRenderContext = SessionCardRenderContext(),
 ) {
     items(sessions, key = { it.session.providerKey() }) { visible ->
         val session = visible.session
@@ -5890,9 +5893,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
             matches = visible.matches,
             pinned = visible.pinned,
             hidden = visible.hidden,
-            repositoryLabel = sessionRepositoryIdentity(session.repository, repositories, repositoryRoot)
-                .label
-                .takeIf { showRepositoryLabel },
+            repositoryLabel = sessionCardRepositoryLabel(
+                session,
+                repositories,
+                repositoryRoot,
+                renderContext,
+            ),
             onClick = { open(session.id, visible.matches.firstOrNull { it.itemId != null }?.itemId, provider) },
             onAction = { action(session, it) },
             onPin = { pin(provider, session.id) },

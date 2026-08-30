@@ -8,6 +8,7 @@ import {
   repositoryFilterOptions,
   repositorySessionGroups,
   sessionFiltersSearch,
+  showSessionCardRepository,
   toggleCollapsedRepository,
 } from "./session-search";
 
@@ -71,6 +72,31 @@ describe("session discovery semantics", () => {
       "Workspace: /home/operator",
     ]);
     expect(groups[0].sessions.map(({ session }) => session.id)).toEqual(["active", "done"]);
+  });
+
+  it("hides card identity only inside its matching enabled repository or workspace group", () => {
+    const repositorySession = sessions[0];
+    const workspaceSession = sessions[1];
+
+    expect(showSessionCardRepository(repositorySession, repositories, "/projects", {
+      groupByRepository: true,
+      repositoryGroupId: "/projects/foreman",
+    })).toBe(false);
+    expect(showSessionCardRepository(workspaceSession, repositories, "/projects", {
+      groupByRepository: true,
+      repositoryGroupId: "/home/operator",
+    })).toBe(false);
+    expect(showSessionCardRepository(repositorySession, repositories, "/projects", {
+      groupByRepository: true,
+      repositoryGroupId: "/projects/other",
+    })).toBe(true);
+    expect(showSessionCardRepository(repositorySession, repositories, "/projects", {
+      groupByRepository: false,
+      repositoryGroupId: "/projects/foreman",
+    })).toBe(true);
+    expect(showSessionCardRepository(repositorySession, repositories, "/projects", {
+      groupByRepository: true,
+    })).toBe(true);
   });
 
   it("retains collapsed repositories per host across screen navigation", () => {

@@ -2071,6 +2071,75 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun sessionCardsHideIdentityOnlyInsideTheirMatchingEnabledGroup() {
+        val repositories = listOf(RepositoryInfo("foreman", "foreman", "foreman", "main", false))
+        val repositorySession = SessionSummary("repo", "/projects/foreman/src", "Repository", "working", 200)
+        val workspaceSession = SessionSummary("workspace", "/workspace/other", "Workspace", "idle", 100)
+
+        assertNull(
+            sessionCardRepositoryLabel(
+                repositorySession,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(true, "/projects/foreman"),
+            ),
+        )
+        assertNull(
+            sessionCardRepositoryLabel(
+                workspaceSession,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(true, "/workspace/other"),
+            ),
+        )
+        assertEquals(
+            "Repository: foreman",
+            sessionCardRepositoryLabel(
+                repositorySession,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(true, "/projects/other"),
+            ),
+        )
+        assertEquals(
+            "Repository: foreman",
+            sessionCardRepositoryLabel(
+                repositorySession,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(false, "/projects/foreman"),
+            ),
+        )
+        assertEquals(
+            "Workspace: /workspace/other",
+            sessionCardRepositoryLabel(
+                workspaceSession,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(),
+            ),
+        )
+        val filtered = filterSessions(
+            listOf(repositorySession),
+            SessionSearchFilters(query = "Repository"),
+            setOf(repositorySession.id),
+            emptySet(),
+            emptyList(),
+            repositories,
+            "/projects",
+        ).single()
+        assertEquals(
+            "Repository: foreman",
+            sessionCardRepositoryLabel(
+                filtered.session,
+                repositories,
+                "/projects",
+                SessionCardRenderContext(),
+            ),
+        )
+    }
+
+    @Test
     fun liveStatusChangesEnterAndLeaveAndroidFilters() {
         val session = SessionSummary("one", "/repo", "Live", "working", 100)
         val filters = SessionSearchFilters(status = SessionSearchStatus.Waiting)
