@@ -101,27 +101,10 @@ jobs:
             echo "::error::$1" >&2
             exit 1
           }
-          require_archive_entry() {
-            grep -Fxq "$1" <<<"$archive_listing" || fail "Linux archive is missing $1"
-          }
 
           mkdir -p dist
           apk="android/app/build/outputs/apk/release/app-release.apk"
           [[ -f "$apk" ]] || fail "Signed release APK was not produced at $apk"
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          apksigner_path="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)"
-          aapt2_path="$(find "$sdk_root/build-tools" -type f -name aapt2 | sort -V | tail -1)"
-          [[ -x "$apksigner_path" ]] || fail "Android apksigner was not found"
-          [[ -x "$aapt2_path" ]] || fail "Android aapt2 was not found"
-          expected_version="$(sed -n 's/^foremanVersion=//p' release.properties)"
-          expected_code="$(sed -n 's/^androidVersionCode=//p' release.properties)"
-          expected_cert="$(sed -n 's/^androidSigningCertificateSha256=//p' release.properties)"
-          badging="$("$aapt2_path" dump badging "$apk" | sed -n '1p')"
-          grep -Fq "versionName='$expected_version'" <<<"$badging" || fail "APK version name does not match release.properties"
-          grep -Fq "versionCode='$expected_code'" <<<"$badging" || fail "APK version code does not match release.properties"
-          signing="$("$apksigner_path" verify --verbose --print-certs "$apk")"
-          grep -Fq 'Verifies' <<<"$signing" || fail "APK signature verification failed"
-          python scripts/verify_apk_certificate.py --expected "$expected_cert" <<<"$signing"
           cp "$apk" "dist/foreman-${RELEASE_TAG}.apk"
           tar --exclude='__pycache__' --exclude='*.py[co]' \
             --exclude='linux/claude_bridge/bridge.test.mjs' \
@@ -129,39 +112,19 @@ jobs:
             -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" \
             install.sh release.properties requirements.txt linux web/dist \
             scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
-          archive="dist/foreman-linux-${RELEASE_TAG}.tar.gz"
-          archive_listing="$(tar -tzf "$archive")"
-          require_archive_entry 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE'
-          require_archive_entry 'web/dist/index.html'
-          require_archive_entry 'release.properties'
-          require_archive_entry 'THIRD_PARTY_NOTICES.md'
-          require_archive_entry 'linux/claude_code.py'
-          require_archive_entry 'linux/claude_bridge/bridge.mjs'
-          require_archive_entry 'linux/claude_bridge/package-lock.json'
-          require_archive_entry 'linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json'
-          if grep -Eq 'linux/claude_bridge/(bridge\.test|test_fake_sdk)\.mjs' <<<"$archive_listing"; then
-            fail "Linux archive contains Claude bridge test fixtures"
-          fi
-          if grep -Eq '(^|/)(__pycache__/|[^/]+\.py[co]$)' <<<"$archive_listing"; then
-            echo "Linux archive contains Python cache files" >&2
-            exit 1
-          fi
           (cd dist && sha256sum foreman-* > SHA256SUMS)
-          (cd dist && sha256sum --check SHA256SUMS)
-      - name: Upload failed release candidate
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failed-release-${{ env.RELEASE_TAG }}-${{ github.run_id }}
-          path: android/app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: warn
-          retention-days: 1
-      - name: Create GitHub release
+          bash scripts/verify_release_payload.sh "$RELEASE_TAG" dist
+      - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::A GitHub release already exists for $RELEASE_TAG; inspect and remove only an unpublished draft before retrying" >&2
+            exit 1
+          fi
           release_args=(
-            "$RELEASE_TAG" dist/*
+            "$RELEASE_TAG"
+            --draft
             --verify-tag
             --title "Foreman $RELEASE_TAG"
           )
@@ -175,3 +138,40 @@ jobs:
             release_args+=(--prerelease)
           fi
           gh release create "${release_args[@]}"
+      - name: Upload and verify draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" dist/*
+          manifest="$RUNNER_TEMP/foreman-release-manifest.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$manifest"
+          python3 scripts/verify_release_assets.py --tag "$RELEASE_TAG" --manifest "$manifest"
+
+          downloaded="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$downloaded"
+          bash scripts/verify_release_payload.sh "$RELEASE_TAG" "$downloaded"
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$RELEASE_TAG" --draft=false
+          published="$RUNNER_TEMP/foreman-published-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$published"
+          python3 scripts/verify_release_assets.py --tag "$RELEASE_TAG" --manifest "$published"
+          python3 - "$published" <<'PY'
+          import json
+          import sys
+
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          if release.get("draft") is not False or not release.get("published_at"):
+              raise SystemExit("verified release was not published")
+          print("verified GitHub release is published")
+          PY
+      - name: Upload failed release candidate
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-release-${{ env.RELEASE_TAG }}-${{ github.run_id }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: warn
+          retention-days: 1

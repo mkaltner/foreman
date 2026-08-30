@@ -57,9 +57,22 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
 `.github/workflows/release.yml` checks out the full annotated tag and confirms it
 points at the tested commit. It validates release metadata, signing-secret
 presence, Linux/web/Android tests, committed web assets, signed APK metadata and
-certificate, the Linux archive, dependency-license marker, and checksums. Only
-then does it call `gh release create`; prerelease tags are marked prereleases and
-use `docs/releases/<version>.md` when present.
+certificate, the Linux archive, dependency-license marker, and checksums. It
+then creates an unpublished draft, uploads the APK, Linux archive, and
+`SHA256SUMS`, queries GitHub for the exact nonempty asset set, downloads those
+assets into an empty directory, and repeats checksum, APK, and archive
+verification. Only a fully verified draft is published. A failure after draft
+creation leaves the release unpublished for inspection; it must never be
+published or have assets replaced until the cause is resolved. Prerelease tags
+are marked prereleases and use `docs/releases/<version>.md` when present.
+
+`.github/workflows/release-asset-guard.yml` independently checks future
+`release.published` events, including releases published manually rather than by
+the tagged workflow. A release without the exact three custom assets or with
+invalid checksums is immediately returned to draft. The guard is event-driven
+and is not applied retroactively to releases that existed before it was merged.
+GitHub's automatic source ZIP and TAR links are not custom release assets and do
+not satisfy this check.
 
 After the release PR is approved and merged, rerun the candidate checks on the
 exact `main` commit. A maintainer may then create and push the annotated tag:
@@ -77,9 +90,10 @@ verification policy. Never move or reuse a published tag. The manual workflow
 input is only for an existing validated tag; it is not a way to release a branch
 or commit SHA.
 
-After the workflow succeeds, download all three release assets into an empty
-directory, run `sha256sum --check SHA256SUMS`, repeat APK signature/version
-inspection, list/extract the Linux archive, and perform one final install smoke
-test. If any post-publication verification fails, preserve the tag and release
-for audit, mark the release clearly, and publish a new higher prerelease after a
-fix; do not replace artifacts in place.
+After the workflow succeeds, confirm the release page shows all three custom
+assets in addition to GitHub's two source links. Download the custom assets into
+an empty directory, run `sha256sum --check SHA256SUMS`, repeat APK
+signature/version inspection, list/extract the Linux archive, and perform one
+final install smoke test. If any post-publication verification fails, preserve
+the tag and release for audit, mark the release clearly, and publish a new higher
+prerelease after a fix; do not replace artifacts in place.

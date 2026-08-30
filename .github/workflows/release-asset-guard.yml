@@ -1,0 +1,36 @@
+name: Published release asset guard
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-asset-guard-${{ github.event.release.id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Require complete release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate published assets or return release to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 scripts/guard_published_release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --release-id "$RELEASE_ID" \
+            --tag "$RELEASE_TAG"

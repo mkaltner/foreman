@@ -16,6 +16,8 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
+- [ ] [#69 Fail closed when tagged release assets are
+  incomplete](https://github.com/mkaltner/foreman/issues/69).
 - [ ] [#55 Add About information to web and
   Android](https://github.com/mkaltner/foreman/issues/55).
 - [ ] [#56 Replace accent selection with coherent
