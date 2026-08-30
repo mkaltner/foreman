@@ -16,6 +16,12 @@ version, Android build defaults, and all three protocol constants are checked by
 python3 scripts/verify_release.py --tag v1.0.0
 ```
 
+The web and Android builds embed `foremanVersion` directly from this manifest
+for their offline About views. Android embeds the checked-out short commit by
+default. Set `FOREMAN_BUILD_COMMIT` to the artifact's source commit when
+building distributable clients; committed web assets leave it unset so their
+rebuild stays deterministic.
+
 Do not derive Android version code from a CI run number. Confirm the previous
 APK with `aapt2 dump badging`; Android cannot install a lower code over a higher
 one. The expected signing-certificate SHA-256 digest is public metadata in

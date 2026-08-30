@@ -42,6 +42,12 @@ in `release.properties` aligns the Linux status version, Android version
 name/code, web package version, and unchanged protocol version. A prerelease can
 advance without changing protocol v1; a protocol change requires an intentional
 coordinated client/service update and compatibility documentation.
+Web and Android builds read `foremanVersion` from that manifest. Android embeds
+the checked-out commit by default, while reproducible artifact builders can set
+`FOREMAN_BUILD_COMMIT` for either client. Their About views therefore retain the
+client build identity without a server connection and label the connected
+server version separately. Committed web assets omit the commit unless the
+builder supplies it so rebuilding those assets remains deterministic.
 
 Linux files:
 

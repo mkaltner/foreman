@@ -8,6 +8,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
@@ -61,6 +62,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -7297,6 +7299,7 @@ private fun UiSettingsMenu(
     var showingActivityDetail by remember { mutableStateOf(false) }
     var showingProviders by remember { mutableStateOf(false) }
     var showingNotifications by remember { mutableStateOf(false) }
+    var showingAbout by remember { mutableStateOf(false) }
     var notificationRepositoryId by remember { mutableStateOf<String?>(null) }
     var quietStartText by remember(state.notificationPreferences.quietStart) { mutableStateOf(state.notificationPreferences.quietStart) }
     var quietEndText by remember(state.notificationPreferences.quietEnd) { mutableStateOf(state.notificationPreferences.quietEnd) }
@@ -7782,6 +7785,14 @@ private fun UiSettingsMenu(
                         },
                     )
                 }
+                DropdownMenuItem(
+                    text = { Text("About") },
+                    leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                    onClick = {
+                        expanded = false
+                        showingAbout = true
+                    },
+                )
                 if (state.hasSavedConnection) {
                     HorizontalDivider()
                     DropdownMenuItem(
@@ -7842,6 +7853,105 @@ private fun UiSettingsMenu(
                 }
             },
         )
+    }
+    if (showingAbout) {
+        AboutDialog(
+            serverVersion = state.foremanVersion,
+            connected = state.connected,
+            onDismiss = { showingAbout = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AboutDialog(
+    serverVersion: String?,
+    connected: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val versions =
+        aboutVersionInformation(
+            serverVersion = serverVersion,
+            connected = connected,
+            clientVersion = BuildConfig.VERSION_NAME,
+            clientCommit = BuildConfig.FOREMAN_BUILD_COMMIT,
+        )
+    BackHandler(onBack = onDismiss)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text("About", fontWeight = FontWeight.Bold) },
+                        navigationIcon = {
+                            IconButton(onClick = onDismiss) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                        },
+                    )
+                },
+            ) { padding ->
+                LazyColumn(
+                    modifier = Modifier.padding(padding).fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.foreman_logo),
+                                contentDescription = "Foreman logo",
+                                modifier = Modifier.size(88.dp).clip(RoundedCornerShape(20.dp)),
+                            )
+                            Text("Foreman", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Created by Michael Kaltner",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                    item {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                AboutVersionRow("Server", versions.server)
+                                HorizontalDivider()
+                                AboutVersionRow("Android client", versions.client)
+                            }
+                        }
+                    }
+                    items(foremanAboutLinks) { (label, url) ->
+                        FilledTonalButton(
+                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(label, modifier = Modifier.weight(1f))
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutVersionRow(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyLarge)
     }
 }
 

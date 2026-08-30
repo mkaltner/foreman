@@ -68,6 +68,11 @@ def main() -> None:
         ROOT / "android/app/src/main/java/net/kaltner/foreman/ForemanConnection.kt",
         "version = BuildConfig.FOREMAN_PROTOCOL_VERSION",
     )
+    require_text(
+        ROOT / "android/app/build.gradle.kts",
+        'releaseProperties.getProperty("foremanVersion")',
+    )
+    require_text(ROOT / "web/vite.config.ts", "loadForemanBuildMetadata")
 
     package = json.loads((ROOT / "web/package.json").read_text(encoding="utf-8"))
     lock = json.loads((ROOT / "web/package-lock.json").read_text(encoding="utf-8"))
