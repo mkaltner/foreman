@@ -24,6 +24,31 @@ export function providerEnabled(provider: Pick<ProviderInfo, "enabled">): boolea
   return provider.enabled !== false;
 }
 
+export function soleEnabledProvider(
+  providers: readonly ProviderInfo[],
+  catalogLoaded: boolean,
+): ProviderInfo | null {
+  if (!catalogLoaded) return null;
+  const enabled = providers.filter(providerEnabled);
+  return enabled.length === 1 ? enabled[0] : null;
+}
+
+export function shouldShowProviderIdentity(
+  providers: readonly ProviderInfo[],
+  catalogLoaded: boolean,
+): boolean {
+  return soleEnabledProvider(providers, catalogLoaded) === null;
+}
+
+export function providerCatalogResponseIsCurrent(
+  requestHostId: string,
+  activeHostId: string | null,
+  requestRevision: number,
+  currentRevision: number,
+): boolean {
+  return requestHostId === activeHostId && requestRevision === currentRevision;
+}
+
 export interface WireMessage<T = Record<string, unknown>> {
   version: number;
   id?: string | null;

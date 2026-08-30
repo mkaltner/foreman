@@ -101,6 +101,7 @@ export function SessionSearchResults({
   query,
   loading,
   error,
+  showProviderIdentity = true,
   onOpen,
   onPin,
   onHide,
@@ -109,6 +110,7 @@ export function SessionSearchResults({
   query: string;
   loading: boolean;
   error: string;
+  showProviderIdentity?: boolean;
   onOpen: (provider: ProviderId, id: string, itemId?: string | null) => void;
   onPin: (provider: ProviderId, id: string) => void;
   onHide: (provider: ProviderId, id: string) => void;
@@ -119,7 +121,7 @@ export function SessionSearchResults({
   return <div className="search-results" aria-live="polite">
     {results.map(({ session, matches, pinned, hidden }, index) => <article className="search-result" key={`${sessionProvider(session)}:${session.id}`}>
       <button data-search-result={index === 0 ? "first" : ""} className="search-result-main" onClick={() => onOpen(sessionProvider(session), session.id, matches.find((match) => match.itemId)?.itemId)}>
-        <span className="search-result-title"><strong>{session.title}</strong><ProviderBadge provider={sessionProvider(session)} /><StatusLabel status={session.status} /></span>
+        <span className="search-result-title"><strong>{session.title}</strong>{showProviderIdentity && <ProviderBadge provider={sessionProvider(session)} />}<StatusLabel status={session.status} /></span>
         <small title={session.repository}>{session.repository || "Unknown workspace"}</small>
         {matches.slice(0, 3).map((match, matchIndex) => <p key={`${match.itemId ?? match.kind}-${matchIndex}`}><span>{match.kind}</span>{match.snippet}</p>)}
         {!matches.length && query && <p><span>title</span>{session.title}</p>}

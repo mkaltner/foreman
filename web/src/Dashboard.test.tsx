@@ -150,6 +150,19 @@ describe("monitoring dashboard", () => {
     expect(screen.queryByText("Runtime details")).not.toBeInTheDocument();
   });
 
+  it("hides dashboard and grouped-session badges only when one provider is enabled", () => {
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
+    const claude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
+    const props = { sessions: [sessions[0]], serviceStatus: status, connection: "connected" as const, disabled: false, onOpen: vi.fn(), onInterrupt: vi.fn(), onRefresh: vi.fn() };
+    const view = render(<Dashboard {...props} providers={[codex]} providerCatalogLoaded />);
+
+    expect(document.querySelector(".monitor-card .provider-badge")).toBeNull();
+    expect(document.querySelector(".repository-sessions .provider-badge")).toBeNull();
+    view.rerender(<Dashboard {...props} providers={[codex, claude]} providerCatalogLoaded />);
+    expect(document.querySelector(".monitor-card .provider-badge")).toHaveTextContent("Codex");
+    expect(document.querySelector(".repository-sessions .provider-badge")).toHaveTextContent("Codex");
+  });
+
   it("shows freshness, client counts, route details, and runtime disclosure", () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);

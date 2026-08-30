@@ -9,6 +9,9 @@ import {
   reconcileSessionSummaries,
   reconcileSessionSettings,
   routeForSession,
+  shouldShowProviderIdentity,
+  soleEnabledProvider,
+  providerCatalogResponseIsCurrent,
   type AccessLevelInfo,
   type ModelInfo,
   type SessionSummary,
@@ -23,6 +26,24 @@ const session: SessionSummary = {
 };
 
 describe("session mapping and live events", () => {
+  it("simplifies provider UI only for one enabled provider in a loaded catalog", () => {
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
+    const unavailableClaude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
+
+    expect(soleEnabledProvider([codex], false)).toBeNull();
+    expect(soleEnabledProvider([], true)).toBeNull();
+    expect(soleEnabledProvider([codex], true)?.id).toBe("codex");
+    expect(shouldShowProviderIdentity([codex], true)).toBe(false);
+    expect(shouldShowProviderIdentity([codex, unavailableClaude], true)).toBe(true);
+    expect(soleEnabledProvider([codex, { ...unavailableClaude, enabled: false }], true)?.id).toBe("codex");
+  });
+
+  it("rejects stale and cross-host provider catalogs", () => {
+    expect(providerCatalogResponseIsCurrent("host-a", "host-a", 2, 2)).toBe(true);
+    expect(providerCatalogResponseIsCurrent("host-a", "host-b", 2, 2)).toBe(false);
+    expect(providerCatalogResponseIsCurrent("host-a", "host-a", 1, 2)).toBe(false);
+  });
+
   it("accepts only supported persisted provider identities", () => {
     expect(isProviderId("codex")).toBe(true);
     expect(isProviderId("claude-code")).toBe(true);

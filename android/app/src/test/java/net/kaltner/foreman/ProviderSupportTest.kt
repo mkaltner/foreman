@@ -32,6 +32,49 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun providerUiSimplifiesOnlyForOneEnabledProviderInLoadedCatalog() {
+        val codex = ProviderInfo(PROVIDER_CODEX, "Codex", available = true)
+        val unavailableClaude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", available = false)
+
+        assertEquals(null, soleEnabledProvider(listOf(codex), catalogLoaded = false))
+        assertEquals(null, soleEnabledProvider(emptyList(), catalogLoaded = true))
+        assertEquals(PROVIDER_CODEX, soleEnabledProvider(listOf(codex), catalogLoaded = true)?.id)
+        assertFalse(shouldShowProviderIdentity(listOf(codex), catalogLoaded = true))
+        assertTrue(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
+        assertEquals(
+            PROVIDER_CODEX,
+            soleEnabledProvider(
+                listOf(codex, unavailableClaude.copy(enabled = false)),
+                catalogLoaded = true,
+            )?.id,
+        )
+    }
+
+    @Test
+    fun sessionListProviderBadgesAndNewSessionSelectionFollowProviderTransitions() {
+        val codex = ProviderInfo(PROVIDER_CODEX, "Codex", available = true)
+        val unavailableClaude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", available = false)
+
+        assertTrue(shouldShowProviderIdentity(listOf(codex), catalogLoaded = false))
+        assertEquals(null, newSessionProviderSelection(listOf(codex), catalogLoaded = false, PROVIDER_CLAUDE_CODE))
+        assertFalse(shouldShowProviderIdentity(listOf(codex), catalogLoaded = true))
+        assertEquals(PROVIDER_CODEX, newSessionProviderSelection(listOf(codex), true, PROVIDER_CLAUDE_CODE))
+        assertTrue(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
+        assertEquals(PROVIDER_CLAUDE_CODE, newSessionProviderSelection(listOf(codex, unavailableClaude), true, PROVIDER_CLAUDE_CODE))
+        assertFalse(shouldShowProviderIdentity(listOf(codex, unavailableClaude.copy(enabled = false)), catalogLoaded = true))
+    }
+
+    @Test
+    fun relaunchHostSwitchAndStaleResponsesCannotReuseAnotherCatalog() {
+        val relaunched = UiState(activeHostId = "host-a")
+        assertFalse(relaunched.providerCatalogLoaded)
+        assertTrue(relaunched.providers.isEmpty())
+        assertTrue(providerCatalogResponseIsCurrent("host-a", "host-a", 4, 4))
+        assertFalse(providerCatalogResponseIsCurrent("host-a", "host-b", 4, 4))
+        assertFalse(providerCatalogResponseIsCurrent("host-a", "host-a", 3, 4))
+    }
+
+    @Test
     fun unknownProvidersAreNotSilentlyTreatedAsCodexOrClaude() {
         val session = SessionSummary("thread", "/repo", "Future", "idle", provider = "future-provider")
 

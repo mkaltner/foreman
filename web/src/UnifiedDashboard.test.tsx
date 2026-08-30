@@ -26,6 +26,7 @@ describe("unified dashboard", () => {
     expect(screen.getAllByText(/Stale snapshot/)).toHaveLength(5);
     expect(screen.getByText("0/5")).toBeInTheDocument();
     expect(screen.getByText("Foreman-managed Codex runtime")).toBeInTheDocument();
+    expect(document.querySelector(".unified-attention-list .provider-badge")).toHaveTextContent("Codex");
     expect(screen.queryByText("Fallback")).not.toBeInTheDocument();
     const attentionOpen = screen.getAllByRole("button", { name: "Open" }).at(-1)!;
     fireEvent.click(attentionOpen);

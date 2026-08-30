@@ -29,6 +29,38 @@ data class ProviderInfo(
 
 internal fun providerEnabled(provider: ProviderInfo): Boolean = provider.enabled
 
+internal fun soleEnabledProvider(
+    providers: List<ProviderInfo>,
+    catalogLoaded: Boolean,
+): ProviderInfo? {
+    if (!catalogLoaded) return null
+    return providers.filter(::providerEnabled).singleOrNull()
+}
+
+internal fun shouldShowProviderIdentity(
+    providers: List<ProviderInfo>,
+    catalogLoaded: Boolean,
+): Boolean = soleEnabledProvider(providers, catalogLoaded) == null
+
+internal fun newSessionProviderSelection(
+    providers: List<ProviderInfo>,
+    catalogLoaded: Boolean,
+    preferredProvider: String,
+): String? {
+    if (!catalogLoaded) return null
+    val enabled = providers.filter(::providerEnabled)
+    return enabled.singleOrNull()?.id
+        ?: enabled.firstOrNull { it.id == preferredProvider }?.id
+        ?: enabled.firstOrNull()?.id
+}
+
+internal fun providerCatalogResponseIsCurrent(
+    requestHostId: String?,
+    activeHostId: String?,
+    requestRevision: Long,
+    currentRevision: Long,
+): Boolean = requestHostId == activeHostId && requestRevision == currentRevision
+
 @Serializable
 data class PermissionModeInfo(
     val id: String,
