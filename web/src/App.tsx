@@ -63,6 +63,9 @@ import {
   liveActivityLabel,
   liveActivityMessage,
   providerEnabled,
+  providerCatalogResponseIsCurrent,
+  shouldShowProviderIdentity,
+  soleEnabledProvider,
   isProviderId,
   routeForSession,
   providerSessionKey,
@@ -276,6 +279,7 @@ function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [accessLevels, setAccessLevels] = useState<AccessLevelInfo[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providerCatalogLoaded, setProviderCatalogLoaded] = useState(false);
   const [claudeModels, setClaudeModels] = useState<ModelInfo[]>([]);
   const [claudePermissionModes, setClaudePermissionModes] = useState<PermissionModeInfo[]>([]);
   const [repositories, setRepositories] = useState<RepositoryInfo[]>([]);
@@ -334,6 +338,9 @@ function App() {
   const publishedPresenceRef = useRef<string | null | undefined>(undefined);
   const presenceProjectionGuardRef = useRef(new SessionPresenceProjectionGuard());
   const sessionOpenGenerationRef = useRef(0);
+  const providerCatalogRevisionRef = useRef(0);
+  const refreshGenerationRef = useRef(0);
+  const refreshStateRef = useRef<((hostId: string, reconnected?: boolean) => Promise<void>) | null>(null);
   const openSessionRef = useRef<(provider: ProviderId, id: string, updateHistory?: boolean) => void>(() => undefined);
   const enterSessionsRef = useRef<(replace?: boolean) => void>(() => undefined);
   const notificationOpenRef = useRef<(hostId: string, sessionId: string) => void>(() => undefined);
@@ -666,6 +673,7 @@ function App() {
     if (message.type === "provider.event") {
       const nextProviders = (message.payload as { providers?: ProviderInfo[] }).providers;
       if (Array.isArray(nextProviders)) {
+        providerCatalogRevisionRef.current += 1;
         sessionListAuthoritativeRef.current = { codex: false, "claude-code": false };
         const enabled = new Set(
           nextProviders
@@ -678,6 +686,7 @@ function App() {
             .map(({ id }) => id),
         );
         setProviders(nextProviders);
+        setProviderCatalogLoaded(true);
         setSessions((previous) => {
           const next = previous.filter((session) => openable.has(sessionProvider(session)));
           sessionsRef.current = next;
@@ -700,6 +709,9 @@ function App() {
           setView("sessions");
           updateRoute({ view: "sessions" }, true);
         }
+        if (hostId) queueMicrotask(() => {
+          void refreshStateRef.current?.(hostId).catch(() => undefined);
+        });
       }
       return;
     }
@@ -855,6 +867,8 @@ function App() {
   }, [queueDashboardEvent, shouldDisplayTurnNotification]);
 
   const clearHostProjections = useCallback(() => {
+    providerCatalogRevisionRef.current += 1;
+    refreshGenerationRef.current += 1;
     sessionOpenGenerationRef.current += 1;
     searchGeneration.current += 1;
     if (dashboardFrame.current !== null) cancelAnimationFrame(dashboardFrame.current);
@@ -887,6 +901,7 @@ function App() {
     setModels([]);
     setAccessLevels([]);
     setProviders([]);
+    setProviderCatalogLoaded(false);
     setClaudeModels([]);
     setClaudePermissionModes([]);
     setRepositories([]);
@@ -976,6 +991,9 @@ function App() {
 
   const refreshState = useCallback(
     async (hostId: string, reconnected = false) => {
+      const refreshGeneration = ++refreshGenerationRef.current;
+      const providerCatalogRevision = providerCatalogRevisionRef.current;
+      if (reconnected) setProviderCatalogLoaded(false);
       const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
       const codexAvailable = providerResult.providers.some(
         (provider) => provider.id === "codex" && providerEnabled(provider) && provider.available,
@@ -1016,7 +1034,14 @@ function App() {
           client.request<{ modes: PermissionModeInfo[] } & Record<string, unknown>>("provider.permission.list", { provider: "claude-code" }),
         ])
         : [{ result: { sessions: [] as SessionSummary[] }, authoritative: false }, { models: [] }, { modes: [] as PermissionModeInfo[] }];
-      if (activeHostIdRef.current !== hostId) return;
+      if (
+        !providerCatalogResponseIsCurrent(
+          hostId,
+          activeHostIdRef.current,
+          providerCatalogRevision,
+          providerCatalogRevisionRef.current,
+        ) || refreshGeneration !== refreshGenerationRef.current
+      ) return;
       sessionListAuthoritativeRef.current = {
         codex: codexSessionRequest.authoritative,
         "claude-code": claudeSessionRequest.authoritative,
@@ -1024,6 +1049,7 @@ function App() {
       setApprovals(approvalResult.approvals);
       setInputs(inputResult.inputs);
       setProviders(providerResult.providers);
+      setProviderCatalogLoaded(true);
       const incoming = [
         ...(codexSessionRequest.authoritative
           ? codexSessionRequest.result.sessions
@@ -1096,7 +1122,7 @@ function App() {
             : Promise.resolve();
         }),
       ]);
-      if (activeHostIdRef.current !== hostId) return;
+      if (activeHostIdRef.current !== hostId || refreshGeneration !== refreshGenerationRef.current) return;
       const reopenGeneration = sessionOpenGenerationRef.current;
       const reopenId = selectedIdRef.current;
       if (reopenId && viewRef.current === "detail") {
@@ -1163,6 +1189,7 @@ function App() {
     },
     [client, updateRoute],
   );
+  refreshStateRef.current = refreshState;
 
   const connectHost = useCallback(
     async (host: StoredHost) => {
@@ -1379,7 +1406,7 @@ function App() {
       showSessionList(replace);
       return;
     }
-    const authoritative = connectedRef.current && providers.length > 0;
+    const authoritative = connectedRef.current && providerCatalogLoaded;
     const provider = providers.find((candidate) => candidate.id === remembered.provider);
     const providerStillEnabled = provider !== undefined && providerEnabled(provider);
     const providerAvailable = providerStillEnabled && provider.available;
@@ -1701,7 +1728,9 @@ function App() {
           onProviderEnabled={async (provider, enabled) => {
             try {
               const result = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.configure", { provider, enabled });
+              providerCatalogRevisionRef.current += 1;
               setProviders(result.providers);
+              setProviderCatalogLoaded(true);
               await refreshState(activeHost.id);
             } catch (caught) {
               setError(caught instanceof Error ? caught.message : "Provider setting could not be updated");
@@ -1729,8 +1758,8 @@ function App() {
             }}
           />
           <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} loading={searchLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
-          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
-            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
+          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading} error={searchError} showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></main> : <>
+            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} /></section>}
             <Dashboard
             hostId={activeHost.id}
             sessions={visibleSessions.map(({ session }) => session)}
@@ -1741,6 +1770,7 @@ function App() {
             recentActivity={recentActivity.filter((entry) => !organization.hiddenIds.includes(providerSessionKey("codex", entry.sessionId)))}
             pairedClients={pairedClients}
             providers={providers}
+            providerCatalogLoaded={providerCatalogLoaded}
             connection={connection}
             disabled={!connected}
             onOpen={dashboardOpen}
@@ -1782,13 +1812,14 @@ function App() {
             repositoryRoot={serviceStatus?.repositoryRoot ?? ""}
             accountUsage={accountUsage}
             providers={providers}
+            providerCatalogLoaded={providerCatalogLoaded}
             filters={searchFilters}
             repositoryOptions={repositoryOptions}
             searchLoading={searchLoading}
             searchError={searchError}
             selectedId={selectedId}
             selectedProvider={selectedProvider}
-            disabled={!connected}
+            disabled={!connected || !providerCatalogLoaded}
             onOpen={searchResultOpen}
             onRefresh={() => {
               const hostId = activeHostIdRef.current;
@@ -1859,6 +1890,7 @@ function App() {
                 models={sessionProvider(current) === "claude-code" ? claudeModels : models}
                 accessLevels={sessionProvider(current) === "claude-code" ? claudePermissionModes : accessLevels}
                 connected={connected}
+                showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)}
                 activityDetail={appearance.activityDetail}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
@@ -1890,6 +1922,7 @@ function App() {
           models={models}
           accessLevels={accessLevels}
           providers={providers}
+          providerCatalogLoaded={providerCatalogLoaded}
           claudeModels={claudeModels}
           claudePermissionModes={claudePermissionModes}
           onClose={() => setNewSessionOpen(false)}
@@ -2040,6 +2073,7 @@ export function SessionList({
   repositoryRoot = "",
   accountUsage = null,
   providers = [],
+  providerCatalogLoaded = true,
   filters,
   repositoryOptions,
   searchLoading,
@@ -2064,6 +2098,7 @@ export function SessionList({
   repositoryRoot?: string;
   accountUsage?: AccountUsage | null;
   providers?: ProviderInfo[];
+  providerCatalogLoaded?: boolean;
   filters: SessionFilters;
   repositoryOptions: RepositoryFilterOption[];
   searchLoading: boolean;
@@ -2102,6 +2137,7 @@ export function SessionList({
   };
   const repositoryGroups = repositorySessionGroups(results, repositories, repositoryRoot);
   const discoveryActive = activeFilterCount(filters) > 0;
+  const showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded);
   return (
     <aside className="session-pane">
       <div className="pane-heading">
@@ -2113,7 +2149,7 @@ export function SessionList({
       </div>
       <SessionSearchControls filters={filters} repositories={repositoryOptions} loading={searchLoading} onChange={onFilters} onSearchNow={onSearchNow} />
       <div className="session-scroll">
-        {discoveryActive ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} onOpen={onOpen} onPin={onPin} onHide={onHide} /> : <>
+        {discoveryActive ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} showProviderIdentity={showProviderIdentity} onOpen={onOpen} onPin={onPin} onHide={onHide} /> : <>
         {sessions.length === 0 && <div className="empty-list"><h3>No sessions yet</h3><p>Start one from a repository.</p></div>}
         {groupByRepository ? repositoryGroups.map((group) => (
           <section className="session-group repository-session-group" key={group.repository.id}>
@@ -2138,7 +2174,7 @@ export function SessionList({
         )}
         </>}
       </div>
-      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} providers={providers} />}
+      {accountUsage?.providers && <AccountUsageDock usage={accountUsage} providers={providers} providerCatalogLoaded={providerCatalogLoaded} />}
     </aside>
   );
 
@@ -2150,7 +2186,7 @@ export function SessionList({
       className={`session-card ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
       onClick={() => onOpen(provider, session.id)}
     >
-      <div className="session-title-row"><h3>{session.title}</h3><ProviderBadge provider={provider} /><StatusPill status={session.status} /></div>
+      <div className="session-title-row"><h3>{session.title}</h3>{showProviderIdentity && <ProviderBadge provider={provider} />}<StatusPill status={session.status} /></div>
       <p className="repository">{shortRepository(session.repository)}</p>
       {provider === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
       <div className="session-meta">
@@ -2166,7 +2202,7 @@ export function SessionList({
   }
 }
 
-export function AccountUsageDock({ usage, providers: providerInfo }: { usage: AccountUsage; providers: ProviderInfo[] }) {
+export function AccountUsageDock({ usage, providers: providerInfo, providerCatalogLoaded = true }: { usage: AccountUsage; providers: ProviderInfo[]; providerCatalogLoaded?: boolean }) {
   const [open, setOpen] = useState(false);
   const rootRef = usePopoverDismiss<HTMLDivElement>(open, setOpen);
   const providers = ([
@@ -2178,30 +2214,31 @@ export function AccountUsageDock({ usage, providers: providerInfo }: { usage: Ac
       : providerInfo.some((entry) => entry.id === provider.id && providerEnabled(entry)))
     .map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
   const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
+  const showProviderIdentity = shouldShowProviderIdentity(providerInfo, providerCatalogLoaded);
   if (!availableWindows.length && !providers.some(({ usage: providerUsage }) => providerUsage)) return null;
   const usedPercent = availableWindows.length
     ? Math.max(...availableWindows.map((window) => Math.max(0, Math.min(100, window.usedPercent))))
     : 0;
-  const summary = providers.map(({ label, usage: providerUsage }) => `${label} ${accountUsageRemaining(providerUsage)}`).join(", ");
+  const summary = providers.map(({ label, usage: providerUsage }) => `${showProviderIdentity ? `${label} ` : ""}${accountUsageRemaining(providerUsage)}`).join(", ");
   return <div className="account-usage-anchor" ref={rootRef}>
     <button className="account-usage-dock" type="button" aria-label={`Account usage, ${summary}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       <UsageRing percentUsed={usedPercent} />
-      <span className="account-provider-summary">{providers.map(({ id, label, usage: providerUsage }) => <span key={id}><b>{label}</b><strong>{accountUsageRemaining(providerUsage)}</strong></span>)}<small>Account usage</small></span>
+      <span className="account-provider-summary">{providers.map(({ id, label, usage: providerUsage }) => <span key={id}>{showProviderIdentity && <b>{label}</b>}<strong>{accountUsageRemaining(providerUsage)}</strong></span>)}<small>Account usage</small></span>
     </button>
     {open && <aside className="account-usage-panel" aria-label="Account usage">
-      <header><div><span className="eyebrow">Across providers</span><strong>Account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
+      <header><div>{showProviderIdentity && <span className="eyebrow">Across providers</span>}<strong>Account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
       <div className="account-provider-list">{providers.map(({ id, label, usage: providerUsage }) => {
         const windows = accountUsageWindows(providerUsage);
         return <section className="account-provider-usage" key={id}>
-          <div className="account-provider-heading"><strong>{label}</strong>{providerUsage?.experimental && <span>Experimental</span>}</div>
+          {(showProviderIdentity || providerUsage?.experimental) && <div className="account-provider-heading">{showProviderIdentity && <strong>{label}</strong>}{providerUsage?.experimental && <span>Experimental</span>}</div>}
           {windows.length ? <div className="account-limit-list">{windows.map((window, index) => {
             const remaining = Math.max(0, Math.round(100 - window.usedPercent));
             return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
               <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
-              <div className="context-meter" role="meter" aria-label={`${label} ${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
+              <div className="context-meter" role="meter" aria-label={`${showProviderIdentity ? `${label} ` : ""}${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
               <small>{rateLimitResetLabel(window.resetsAt)}</small>
             </section>;
-          })}</div> : <p>{providerUsage?.availabilityReason || `${label} usage is unavailable.`}</p>}
+          })}</div> : <p>{providerUsage?.availabilityReason || `${showProviderIdentity ? `${label} usage` : "Usage"} is unavailable.`}</p>}
           {providerUsage?.observedAt && <small className="usage-observed">Last observed {new Date(providerUsage.observedAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small>}
         </section>;
       })}</div>
@@ -2240,6 +2277,7 @@ export function ConversationView({
   models,
   accessLevels,
   connected,
+  showProviderIdentity = true,
   activityDetail = "focused",
   highlightItemId,
   focusedApprovalId,
@@ -2257,6 +2295,7 @@ export function ConversationView({
   models: ModelInfo[];
   accessLevels: AccessLevelInfo[];
   connected: boolean;
+  showProviderIdentity?: boolean;
   activityDetail?: ActivityDetail;
   highlightItemId: string | null;
   focusedApprovalId: string | null;
@@ -2539,7 +2578,7 @@ export function ConversationView({
     <div className="conversation">
       <header className="conversation-header">
         <button className="mobile-back" onClick={onBack}>‹ Sessions</button>
-        <div className="conversation-title"><h1>{session.title}</h1><p><ProviderBadge provider={provider} /> {shortRepository(session.repository)}</p></div>
+        <div className="conversation-title"><h1>{session.title}</h1><p>{showProviderIdentity && <ProviderBadge provider={provider} />} {shortRepository(session.repository)}</p></div>
         <StatusPill status={session.status} />
         {contextUsage && <span className="session-context-control" ref={sessionInfoRef}>
           <ContextUsageButton usage={contextUsage} open={sessionInfoOpen} onClick={() => setSessionInfoOpen((open) => !open)} />
@@ -2676,12 +2715,11 @@ function SessionInfoPanel({ session, usage, model, effort, access, onClose }: { 
   const turnCount = new Set((session.messages ?? []).map(({ turnId }) => turnId).filter(Boolean)).size;
   const compactions = (session.messages ?? []).filter(({ kind }) => kind === "compaction");
   const latestCompaction = compactions.at(-1);
-  const provider = sessionProvider(session);
   return <aside className="session-info-panel" aria-label="Session info">
     <header><div><span className="eyebrow">Session info</span><strong>Context window</strong></div><button type="button" onClick={onClose} aria-label="Close session info">×</button></header>
     <div className="context-usage-summary"><span>{formatTokenCount(usage.usedTokens)} / {formatTokenCount(usage.contextWindow)} tokens</span><strong>{usage.percentRemaining}% left</strong></div>
     <div className="context-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.percentUsed}><i style={{ width: `${usage.percentUsed}%` }} /></div>
-    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. {provider === "claude-code" ? "Claude" : "Codex"} normally compacts the conversation automatically before the window is exhausted.</p>
+    <p>{formatTokenCount(usage.remainingTokens)} tokens remain. Conversation history normally compacts automatically before the window is exhausted.</p>
     <dl>
       <div><dt>Model</dt><dd>{model || session.model || "—"}</dd></div>
       {effort && <div><dt>Reasoning</dt><dd>{reasoningLabel(effort)}</dd></div>}
@@ -3030,12 +3068,15 @@ export interface NewSessionSettings {
   permissionMode?: string;
 }
 
-export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
+export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], providerCatalogLoaded = true, models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; providerCatalogLoaded?: boolean; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState(".");
   const enabledProviders = providers.filter(providerEnabled);
-  const [provider, setProvider] = useState<ProviderId>(() =>
+  const [providerChoice, setProviderChoice] = useState<ProviderId>(() =>
     enabledProviders.find(({ id }) => id === "codex")?.id ?? enabledProviders[0]?.id ?? "codex"
   );
+  const soleProvider = soleEnabledProvider(providers, providerCatalogLoaded);
+  const provider = soleProvider?.id ?? enabledProviders.find(({ id }) => id === providerChoice)?.id ?? enabledProviders[0]?.id ?? providerChoice;
+  const showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded);
   const [prompt, setPrompt] = useState("");
   const defaultRoute = routeForSession(null, models, accessLevels);
   const [model, setModel] = useState(defaultRoute.model);
@@ -3054,10 +3095,10 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
     if (!selectionAvailable) setSelected(".");
   }, [selectionAvailable]);
   useEffect(() => {
-    if (!enabledProviders.some(({ id }) => id === provider) && enabledProviders[0]) {
-      setProvider(enabledProviders[0].id);
+    if (!enabledProviders.some(({ id }) => id === providerChoice) && enabledProviders[0]) {
+      setProviderChoice(enabledProviders[0].id);
     }
-  }, [enabledProviders, provider]);
+  }, [enabledProviders, providerChoice]);
   const submit = () => onCreate({
     provider,
     repositoryId: location,
@@ -3071,11 +3112,14 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
       ...(access ? { accessLevel: access } : {}),
     }),
   });
-  const unavailable = selectedProviderInfo?.available !== true;
+  const catalogEmpty = providerCatalogLoaded && enabledProviders.length === 0;
+  const unavailable = !providerCatalogLoaded || catalogEmpty || selectedProviderInfo?.available !== true;
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location && !unavailable && (provider === "codex" || prompt.trim())) void submit(); }}>
-    <div className="modal-heading"><div><span className="eyebrow">{provider === "claude-code" ? "Claude Code" : "Codex"}</span><h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
-    <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)}>{enabledProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>
-    {unavailable && <div className="new-session-empty" role="status"><strong>{selectedProviderInfo?.displayName ?? providerDisplayName(provider)} is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason, provider)}</p></div>}
+    <div className="modal-heading"><div>{showProviderIdentity && selectedProviderInfo && <span className="eyebrow">{selectedProviderInfo.displayName}</span>}<h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
+    {providerCatalogLoaded && enabledProviders.length > 1 && <label>Provider<select value={provider} onChange={(event) => setProviderChoice(event.target.value as ProviderId)}>{enabledProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>}
+    {!providerCatalogLoaded && <div className="new-session-empty" role="status"><strong>Loading providers…</strong><p>Foreman is checking the enabled providers for this host.</p></div>}
+    {catalogEmpty && <div className="new-session-empty" role="status"><strong>No enabled provider is available.</strong><p>Open provider settings and enable at least one provider.</p></div>}
+    {providerCatalogLoaded && !catalogEmpty && selectedProviderInfo?.available !== true && <div className="new-session-empty" role="status"><strong>{selectedProviderInfo?.displayName ?? providerDisplayName(provider)} is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason, provider)}</p></div>}
     {hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}
     {provider === "claude-code" && !unavailable && <label>Initial prompt<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="What should Claude work on?" required /></label>}
     <div className="new-session-settings">{provider === "codex" ? <>
@@ -3086,7 +3130,7 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
       <label>Permission mode<select aria-label="Permission mode" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value)}>{claudePermissionModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.displayName}{mode.highRisk ? " · high risk" : ""}</option>)}</select><small>{claudePermissionModes.find((mode) => mode.id === permissionMode)?.description}</small></label>
       <label>Claude model<select aria-label="Claude model" value={claudeModel} onChange={(event) => setClaudeModel(event.target.value)}>{claudeModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select><small>Adapter-supported list; not dynamically discovered.</small></label>
     </>}</div>
-    <div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={unavailable || (provider === "claude-code" && !prompt.trim())}>{provider === "claude-code" ? "Start Claude session" : hasRepositories ? "Create" : "Start in workspace"}</button></div>
+    <div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={unavailable || (provider === "claude-code" && !prompt.trim())}>{provider === "claude-code" ? showProviderIdentity ? "Start Claude session" : "Start session" : hasRepositories ? "Create" : "Start in workspace"}</button></div>
   </form></div>;
 }
 

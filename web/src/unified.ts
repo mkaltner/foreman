@@ -77,6 +77,7 @@ export function projectHostSnapshot(
     const session = sessions.find(({ id }) => id === approval.sessionId);
     return {
       hostId,
+      provider: session ? sessionProvider(session) : "codex",
       sessionId: approval.sessionId,
       approvalId: approval.id,
       sessionTitle: session?.title || "Codex session",
@@ -89,6 +90,7 @@ export function projectHostSnapshot(
     const session = sessions.find(({ id }) => id === input.sessionId);
     attention.push({
       hostId,
+      provider: session ? sessionProvider(session) : "codex",
       sessionId: input.sessionId,
       approvalId: input.id,
       sessionTitle: session?.title || "Codex session",
@@ -101,6 +103,7 @@ export function projectHostSnapshot(
     .filter(({ id }) => !requestSessions.has(id))
     .forEach((session) => attention.push({
       hostId,
+      provider: sessionProvider(session),
       sessionId: session.id,
       sessionTitle: session.title,
       repository: session.repository,
@@ -109,6 +112,7 @@ export function projectHostSnapshot(
     }));
   failedSessions.forEach((session) => attention.push({
     hostId,
+    provider: sessionProvider(session),
     sessionId: session.id,
     sessionTitle: session.title,
     repository: session.repository,

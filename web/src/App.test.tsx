@@ -630,6 +630,39 @@ describe("Claude session deletion", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
 
   });
+
+  it("removes session-list provider badges only for one enabled provider", () => {
+    const codexSession: SessionSummary = { id: "codex-session", repository: "/repo", title: "Codex work", status: "idle" };
+    const baseProps = {
+      results: [{ session: codexSession, pinned: false, hidden: false, matches: [] }],
+      filters: DEFAULT_SESSION_FILTERS,
+      repositoryOptions: [],
+      searchLoading: false,
+      searchError: "",
+      selectedId: null,
+      selectedProvider: "codex" as const,
+      disabled: false,
+      onOpen: vi.fn(),
+      onRefresh: vi.fn(),
+      onNew: vi.fn(),
+      onAction: vi.fn(),
+      onFilters: vi.fn(),
+      onSearchNow: vi.fn(),
+      onPin: vi.fn(),
+      onHide: vi.fn(),
+    };
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
+    const claude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
+    const view = render(<SessionList {...baseProps} providers={[codex]} providerCatalogLoaded />);
+
+    expect(document.querySelector(".session-card .provider-badge")).toBeNull();
+    view.rerender(<SessionList {...baseProps} providers={[codex, claude]} providerCatalogLoaded />);
+    expect(document.querySelector(".session-card .provider-badge")).toHaveTextContent("Codex");
+    view.rerender(<SessionList {...baseProps} providers={[codex, { ...claude, enabled: false }]} providerCatalogLoaded />);
+    expect(document.querySelector(".session-card .provider-badge")).toBeNull();
+    view.rerender(<SessionList {...baseProps} providers={[codex]} providerCatalogLoaded={false} />);
+    expect(document.querySelector(".session-card .provider-badge")).toHaveTextContent("Codex");
+  });
 });
 
 describe("user message links", () => {
@@ -687,7 +720,7 @@ describe("session context usage", () => {
 
     const panel = screen.getByRole("complementary", { name: "Session info" });
     expect(within(panel).getByText("200k / 1m tokens")).toBeInTheDocument();
-    expect(within(panel).getByText(/Codex normally compacts the conversation automatically/)).toBeInTheDocument();
+    expect(within(panel).getByText(/Conversation history normally compacts automatically/)).toBeInTheDocument();
     expect(within(panel).getByRole("meter", { name: "Context used" })).toHaveAttribute("aria-valuenow", "20");
     expect(within(panel).getByText("3 items · 1 turn")).toBeInTheDocument();
     expect(within(panel).getByText("Compactions").nextSibling).toHaveTextContent("1");
@@ -764,7 +797,10 @@ describe("session context usage", () => {
       ]}
     />);
 
-    expect(screen.getByRole("button", { name: "Account usage, Codex 88% left" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Account usage, 88% left" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Account usage, 88% left" }));
+    expect(screen.queryByText("Across providers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
   });
 });
@@ -1420,7 +1456,7 @@ describe("NewSessionDialog", () => {
     accessLevels: [{ id: "ask", displayName: "Ask for approval" }, { id: "full", displayName: "Full access" }],
   };
 
-  it("offers only enabled providers and defaults to the remaining provider", () => {
+  it("hides provider selection and defaults to the sole enabled provider", () => {
     render(<NewSessionDialog
       repositories={[]}
       repositoryRoot="/projects"
@@ -1435,8 +1471,38 @@ describe("NewSessionDialog", () => {
       onCreate={vi.fn()}
     />);
 
-    expect(screen.getByLabelText("Provider")).toHaveValue("claude-code");
-    expect(within(screen.getByLabelText("Provider")).queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Initial prompt")).toBeInTheDocument();
+  });
+
+  it("keeps the loading catalog distinct and transitions without an invalid provider", () => {
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
+    const view = render(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[]} providerCatalogLoaded={false} onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    expect(screen.getByText("Loading providers…")).toBeInTheDocument();
+    expect(screen.queryByText("Codex is unavailable on this host.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start in workspace" })).toBeDisabled();
+
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[codex]} providerCatalogLoaded onClose={vi.fn()} onCreate={vi.fn()} />);
+    expect(screen.queryByText("Loading providers…")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start in workspace" })).toBeEnabled();
+  });
+
+  it("restores selection immediately for two enabled providers and simplifies again", () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
+    const claude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
+    const view = render(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[codex]} onClose={vi.fn()} onCreate={create} />);
+
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[codex, claude]} onClose={vi.fn()} onCreate={create} />);
+    expect(screen.getByLabelText("Provider")).toHaveValue("codex");
+    expect(screen.getByRole("option", { name: "Claude Code · unavailable" })).toBeInTheDocument();
+
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[{ ...codex, enabled: false }, { ...claude, available: true }]} onClose={vi.fn()} onCreate={create} />);
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Initial prompt")).toBeInTheDocument();
   });
 

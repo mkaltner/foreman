@@ -971,7 +971,8 @@ internal data class UiState(
     val openingWorkspaceFile: String? = null,
     val workspaceFile: WorkspaceFile? = null,
     val sessions: List<SessionSummary> = emptyList(),
-    val providers: List<ProviderInfo> = defaultProviders(),
+    val providers: List<ProviderInfo> = emptyList(),
+    val providerCatalogLoaded: Boolean = false,
     val accountUsage: AccountUsage = AccountUsage(),
     val repositories: List<RepositoryInfo> = emptyList(),
     val selected: SessionSummary? = null,
@@ -1168,7 +1169,8 @@ internal fun UiState.withForgottenConnection(): UiState =
         submitting = false,
         error = null,
         sessions = emptyList(),
-        providers = defaultProviders(),
+        providers = emptyList(),
+        providerCatalogLoaded = false,
         accountUsage = AccountUsage(),
         repositories = emptyList(),
         selected = null,
@@ -1281,6 +1283,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var restorationSessionId: String? = initiallyRememberedSession?.sessionId
     private var nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
     private var sessionOpenGeneration = 0L
+    private var providerCatalogRevision = 0L
+    private var sessionSyncGeneration = 0L
     private var searchJob: Job? = null
     private var workspaceFileJob: Job? = null
     private var lastSearchRequestKey = ""
@@ -1345,7 +1349,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun setHost(value: String) = state.update { it.copy(host = value) }
     fun setPairingKey(value: String) = state.update { it.copy(pairingKey = value) }
     fun setDeviceName(value: String) = state.update { it.copy(deviceName = value) }
-    fun setNewSession(open: Boolean) = state.update { it.copy(showNewSession = open) }
+    fun setNewSession(open: Boolean) = state.update {
+        it.copy(showNewSession = open && it.providerCatalogLoaded)
+    }
 
     fun setProviderEnabled(provider: String, enabled: Boolean) {
         if (state.value.submitting) return
@@ -1361,6 +1367,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
                 val providers = response.payload.getValue("providers").jsonArray
                     .map { json.decodeFromJsonElement<ProviderInfo>(it) }
+                providerCatalogRevision += 1
                 val selected = state.value.selected?.takeIf { session ->
                     providers.any {
                         it.id == sessionProvider(session) && it.enabled && it.available
@@ -1373,6 +1380,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 state.update {
                     it.copy(
                         providers = providers,
+                        providerCatalogLoaded = true,
                         selected = selected,
                         screen = if (it.selected != null && selected == null) Screen.Sessions else it.screen,
                     )
@@ -2177,7 +2185,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         pairingKey = "",
                         capabilities = client.capabilities,
                         sessions = emptyList(),
-                        providers = defaultProviders(),
+                        providers = emptyList(),
+                        providerCatalogLoaded = false,
                         accountUsage = AccountUsage(),
                         repositories = emptyList(),
                         selected = null,
@@ -2319,7 +2328,13 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (!restartRequested || restartReconnectJob?.isActive == true) return
         reconnectJob?.cancel()
         reconnectJob = null
-        state.update { it.copy(restartPhase = RestartPhase.Reconnecting, connectionStatus = "reconnecting") }
+        state.update {
+            it.copy(
+                restartPhase = RestartPhase.Reconnecting,
+                connectionStatus = "reconnecting",
+                providerCatalogLoaded = false,
+            )
+        }
         restartReconnectJob =
             viewModelScope.launch {
                 val deadline = System.currentTimeMillis() + 45_000
@@ -2494,6 +2509,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private fun activateSavedHost(saved: SavedHost, requestedChoice: HostNavigationChoice? = null) {
+        providerCatalogRevision += 1
+        sessionSyncGeneration += 1
         overviewNavigation.invalidateForHost(saved.id)
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
@@ -2530,7 +2547,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 submitting = false,
                 error = null,
                 sessions = emptyList(),
-                providers = defaultProviders(),
+                providers = emptyList(),
+                providerCatalogLoaded = false,
                 accountUsage = AccountUsage(),
                 repositories = emptyList(),
                 selected = null,
@@ -2834,7 +2852,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             sessionId = restorationSessionId,
             provider = restorationProvider,
         )
-        state.update { it.copy(loading = true, error = null, connectionStatus = "reconnecting") }
+        state.update {
+            it.copy(
+                loading = true,
+                error = null,
+                connectionStatus = "reconnecting",
+                providerCatalogLoaded = false,
+            )
+        }
         runCatching {
             client.authenticate(saved.tcpEndpoint(), saved.deviceToken)
             if (state.value.activeHostId != saved.id) return
@@ -3018,6 +3043,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         selectedProvider: String = PROVIDER_CODEX,
         expectedNavigation: HostNavigationChoice? = null,
     ) {
+        val syncGeneration = ++sessionSyncGeneration
+        val catalogRevision = providerCatalogRevision
         val synchronizedHostId = expectedNavigation?.hostId ?: state.value.activeHostId
         state.update { it.copy(loading = true, error = null) }
         val providers = client.request("provider.list").payload.getValue("providers").jsonArray
@@ -3146,6 +3173,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
         }
         val sessions = snapshot.sessions
+        if (
+            !providerCatalogResponseIsCurrent(
+                synchronizedHostId,
+                state.value.activeHostId,
+                catalogRevision,
+                providerCatalogRevision,
+            ) || syncGeneration != sessionSyncGeneration
+        ) return
         var selectedReadError: String? = null
         var authoritativeSelectionInvalid = false
         val selected = selectedSessionId?.let { sessionId ->
@@ -3176,7 +3211,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }
             }
         }
-        if (state.value.activeHostId != synchronizedHostId) return
+        if (
+            !providerCatalogResponseIsCurrent(
+                synchronizedHostId,
+                state.value.activeHostId,
+                catalogRevision,
+                providerCatalogRevision,
+            ) || syncGeneration != sessionSyncGeneration
+        ) return
         nonAuthoritativeSessionProviders = snapshot.nonAuthoritativeSessionProviders
         val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
         state.update {
@@ -3190,6 +3232,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 )
                 .copy(
                     providers = snapshot.providers,
+                    providerCatalogLoaded = true,
                     accountUsage = snapshot.accountUsage,
                     repositoryRoot = snapshot.repositoryRoot,
                     claudeModels = snapshot.claudeModels,
@@ -3862,6 +3905,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             val providers = message.payload["providers"]?.jsonArray?.mapNotNull {
                 runCatching { json.decodeFromJsonElement<ProviderInfo>(it) }.getOrNull()
             } ?: return
+            providerCatalogRevision += 1
             val claudeAvailable =
                 providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }
             val enabledProviders = providers.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
@@ -3888,12 +3932,22 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 }?.let(::availability)
                 current.copy(
                     providers = providers,
+                    providerCatalogLoaded = true,
                     sessions = current.sessions.filter {
                         sessionProvider(it) in openableProviders
                     }.map(::availability),
                     selected = selected,
                     screen = if (current.selected != null && selected == null) Screen.Sessions else current.screen,
                 )
+            }
+            val current = state.value
+            viewModelScope.launch {
+                runCatching {
+                    synchronizeSessions(
+                        current.selected?.id,
+                        current.selected?.let(::sessionProvider) ?: restorationProvider,
+                    )
+                }.onFailure(::fail)
             }
             return
         }
@@ -4851,7 +4905,14 @@ private fun UnifiedOverviewScreen(
                                 Text(item.type.uppercase(), color = if (item.type == "failed") MaterialTheme.colorScheme.error else Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                 Text(overviewAge(item.startedAt) + if (stale) " · STALE" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Text(item.sessionTitle, fontWeight = FontWeight.Bold)
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(item.sessionTitle, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                                ProviderBadge(item.provider)
+                            }
                             Text("${host.displayName} · ${item.repository.substringAfterLast('/').ifBlank { "Workspace" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Button(onClick = { viewModel.openOverviewSession(item) }, modifier = Modifier.align(Alignment.End)) { Text("Open") }
                         }
@@ -4900,6 +4961,7 @@ private fun HostDashboardScreen(
 ) {
     val pendingApprovals = state.approvals.filter { it.status == "pending" || it.status == "submitting" }
     val pendingInputs = state.inputs.filter { it.status == "pending" || it.status == "submitting" }
+    val showProviderIdentity = shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)
     val dashboard =
         projectAndroidDashboard(
             state.sessions,
@@ -4962,10 +5024,10 @@ private fun HostDashboardScreen(
                                 OverviewMetric("Active", dashboard.active.size.toString(), Modifier.weight(1f))
                                 OverviewMetric("Waiting", dashboard.waitingCount.toString(), Modifier.weight(1f))
                             }
-                            val providerActivity = state.providers.filter { it.enabled }.joinToString(" · ") { provider ->
+                            val providerActivity = if (showProviderIdentity) state.providers.filter { it.enabled }.joinToString(" · ") { provider ->
                                 val label = provider.displayName.removeSuffix(" Code")
                                 "$label ${dashboard.active.count { sessionProvider(it) == provider.id }}"
-                            }
+                            } else ""
                             if (providerActivity.isNotBlank()) {
                                 Text(
                                     "$providerActivity active",
@@ -5017,6 +5079,7 @@ private fun HostDashboardScreen(
                                         approval != null -> "Waiting for approval"
                                         else -> dashboardSessionDetail(session)
                                     },
+                                showProviderIdentity = showProviderIdentity,
                                 onOpen = { viewModel.openSession(session.id, focusedApprovalId = requestId, provider = sessionProvider(session)) },
                             )
                         }
@@ -5030,6 +5093,7 @@ private fun HostDashboardScreen(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = liveActivityMessage(session) ?: liveActivityLabel(session),
+                                showProviderIdentity = showProviderIdentity,
                                 onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
@@ -5043,6 +5107,7 @@ private fun HostDashboardScreen(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = session.failureSummary ?: session.activityText.ifBlank { session.activityLabel.ifBlank { "Turn finished" } },
+                                showProviderIdentity = showProviderIdentity,
                                 onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
@@ -5128,6 +5193,7 @@ private fun DashboardSessionCard(
     session: SessionSummary,
     repositoryLabel: String,
     detail: String,
+    showProviderIdentity: Boolean,
     onOpen: () -> Unit,
 ) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
@@ -5140,9 +5206,11 @@ private fun DashboardSessionCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.width(8.dp))
-                ProviderBadge(sessionProvider(session))
-                Spacer(Modifier.width(6.dp))
+                if (showProviderIdentity) {
+                    Spacer(Modifier.width(8.dp))
+                    ProviderBadge(sessionProvider(session))
+                    Spacer(Modifier.width(6.dp))
+                }
                 StatusPill(sessionDisplayStatus(session))
             }
             Text(repositoryLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -5237,6 +5305,7 @@ private fun SessionsScreen(
     val collapsedRepositoryIds = state.activeHostId
         ?.let(state.collapsedRepositoriesByHost::get)
         .orEmpty()
+    val showProviderIdentity = shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5267,7 +5336,7 @@ private fun SessionsScreen(
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
-                    IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected) {
+                    IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected && state.providerCatalogLoaded) {
                         Icon(Icons.Default.Add, contentDescription = "New session")
                     }
                     UiSettingsMenu(state, viewModel, requestTurnMonitoring)
@@ -5280,7 +5349,7 @@ private fun SessionsScreen(
             )
         },
         bottomBar = {
-            AccountUsageDock(state.accountUsage, state.providers)
+            AccountUsageDock(state.accountUsage, state.providers, state.providerCatalogLoaded)
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -5384,6 +5453,7 @@ private fun SessionsScreen(
                                     state.capabilities,
                                     state.repositories,
                                     state.repositoryRoot,
+                                    showProviderIdentity,
                                 )
                             }
                         } else {
@@ -5393,7 +5463,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot,
+                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
                             )
                             sessionSection(
                                 "Waiting", waiting,
@@ -5401,7 +5471,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot,
+                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
                             )
                             sessionSection(
                                 "Active", active,
@@ -5409,7 +5479,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot,
+                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
                             )
                             sessionSection(
                                 "Recent", recent,
@@ -5417,7 +5487,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot,
+                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
                             )
                         }
                     }
@@ -5430,6 +5500,7 @@ private fun SessionsScreen(
             repositories = state.repositories,
             repositoryRoot = state.repositoryRoot,
             providers = state.providers,
+            providerCatalogLoaded = state.providerCatalogLoaded,
             models = state.models,
             accessLevels = state.accessLevels,
             claudeModels = state.claudeModels,
@@ -5455,11 +5526,16 @@ private fun SessionsScreen(
 }
 
 @Composable
-private fun AccountUsageDock(usage: AccountUsage, providers: List<ProviderInfo>) {
+private fun AccountUsageDock(
+    usage: AccountUsage,
+    providers: List<ProviderInfo>,
+    providerCatalogLoaded: Boolean,
+) {
     val visible = providers.filter { it.enabled }.mapNotNull { provider ->
         usage.providers[provider.id]?.let { provider to it }
     }
     if (visible.isEmpty()) return
+    val showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded)
     var open by remember { mutableStateOf(false) }
     val usedPercent = visible.flatMap { accountUsageWindows(it.second) }
         .maxOfOrNull { it.usedPercent }?.roundToInt()?.coerceIn(0, 100) ?: 0
@@ -5475,7 +5551,8 @@ private fun AccountUsageDock(usage: AccountUsage, providers: List<ProviderInfo>)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     visible.forEach { (provider, providerUsage) ->
                         Text(
-                            "${provider.displayName.removeSuffix(" Code")} ${accountUsageRemaining(providerUsage)}",
+                            (if (showProviderIdentity) "${provider.displayName.removeSuffix(" Code")} " else "") +
+                                accountUsageRemaining(providerUsage),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -5485,12 +5562,13 @@ private fun AccountUsageDock(usage: AccountUsage, providers: List<ProviderInfo>)
             }
         }
     }
-    if (open) AccountUsageDialog(visible, onDismiss = { open = false })
+    if (open) AccountUsageDialog(visible, showProviderIdentity, onDismiss = { open = false })
 }
 
 @Composable
 private fun AccountUsageDialog(
     providers: List<Pair<ProviderInfo, ProviderAccountUsage>>,
+    showProviderIdentity: Boolean,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -5504,8 +5582,8 @@ private fun AccountUsageDialog(
                 providers.forEachIndexed { providerIndex, (provider, usage) ->
                     if (providerIndex > 0) HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(provider.displayName, fontWeight = FontWeight.Bold)
+                        if (showProviderIdentity || usage.experimental) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            if (showProviderIdentity) Text(provider.displayName, fontWeight = FontWeight.Bold)
                             if (usage.experimental) Text("EXPERIMENTAL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                         val windows = accountUsageWindows(usage)
@@ -5644,7 +5722,7 @@ private fun SessionInfoDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "${formatTokenCount(usage.remainingTokens)} tokens remain. ${providerDisplayName(provider)} normally compacts the conversation automatically before the window is exhausted.",
+                    "${formatTokenCount(usage.remainingTokens)} tokens remain. Conversation history normally compacts automatically before the window is exhausted.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -5702,6 +5780,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    showProviderIdentity: Boolean,
 ) {
     item(key = "repository:${group.repository.id}") {
         Surface(
@@ -5756,6 +5835,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
             capabilities,
             repositories,
             repositoryRoot,
+            showProviderIdentity,
             showRepositoryLabel = false,
         )
     }
@@ -5771,6 +5851,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    showProviderIdentity: Boolean,
 ) {
     if (sessions.isEmpty()) return
     item {
@@ -5782,7 +5863,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
-    sessionCards(sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot)
+    sessionCards(sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot, showProviderIdentity)
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
@@ -5794,6 +5875,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    showProviderIdentity: Boolean,
     showRepositoryLabel: Boolean = true,
 ) {
     items(sessions, key = { it.session.providerKey() }) { visible ->
@@ -5812,6 +5894,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
             onPin = { pin(provider, session.id) },
             onHide = { hide(provider, session.id) },
             capabilities = capabilities,
+            showProviderIdentity = showProviderIdentity,
         )
     }
 }
@@ -5828,6 +5911,7 @@ private fun SessionCard(
     onPin: () -> Unit,
     onHide: () -> Unit,
     capabilities: Set<String>,
+    showProviderIdentity: Boolean,
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -5842,8 +5926,10 @@ private fun SessionCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ProviderBadge(sessionProvider(session))
-                Spacer(Modifier.width(6.dp))
+                if (showProviderIdentity) {
+                    ProviderBadge(sessionProvider(session))
+                    Spacer(Modifier.width(6.dp))
+                }
                 StatusPill(sessionDisplayStatus(session))
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
@@ -6210,7 +6296,9 @@ private fun SessionDetailScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                 )
-                                ProviderBadge(selectedProvider)
+                                if (shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)) {
+                                    ProviderBadge(selectedProvider)
+                                }
                             }
                             if (selectedProvider == PROVIDER_CLAUDE_CODE && selected.source == "external") {
                                 Text(
@@ -7980,6 +8068,7 @@ private fun NewSessionDialog(
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
     providers: List<ProviderInfo>,
+    providerCatalogLoaded: Boolean,
     models: List<ModelInfo>,
     accessLevels: List<AccessLevelInfo>,
     claudeModels: List<ModelInfo>,
@@ -7995,12 +8084,14 @@ private fun NewSessionDialog(
 ) {
     val enabledProviders = providers.filter { it.enabled }
     var repositoryId by remember(repositories) { mutableStateOf(".") }
-    var provider by remember(enabledProviders, initialProvider) {
+    var providerChoice by remember(enabledProviders, initialProvider) {
         mutableStateOf(
             enabledProviders.firstOrNull { it.id == initialProvider }?.id
                 ?: enabledProviders.firstOrNull()?.id ?: PROVIDER_CODEX,
         )
     }
+    val provider = newSessionProviderSelection(providers, providerCatalogLoaded, providerChoice)
+        ?: providerChoice
     var initialPrompt by remember(provider) { mutableStateOf("") }
     var modelId by remember(models, initialModel) {
         mutableStateOf(models.firstOrNull { it.id == initialModel }?.id ?: models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id)
@@ -8032,12 +8123,18 @@ private fun NewSessionDialog(
         title = { Text("New session") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                NewSessionOptionMenu(
-                    "Provider",
-                    providerInfo?.displayName ?: providerDisplayName(provider),
-                    enabledProviders.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
-                ) { provider = it }
-                if (providerUnavailable) {
+                if (providerCatalogLoaded && enabledProviders.size > 1) {
+                    NewSessionOptionMenu(
+                        "Provider",
+                        providerInfo?.displayName ?: providerDisplayName(provider),
+                        enabledProviders.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
+                    ) { providerChoice = it }
+                }
+                if (!providerCatalogLoaded) {
+                    Text("Loading enabled providers…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (enabledProviders.isEmpty()) {
+                    Text("No enabled provider is available. Enable one in provider settings.", color = MaterialTheme.colorScheme.error)
+                } else if (providerUnavailable) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.errorContainer,
@@ -8201,7 +8298,8 @@ private fun NewSessionDialog(
                 },
             ) {
                 Text(
-                    if (provider == PROVIDER_CLAUDE_CODE) "Start Claude session"
+                    if (provider == PROVIDER_CLAUDE_CODE && shouldShowProviderIdentity(providers, providerCatalogLoaded)) "Start Claude session"
+                    else if (provider == PROVIDER_CLAUDE_CODE) "Start session"
                     else if (repositories.isEmpty()) "Start in workspace" else "Create",
                 )
             }

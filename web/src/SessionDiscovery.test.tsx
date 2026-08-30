@@ -72,4 +72,19 @@ describe("SessionSearchControls", () => {
     expect(pin).toHaveBeenCalledWith("claude-code", "same-id");
     expect(hide).toHaveBeenCalledWith("claude-code", "same-id");
   });
+
+  it("removes a search-result provider badge without removing its identity behavior", () => {
+    const open = vi.fn();
+    const result = [{
+      session: { provider: "claude-code" as const, id: "same-id", title: "Claude result", repository: "/repo", status: "resumable" },
+      matches: [],
+      pinned: false,
+      hidden: false,
+    }];
+    render(<SessionSearchResults results={result} query="" loading={false} error="" showProviderIdentity={false} onOpen={open} onPin={vi.fn()} onHide={vi.fn()} />);
+
+    expect(document.querySelector(".search-result .provider-badge")).toBeNull();
+    fireEvent.click(screen.getByText("Claude result"));
+    expect(open).toHaveBeenCalledWith("claude-code", "same-id", undefined);
+  });
 });

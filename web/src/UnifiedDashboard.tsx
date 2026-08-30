@@ -44,9 +44,10 @@ export function UnifiedDashboard({ hosts, activeHostId, snapshots, onOpenHost, o
       <header><div><span className="eyebrow">Across every host</span><h2 id="combined-attention-title">Needs attention</h2></div><span>{attention.length}</span></header>
       <div className="unified-attention-list">{attention.map(({ host, item }) => {
         const stale = snapshots.get(host.id)?.connection !== "connected";
-        return <article key={`${host.id}:${item.sessionId}:${item.approvalId ?? item.type}`} className={stale ? "stale" : ""}>
+        const provider = item.provider ?? "codex";
+        return <article key={`${host.id}:${provider}:${item.sessionId}:${item.approvalId ?? item.type}`} className={stale ? "stale" : ""}>
           <span className={`attention-type ${item.type}`}>{item.type === "approval" ? "Approval" : item.type === "input" ? "Input" : "Failed"}</span>
-          <div><strong>{item.sessionTitle}</strong><small>{host.displayName} · {shortRepository(item.repository)}</small></div>
+          <div><strong>{item.sessionTitle} <span className={`provider-badge ${provider}`}>{provider === "claude-code" ? "Claude Code" : "Codex"}</span></strong><small>{host.displayName} · {shortRepository(item.repository)}</small></div>
           <span className="attention-host">{host.host}</span>
           <time>{formatAge(item.startedAt, now)}{stale ? " · stale" : ""}</time>
           <button onClick={() => onOpenSession(item)}>Open</button>
