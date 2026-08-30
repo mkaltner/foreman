@@ -3,6 +3,7 @@ package net.kaltner.foreman
 import android.Manifest
 import android.app.Application
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -12,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -7877,6 +7879,7 @@ private fun AboutDialog(
             connected = connected,
             clientVersion = BuildConfig.VERSION_NAME,
             clientCommit = BuildConfig.FOREMAN_BUILD_COMMIT,
+            releaseBuild = BuildConfig.FOREMAN_RELEASE_BUILD,
         )
     BackHandler(onBack = onDismiss)
     Dialog(
@@ -7934,7 +7937,13 @@ private fun AboutDialog(
                     }
                     items(foremanAboutLinks) { (label, url) ->
                         FilledTonalButton(
-                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+                            onClick = {
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                } catch (_: ActivityNotFoundException) {
+                                    Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(label, modifier = Modifier.weight(1f))

@@ -217,8 +217,8 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
                     / "linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
                 ).is_file(),
             )
-            self.assertIn(
-                "foremanVersion=1.0.0",
+            self.assertEqual(
+                (ROOT / "release.properties").read_text(encoding="utf-8"),
                 (install_dir / "release.properties").read_text(encoding="utf-8"),
             )
 

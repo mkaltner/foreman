@@ -48,6 +48,9 @@ the checked-out commit by default, while reproducible artifact builders can set
 client build identity without a server connection and label the connected
 server version separately. Committed web assets omit the commit unless the
 builder supplies it so rebuilding those assets remains deterministic.
+`releaseBuild=false` labels clients as development builds even when they share
+the current published version number; a reviewed release PR is the only place
+that should set it to `true`.
 
 Linux files:
 

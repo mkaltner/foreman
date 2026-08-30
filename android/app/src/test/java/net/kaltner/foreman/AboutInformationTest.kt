@@ -15,26 +15,42 @@ class AboutInformationTest {
                 .first { it.isFile }
         val releaseVersion =
             releaseFile.readLines().first { it.startsWith("foremanVersion=") }.substringAfter('=')
+        val releaseBuild =
+            releaseFile.readLines().first { it.startsWith("releaseBuild=") }.substringAfter('=').toBooleanStrict()
 
         assertEquals(releaseVersion, BuildConfig.VERSION_NAME)
+        assertEquals(releaseBuild, BuildConfig.FOREMAN_RELEASE_BUILD)
         assertTrue(BuildConfig.FOREMAN_BUILD_COMMIT.isNotBlank())
     }
 
     @Test
     fun disconnectedAboutStillContainsAndroidClientBuild() {
-        val information = aboutVersionInformation(null, false, "1.2.3", "abc123def456")
+        val information = aboutVersionInformation(null, false, "1.2.3", "abc123def456", false)
 
         assertEquals("Unavailable while disconnected", information.server)
-        assertEquals("1.2.3 · abc123def456", information.client)
+        assertEquals("1.2.3 (development build) · abc123def456", information.client)
+    }
+
+    @Test
+    fun disconnectedAboutDoesNotPresentRetainedServerVersionAsCurrent() {
+        val information = aboutVersionInformation("1.0.1", false, "1.0.2", "unknown", false)
+
+        assertEquals("Unavailable while disconnected", information.server)
+        assertEquals("1.0.2 (development build)", information.client)
     }
 
     @Test
     fun differingServerAndClientVersionsStayDistinct() {
-        val information = aboutVersionInformation("0.9.0", true, "1.0.0", "unknown")
+        val information = aboutVersionInformation("0.9.0", true, "1.0.2", "unknown", false)
 
         assertEquals("0.9.0", information.server)
-        assertEquals("1.0.0", information.client)
+        assertEquals("1.0.2 (development build)", information.client)
         assertFalse(information.server == information.client)
+    }
+
+    @Test
+    fun officialReleaseBuildDoesNotUseDevelopmentLabel() {
+        assertEquals("1.0.2 · abc123def456", clientBuildDescription("1.0.2", "abc123def456", true))
     }
 
     @Test

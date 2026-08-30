@@ -7,6 +7,7 @@ import {
   FOREMAN_REPOSITORY_URL,
   FOREMAN_THIRD_PARTY_NOTICES_URL,
   WEB_CLIENT_VERSION,
+  clientBuildDescription,
 } from "./about";
 
 describe("AboutSection", () => {
@@ -17,11 +18,29 @@ describe("AboutSection", () => {
     expect(screen.getByText(new RegExp(`^${WEB_CLIENT_VERSION.replaceAll(".", "\\.")}`))).toBeInTheDocument();
   });
 
+  it("does not present a retained server version as current after disconnect", () => {
+    render(<AboutSection serverVersion="1.0.1" connected={false} />);
+
+    expect(screen.getByText("Server").nextElementSibling).toHaveTextContent(
+      "Unavailable while disconnected",
+    );
+    expect(screen.queryByText("1.0.1")).not.toBeInTheDocument();
+  });
+
   it("clearly labels differing server and web client versions", () => {
     render(<AboutSection serverVersion="0.9.0" connected />);
 
     expect(screen.getByText("Server").nextElementSibling).toHaveTextContent("0.9.0");
     expect(screen.getByText("Web client").nextElementSibling).toHaveTextContent(WEB_CLIENT_VERSION);
+  });
+
+  it("distinguishes development builds from official release builds", () => {
+    expect(clientBuildDescription("1.0.2", "abc123def456", false)).toBe(
+      "1.0.2 (development build) · abc123def456",
+    );
+    expect(clientBuildDescription("1.0.2", "abc123def456", true)).toBe(
+      "1.0.2 · abc123def456",
+    );
   });
 
   it.each([

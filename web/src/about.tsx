@@ -5,14 +5,16 @@ export const FOREMAN_THIRD_PARTY_NOTICES_URL = `${FOREMAN_REPOSITORY_URL}/blob/m
 
 export const WEB_CLIENT_VERSION = __FOREMAN_CLIENT_VERSION__;
 export const WEB_CLIENT_COMMIT = __FOREMAN_CLIENT_COMMIT__;
+export const WEB_RELEASE_BUILD = __FOREMAN_RELEASE_BUILD__;
 
 export interface AboutSectionProps {
   serverVersion: string | null;
   connected: boolean;
 }
 
-export function clientBuildDescription(version: string, commit: string): string {
-  return commit && commit !== "unknown" ? `${version} · ${commit}` : version;
+export function clientBuildDescription(version: string, commit: string, releaseBuild: boolean): string {
+  const identity = releaseBuild ? version : `${version} (development build)`;
+  return commit && commit !== "unknown" ? `${identity} · ${commit}` : identity;
 }
 
 export function AboutSection({ serverVersion, connected }: AboutSectionProps) {
@@ -26,8 +28,8 @@ export function AboutSection({ serverVersion, connected }: AboutSectionProps) {
         </div>
       </div>
       <dl className="about-versions">
-        <div><dt>Server</dt><dd>{serverVersion ?? (connected ? "Unavailable" : "Unavailable while disconnected")}</dd></div>
-        <div><dt>Web client</dt><dd>{clientBuildDescription(WEB_CLIENT_VERSION, WEB_CLIENT_COMMIT)}</dd></div>
+        <div><dt>Server</dt><dd>{connected ? (serverVersion ?? "Unavailable") : "Unavailable while disconnected"}</dd></div>
+        <div><dt>Web client</dt><dd>{clientBuildDescription(WEB_CLIENT_VERSION, WEB_CLIENT_COMMIT, WEB_RELEASE_BUILD)}</dd></div>
       </dl>
       <nav className="about-links" aria-label="Foreman links">
         <a href={FOREMAN_REPOSITORY_URL} target="_blank" rel="noreferrer noopener">GitHub repository</a>

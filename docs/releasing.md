@@ -7,20 +7,23 @@ or GitHub release.
 ## Version sources
 
 `release.properties` is the candidate manifest. `foremanVersion` must match the
-v-prefixed release tag, `androidVersionCode` must be greater than every APK ever
+v-prefixed release tag, `releaseBuild` must be `true` only on the exact reviewed
+release commit, `androidVersionCode` must be greater than every APK ever
 published for `net.kaltner.foreman`, and `protocolVersion` changes only for an
 intentional wire-compatibility change. The Linux status version, web package
 version, Android build defaults, and all three protocol constants are checked by:
 
 ```sh
-python3 scripts/verify_release.py --tag v1.0.0
+python3 scripts/verify_release.py --tag v1.0.3
 ```
 
 The web and Android builds embed `foremanVersion` directly from this manifest
 for their offline About views. Android embeds the checked-out short commit by
 default. Set `FOREMAN_BUILD_COMMIT` to the artifact's source commit when
 building distributable clients; committed web assets leave it unset so their
-rebuild stays deterministic.
+rebuild stays deterministic. About labels clients from `releaseBuild=false`
+manifests as development builds. A release-preparation PR sets the chosen
+version and `releaseBuild=true`; development resumes in a follow-up reviewed PR.
 
 Do not derive Android version code from a CI run number. Confirm the previous
 APK with `aapt2 dump badging`; Android cannot install a lower code over a higher
@@ -86,9 +89,9 @@ exact `main` commit. A maintainer may then create and push the annotated tag:
 ```sh
 git switch main
 git pull --ff-only
-python3 scripts/verify_release.py --tag v1.0.0
-git tag -a v1.0.0 -m "Foreman v1.0.0"
-git push origin v1.0.0
+python3 scripts/verify_release.py --tag v1.0.3
+git tag -a v1.0.3 -m "Foreman v1.0.3"
+git push origin v1.0.3
 ```
 
 Use `git tag -s` instead when the project has an established signing key and

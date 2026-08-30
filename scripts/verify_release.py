@@ -37,6 +37,7 @@ def main() -> None:
     metadata = properties(ROOT / "release.properties")
     required = {
         "foremanVersion",
+        "releaseBuild",
         "androidVersionCode",
         "protocolVersion",
         "androidSigningCertificateSha256",
@@ -50,6 +51,10 @@ def main() -> None:
         raise SystemExit(f"release.properties: invalid foremanVersion {version!r}")
     if args.tag is not None and args.tag != f"v{version}":
         raise SystemExit(f"tag {args.tag!r} does not match v{version}")
+    if metadata["releaseBuild"] not in {"true", "false"}:
+        raise SystemExit("release.properties: releaseBuild must be true or false")
+    if args.tag is not None and metadata["releaseBuild"] != "true":
+        raise SystemExit("release.properties: tagged releases require releaseBuild=true")
 
     try:
         version_code = int(metadata["androidVersionCode"])

@@ -4,6 +4,7 @@ import { join } from "node:path";
 export interface ForemanBuildMetadata {
   version: string;
   commit: string;
+  releaseBuild: boolean;
 }
 
 export function parseReleaseProperties(contents: string): Record<string, string> {
@@ -29,6 +30,9 @@ export function loadForemanBuildMetadata(
   );
   const version = release.foremanVersion;
   if (!version) throw new Error("release.properties: missing foremanVersion");
+  if (release.releaseBuild !== "true" && release.releaseBuild !== "false") {
+    throw new Error("release.properties: releaseBuild must be true or false");
+  }
   const commit = environment.FOREMAN_BUILD_COMMIT?.trim() || "unknown";
-  return { version, commit };
+  return { version, commit, releaseBuild: release.releaseBuild === "true" };
 }

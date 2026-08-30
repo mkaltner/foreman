@@ -11,6 +11,7 @@ describe("Foreman build metadata", () => {
     expect(loadForemanBuildMetadata(repositoryRoot, { FOREMAN_BUILD_COMMIT: "abc123def456" })).toEqual({
       version: release.foremanVersion,
       commit: "abc123def456",
+      releaseBuild: release.releaseBuild === "true",
     });
   });
 

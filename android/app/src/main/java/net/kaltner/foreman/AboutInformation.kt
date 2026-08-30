@@ -11,18 +11,21 @@ internal data class AboutVersionInformation(
     val client: String,
 )
 
-internal fun clientBuildDescription(version: String, commit: String): String =
-    if (commit.isNotBlank() && commit != "unknown") "$version · $commit" else version
+internal fun clientBuildDescription(version: String, commit: String, releaseBuild: Boolean): String {
+    val identity = if (releaseBuild) version else "$version (development build)"
+    return if (commit.isNotBlank() && commit != "unknown") "$identity · $commit" else identity
+}
 
 internal fun aboutVersionInformation(
     serverVersion: String?,
     connected: Boolean,
     clientVersion: String,
     clientCommit: String,
+    releaseBuild: Boolean,
 ): AboutVersionInformation =
     AboutVersionInformation(
-        server = serverVersion ?: if (connected) "Unavailable" else "Unavailable while disconnected",
-        client = clientBuildDescription(clientVersion, clientCommit),
+        server = if (connected) serverVersion ?: "Unavailable" else "Unavailable while disconnected",
+        client = clientBuildDescription(clientVersion, clientCommit, releaseBuild),
     )
 
 internal val foremanAboutLinks =

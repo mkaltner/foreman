@@ -11,6 +11,7 @@ export default defineConfig({
   define: {
     __FOREMAN_CLIENT_VERSION__: JSON.stringify(buildMetadata.version),
     __FOREMAN_CLIENT_COMMIT__: JSON.stringify(buildMetadata.commit),
+    __FOREMAN_RELEASE_BUILD__: JSON.stringify(buildMetadata.releaseBuild),
   },
   server: {
     host: "0.0.0.0",
