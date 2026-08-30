@@ -1523,6 +1523,41 @@ def codex_rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
                 projected["limitName"] = default_limit_name
             windows.append(projected)
 
+    # The keyed collection normally repeats the backward-compatible default
+    # bucket. It can be fuller, however, so contribute any missing slots before
+    # appending other buckets while keeping the legacy bucket first.
+    if default and default_limit_id:
+        existing_default_slots = {
+            _bounded_rate_limit_text(window.get("id"))
+            for window in windows
+        }
+        for raw_group_id, raw_group in list(raw_groups.items())[
+            :MAX_RATE_LIMIT_WINDOWS
+        ]:
+            group = rate_limit_snapshot(raw_group)
+            if not group:
+                continue
+            group_id = (
+                _bounded_rate_limit_text(group.get("limitId"))
+                or _bounded_rate_limit_text(raw_group_id)
+            )
+            if group_id != default_limit_id:
+                continue
+            group_name = _bounded_rate_limit_text(group.get("limitName"))
+            for window in group["windows"]:
+                if len(windows) >= MAX_RATE_LIMIT_WINDOWS:
+                    break
+                slot_id = _bounded_rate_limit_text(window.get("id"))
+                if not slot_id or slot_id in existing_default_slots:
+                    continue
+                projected = dict(window)
+                projected["limitId"] = default_limit_id
+                if group_name:
+                    projected["limitName"] = group_name
+                windows.append(projected)
+                existing_default_slots.add(slot_id)
+            break
+
     for raw_group_id, raw_group in list(raw_groups.items())[
         :MAX_RATE_LIMIT_WINDOWS
     ]:
@@ -1605,10 +1640,13 @@ def codex_rate_limit_update_snapshot(
         if group_name:
             projected["limitName"] = group_name
         windows.append(projected)
+    metadata_source = update
+    if older and group_id and group_id != older.get("limitId"):
+        metadata_source = older
     metadata = {
         key: value
         for key in ("limitId", "limitName", "planType", "rateLimitReachedType")
-        if (value := update.get(key)) is not None
+        if (value := metadata_source.get(key)) is not None
     }
     return rate_limit_snapshot({**metadata, "windows": windows})
 

@@ -2371,6 +2371,7 @@ Tighten up this layout, please.
                     "codex": {
                         "limitId": "codex",
                         "primary": {"usedPercent": 15, "windowDurationMins": 10_080},
+                        "secondary": {"usedPercent": 3, "windowDurationMins": 43_200},
                     },
                 },
             }
@@ -2379,15 +2380,15 @@ Tighten up this layout, please.
         assert snapshot is not None
         self.assertEqual(
             [window["id"] for window in snapshot["windows"]],
-            ["primary", "codex_spark:primary", "codex_spark:secondary"],
+            ["primary", "secondary", "codex_spark:primary", "codex_spark:secondary"],
         )
         self.assertEqual(
             [window["windowDurationMins"] for window in snapshot["windows"]],
-            [10_080, 300, 10_080],
+            [10_080, 43_200, 300, 10_080],
         )
-        self.assertEqual(snapshot["windows"][1]["limitName"], "GPT-5.3-Codex-Spark")
-        self.assertEqual(snapshot["windows"][1]["limitId"], "codex_spark")
-        self.assertNotIn("label", snapshot["windows"][1])
+        self.assertEqual(snapshot["windows"][2]["limitName"], "GPT-5.3-Codex-Spark")
+        self.assertEqual(snapshot["windows"][2]["limitId"], "codex_spark")
+        self.assertNotIn("label", snapshot["windows"][2])
 
         update = codex_rate_limit_update_snapshot(
             {
@@ -2402,10 +2403,11 @@ Tighten up this layout, please.
         )
         merged = merge_rate_limit_snapshots(snapshot, update)
         assert merged is not None
-        self.assertEqual(len(merged["windows"]), 3)
-        self.assertEqual(merged["windows"][1]["id"], "codex_spark:primary")
-        self.assertEqual(merged["windows"][1]["usedPercent"], 9)
-        self.assertEqual(merged["windows"][2]["usedPercent"], 4)
+        self.assertEqual(len(merged["windows"]), 4)
+        self.assertEqual(merged["limitId"], "codex")
+        self.assertEqual(merged["windows"][2]["id"], "codex_spark:primary")
+        self.assertEqual(merged["windows"][2]["usedPercent"], 9)
+        self.assertEqual(merged["windows"][3]["usedPercent"], 4)
 
     def test_sparse_account_usage_event_preserves_other_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
