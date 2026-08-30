@@ -61,6 +61,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Fail closed when tagged release assets are incomplete
+  ([PR #70](https://github.com/mkaltner/foreman/pull/70)).
 - [x] Hide provider UI when only one provider is enabled
   ([PR #68](https://github.com/mkaltner/foreman/pull/68)).
 - [x] Remember the last-opened session per host across navigation and relaunch
