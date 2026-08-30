@@ -99,6 +99,14 @@ describe("session mapping and live events", () => {
     }));
     expect(observedOnly.lastActivity).toBe(1_700_000_100);
     expect(observedOnly.terminalAt).toBe(1_700_000_090);
+
+    const metadataOnly = applySessionEvent(observedOnly, {
+      kind: "metadata",
+      type: "thread/goal/cleared",
+      observedAt: 1_900_000_200,
+    });
+    expect(metadataOnly.lastActivity).toBe(1_700_000_100);
+    expect(metadataOnly.terminalAt).toBe(1_700_000_090);
   });
 
   it("coalesces assistant deltas and applies item, activity, status, and route updates", () => {

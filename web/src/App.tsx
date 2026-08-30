@@ -576,7 +576,8 @@ function App() {
       return;
     }
     if (["approval.requested", "approval.updated", "approval.resolved"].includes(message.type)) {
-      const approval = (message.payload as unknown as ApprovalEventPayload).approval;
+      const approvalPayload = message.payload as unknown as ApprovalEventPayload;
+      const approval = approvalPayload.approval;
       if (!approval?.id || !approval.sessionId) return;
       setApprovals((previous) => {
         const next = previous.some((item) => item.id === approval.id)
@@ -593,7 +594,7 @@ function App() {
         waitType: resolved ? null : approval.type.startsWith("unsupported") ? "input" : "approval",
         waitDescription: resolved ? null : approvalAttentionLabel(approval),
         activityLabel: resolved ? "Approval resolved" : approvalAttentionLabel(approval),
-        lastActivity: Math.floor(Date.now() / 1000),
+        lastActivity: approvalPayload.activityAt ?? session.lastActivity,
       };
       setSessions((previous) => {
         const next = previous.map(updateSession);
@@ -626,7 +627,8 @@ function App() {
         setRecentActivity((previous) => recordRecentActivity(previous, feedSession, {
           kind: "activity",
           label: message.type === "approval.requested" ? "Approval requested" : "Approval resolved",
-          observedAt: Math.floor(Date.now() / 1000),
+          activityAt: approvalPayload.activityAt,
+          observedAt: approvalPayload.observedAt,
         }));
       }
       if (resolved) window.setTimeout(() => {
@@ -636,7 +638,8 @@ function App() {
       return;
     }
     if (["input.requested", "input.updated", "input.resolved"].includes(message.type)) {
-      const pending = (message.payload as unknown as InputEventPayload).input;
+      const inputPayload = message.payload as unknown as InputEventPayload;
+      const pending = inputPayload.input;
       if (!pending?.id || !pending.sessionId) return;
       setInputs((previous) => previous.some(({ id }) => id === pending.id)
         ? previous.map((item) => item.id === pending.id ? pending : item)
@@ -650,7 +653,7 @@ function App() {
         waitType: resolved ? null : "input",
         waitDescription: resolved ? null : inputAttentionLabel(pending),
         activityLabel: resolved ? "Input request resolved" : inputAttentionLabel(pending),
-        lastActivity: Math.floor(Date.now() / 1000),
+        lastActivity: inputPayload.activityAt ?? session.lastActivity,
       };
       setSessions((previous) => {
         const next = previous.map(updateSession);

@@ -305,6 +305,8 @@ export interface ApprovalRequest {
 
 export interface ApprovalEventPayload {
   approval: ApprovalRequest;
+  activityAt?: number | null;
+  observedAt?: number;
 }
 
 export interface InputOption {
@@ -351,6 +353,8 @@ export interface InputRequest {
 
 export interface InputEventPayload {
   input: InputRequest;
+  activityAt?: number | null;
+  observedAt?: number;
 }
 
 export interface SessionEvent {
@@ -464,9 +468,7 @@ function isTerminalSession(session: SessionSummary): boolean {
 }
 
 function eventActivityAt(event: SessionEvent): number | undefined {
-  return "activityAt" in event
-    ? event.activityAt ?? undefined
-    : event.observedAt;
+  return event.activityAt ?? undefined;
 }
 
 function isStaleTurnEvent(session: SessionSummary, event: SessionEvent): boolean {

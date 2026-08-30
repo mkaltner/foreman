@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,132 @@ class FakeSocketServer:
             pass
 
 
+class ResumeNotificationServer(FakeSocketServer):
+    """App-server fixture that reproduces resume-time metadata ordering."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.notification_tasks: set[asyncio.Task[None]] = set()
+        self.resume_count = 0
+        self.threads = [
+            {
+                "id": "thread-older",
+                "cwd": "/projects/example",
+                "preview": "Older thread",
+                "name": None,
+                "status": {"type": "idle"},
+                "updatedAt": 1_700_000_120,
+                "recencyAt": 1_700_000_100,
+                "turns": [
+                    {
+                        "id": "turn-older",
+                        "status": "completed",
+                        "startedAt": 1_700_000_080,
+                        "completedAt": 1_700_000_120,
+                        "items": [],
+                    }
+                ],
+            },
+            {
+                "id": "thread-newer",
+                "cwd": "/projects/example",
+                "preview": "Newer thread",
+                "name": None,
+                "status": {"type": "idle"},
+                "updatedAt": 1_700_003_720,
+                "recencyAt": 1_700_003_700,
+                "turns": [
+                    {
+                        "id": "turn-newer",
+                        "status": "completed",
+                        "startedAt": 1_700_003_680,
+                        "completedAt": 1_700_003_720,
+                        "items": [],
+                    }
+                ],
+            },
+        ]
+
+    async def resume_notifications(self, websocket: Any, thread_id: str) -> None:
+        messages = [
+            ("mcpServer/startupStatus/updated", {"server": "filesystem"}),
+            ("thread/status/changed", {"status": {"type": "idle"}}),
+            (
+                "thread/tokenUsage/updated",
+                {
+                    "tokenUsage": {
+                        "last": {"totalTokens": 123},
+                        "modelContextWindow": 10_000,
+                    }
+                },
+            ),
+            ("thread/goal/cleared", {}),
+            ("thread/futureMetadata/updated", {"metadata": "not activity"}),
+        ]
+        for method, params in messages:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "method": method,
+                        "params": {"threadId": thread_id, **params},
+                    }
+                )
+            )
+
+    async def delayed_resume_notifications(
+        self, websocket: Any, thread_id: str
+    ) -> None:
+        await asyncio.sleep(0.02)
+        await self.resume_notifications(websocket, thread_id)
+
+    async def handle(self, websocket: Any) -> None:
+        self.connections.add(websocket)
+        try:
+            async for raw in websocket:
+                message = json.loads(raw)
+                self.messages.append(message)
+                method = message.get("method", "")
+                self.methods.append(method)
+                if "id" not in message:
+                    continue
+                if method == "initialize":
+                    response = {"userAgent": "fake"}
+                elif method == "thread/list":
+                    response = {"data": self.threads, "nextCursor": None}
+                elif method == "thread/resume":
+                    thread_id = message.get("params", {}).get("threadId")
+                    selected = next(item for item in self.threads if item["id"] == thread_id)
+                    self.resume_count += 1
+                    # Alternate both sides of the synthetic reconciliation so
+                    # startup and reconnect remain ordering-independent.
+                    before_projection = self.resume_count % 2 == 1
+                    if before_projection:
+                        await self.resume_notifications(websocket, thread_id)
+                    response = {"thread": selected}
+                    if not before_projection:
+                        task = asyncio.create_task(
+                            self.delayed_resume_notifications(websocket, thread_id)
+                        )
+                        self.notification_tasks.add(task)
+                        task.add_done_callback(self.notification_tasks.discard)
+                else:
+                    response = result(method, message.get("params", {}))
+                await websocket.send(
+                    json.dumps({"id": message["id"], "result": response})
+                )
+        finally:
+            self.connections.discard(websocket)
+
+    async def settle(self) -> None:
+        if self.notification_tasks:
+            await asyncio.gather(*list(self.notification_tasks))
+        await asyncio.sleep(0)
+
+    async def stop(self) -> None:
+        await self.settle()
+        await super().stop()
+
+
 FAKE_CODEX = r"""#!/usr/bin/env python3
 import asyncio, json, os, pathlib, signal, socket, sys
 sys.path.insert(0, os.environ["FAKE_CODEX_VENDOR"])
@@ -284,6 +411,170 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             await adapter.stop()
         self.assertIsNotNone(server.server)
         await server.stop()
+
+    async def test_resume_metadata_cannot_replace_historical_activity_across_restarts(
+        self,
+    ) -> None:
+        server = ResumeNotificationServer(self.socket_path)
+        await server.start()
+        repository_root = self.base / "projects"
+        (repository_root / "example").mkdir(parents=True)
+        state = State(self.base / "state")
+        # These equal restart-era values reproduce the legacy corruption left
+        # by PR #64. The terminal boundaries remain provider-authored.
+        for thread_id, terminal_at in (
+            ("thread-older", 1_700_000_120),
+            ("thread-newer", 1_700_003_720),
+        ):
+            state.remember_session_timestamps(
+                "codex",
+                thread_id,
+                last_activity=1_900_000_000,
+                terminal_at=terminal_at,
+            )
+
+        def factory(executable: str, event: Any) -> Codex:
+            return Codex(
+                executable,
+                event,
+                self.socket_path,
+                self.fallback_socket_path,
+            )
+
+        def app() -> Foreman:
+            return Foreman(
+                "127.0.0.1",
+                0,
+                repository_root,
+                State(self.base / "state"),
+                "missing-codex",
+                codex_factory=factory,
+            )
+
+        first = app()
+        second: Foreman | None = None
+        try:
+            with patch("foreman_service.time.time", return_value=1_900_000_000):
+                await first.start()
+                await server.settle()
+                await first.flush_session_timestamp_persistence()
+
+            expected = {
+                "thread-older": 1_700_000_120,
+                "thread-newer": 1_700_003_720,
+            }
+            self.assertEqual(
+                {
+                    thread_id: first.session_overlays[thread_id]["lastActivity"]
+                    for thread_id in expected
+                },
+                expected,
+            )
+            self.assertTrue(
+                all(value != 1_900_000_000 for value in expected.values())
+            )
+            self.assertEqual(
+                first.session_activity_sources,
+                {
+                    ("codex", "thread-older"): "provider",
+                    ("codex", "thread-newer"): "provider",
+                },
+            )
+            listed = await first.dispatch(
+                type("Client", (), {"authenticated": True})(),
+                {"type": "session.list", "payload": {}},
+            )
+            self.assertEqual(
+                [item["id"] for item in listed["sessions"]],
+                ["thread-newer", "thread-older"],
+            )
+
+            persisted = state.session_timestamps("codex")
+            self.assertEqual(
+                {key: value["lastActivity"] for key, value in persisted.items()},
+                expected,
+            )
+            self.assertTrue(
+                all(value.get("activitySource") == "provider" for value in persisted.values())
+            )
+
+            await first.stop()
+            second = app()
+            with patch("foreman_service.time.time", return_value=1_900_000_100):
+                await second.start()
+                await server.settle()
+                await second.flush_session_timestamp_persistence()
+            self.assertEqual(
+                {
+                    thread_id: second.session_overlays[thread_id]["lastActivity"]
+                    for thread_id in expected
+                },
+                expected,
+            )
+
+            # Reconnect reconciliation repeats the same mixed ordering.
+            with patch("foreman_service.time.time", return_value=1_900_000_200):
+                await second.codex._refresh_and_subscribe()
+                await server.settle()
+            self.assertEqual(
+                second.session_overlays["thread-older"]["lastActivity"],
+                expected["thread-older"],
+            )
+
+            # Metadata stays observation-only, while real live work advances
+            # and is protected from a later older provider projection.
+            await server.emit(
+                "thread/unknownMetadata/updated",
+                {"threadId": "thread-older", "value": "metadata"},
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(
+                second.session_overlays["thread-older"]["lastActivity"],
+                expected["thread-older"],
+            )
+            with patch("foreman_service.time.time", return_value=1_900_000_300):
+                await server.emit(
+                    "turn/started",
+                    {
+                        "threadId": "thread-older",
+                        "turn": {"id": "turn-live"},
+                    },
+                )
+                await asyncio.sleep(0)
+            with patch("foreman_service.time.time", return_value=1_900_000_310):
+                await server.emit(
+                    "turn/completed",
+                    {
+                        "threadId": "thread-older",
+                        "turn": {
+                            "id": "turn-live",
+                            "status": "completed",
+                            "completedAt": 1_900_000_310,
+                        },
+                    },
+                )
+                await asyncio.sleep(0)
+            await second.flush_session_timestamp_persistence()
+            self.assertEqual(
+                second.session_overlays["thread-older"]["lastActivity"],
+                1_900_000_310,
+            )
+            self.assertEqual(
+                second.session_activity_sources[("codex", "thread-older")],
+                "live",
+            )
+            await second.codex._refresh_and_subscribe()
+            await server.settle()
+            self.assertEqual(
+                second.session_overlays["thread-older"]["lastActivity"],
+                1_900_000_310,
+            )
+        finally:
+            if second is not None:
+                await second.stop()
+            elif not first.stopping:
+                await first.stop()
+            await server.stop()
 
     async def test_launches_when_absent_and_stops_only_owned_process(self) -> None:
         adapter = Codex(
@@ -641,6 +932,10 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             upstream = asyncio.create_task(server.request(upstream_id, method, params))
             requested = await next_event("approval.requested")
             approval = requested["payload"]["approval"]
+            self.assertEqual(
+                requested["payload"]["activityAt"],
+                requested["payload"]["observedAt"],
+            )
             self.assertNotEqual(approval["id"], upstream_id)
             listed = await client_request("approval.list", {})
             self.assertTrue(any(item["id"] == approval["id"] for item in listed["approvals"]))
@@ -681,6 +976,10 @@ class SocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         requested_input = await next_event("input.requested")
         pending_input = requested_input["payload"]["input"]
+        self.assertEqual(
+            requested_input["payload"]["activityAt"],
+            requested_input["payload"]["observedAt"],
+        )
         self.assertTrue(pending_input["supported"])
         self.assertNotEqual(pending_input["id"], "input-upstream")
         listed_inputs = await client_request("input.list", {})

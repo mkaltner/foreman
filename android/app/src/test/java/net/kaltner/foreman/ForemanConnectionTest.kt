@@ -1253,6 +1253,19 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun observationTimeIsNeverImplicitSessionActivity() {
+        val metadata = buildJsonObject { put("observedAt", 1_900_000_000) }
+        val work =
+            buildJsonObject {
+                put("activityAt", 1_700_000_100)
+                put("observedAt", 1_900_000_000)
+            }
+
+        assertNull(activityTimestamp(metadata))
+        assertEquals(1_700_000_100L, activityTimestamp(work))
+    }
+
+    @Test
     fun relaunchConsumesRestoredServerTimesWithoutUsingObservationTime() {
         val json = Json { ignoreUnknownKeys = true }
         val payload =

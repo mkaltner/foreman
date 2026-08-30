@@ -420,3 +420,6 @@ class ForemanClient(
 
 fun WireMessage.eventObject(): JsonObject =
     payload["event"]?.jsonObject ?: JsonObject(emptyMap())
+
+fun activityTimestamp(value: JsonObject): Long? =
+    value["activityAt"]?.let { runCatching { it.jsonPrimitive.content.toLong() }.getOrNull() }

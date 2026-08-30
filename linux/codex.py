@@ -330,6 +330,13 @@ class Codex:
                     "latestTurn": latest_turn,
                     "_foremanReconciled": True,
                     "_foremanActivityAt": thread.get("recencyAt") or thread.get("updatedAt"),
+                    "_foremanActivityComplete": (
+                        isinstance(thread.get("status"), dict)
+                        and (
+                            token_count(thread.get("recencyAt")) is not None
+                            or token_count(thread.get("updatedAt")) is not None
+                        )
+                    ),
                 },
             }
         )
@@ -1733,6 +1740,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "assistant.delta",
+                "_foremanAdvancesActivity": True,
                 "turnId": params.get("turnId"),
                 "itemId": params.get("itemId"),
                 "text": params.get("delta", ""),
@@ -1742,6 +1750,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "activity",
+                "_foremanAdvancesActivity": True,
                 "label": "Thinking",
                 "turnId": params.get("turnId"),
                 "itemId": params.get("itemId"),
@@ -1753,6 +1762,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "activity",
+                "_foremanAdvancesActivity": True,
                 "label": "Thinking",
                 "turnId": params.get("turnId"),
                 "itemId": params.get("itemId"),
@@ -1764,6 +1774,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "activity",
+                "_foremanAdvancesActivity": True,
                 "label": "Planning",
                 "turnId": params.get("turnId"),
                 "text": params.get("delta", ""),
@@ -1782,6 +1793,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "activity",
+                "_foremanAdvancesActivity": True,
                 "label": "Planning",
                 "turnId": params.get("turnId"),
                 "text": active_step or params.get("explanation") or "",
@@ -1792,6 +1804,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "activity",
+                "_foremanAdvancesActivity": True,
                 "label": "Running command",
                 "turnId": params.get("turnId"),
                 "itemId": params.get("itemId"),
@@ -1812,6 +1825,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "item",
+                "_foremanAdvancesActivity": normalized_item is not None,
                 "phase": "started" if method == "item/started" else "completed",
                 "turnId": params.get("turnId"),
                 "item": normalized_item,
@@ -1822,6 +1836,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "status",
+                "_foremanAdvancesActivity": True,
                 "status": "working",
                 "turnId": turn.get("id"),
                 "startedAt": turn.get("startedAt"),
@@ -1832,6 +1847,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "status",
+                "_foremanAdvancesActivity": True,
                 "status": status({}, turn.get("status")),
                 "turnId": turn.get("id"),
                 "completedAt": turn.get("completedAt"),
@@ -1852,6 +1868,13 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
                 "completedAt": latest_turn.get("completedAt"),
                 "durationMs": latest_turn.get("durationMs"),
                 "failureSummary": safe_failure_summary(latest_turn.get("error")),
+                # A raw status notification is also emitted while an existing
+                # thread is resumed. Only provider turn timestamps make it an
+                # activity signal; receipt by Foreman never does.
+                "_foremanAdvancesActivity": any(
+                    token_count(latest_turn.get(key)) is not None
+                    for key in ("startedAt", "completedAt")
+                ),
             }
         )
         if wait_type:
@@ -1894,6 +1917,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
         event.update(
             {
                 "kind": "status",
+                "_foremanAdvancesActivity": True,
                 "status": "waiting",
                 "reason": "inputUnsupported" if wait_type == "input" else "approvalRequired",
                 "turnId": params.get("turnId"),
@@ -1902,5 +1926,7 @@ def normalize_event(message: dict[str, Any]) -> tuple[str | None, dict[str, Any]
             }
         )
     else:
-        event["kind"] = "activity"
+        # Thread-scoped startup, goal, MCP, and future metadata notifications
+        # are observable but aren't evidence of user-visible session work.
+        event["kind"] = "metadata"
     return thread_id, event

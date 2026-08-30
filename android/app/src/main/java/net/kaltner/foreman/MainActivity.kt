@@ -3790,6 +3790,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val raw = message.payload["approval"] ?: return true
         val approval = runCatching { json.decodeFromJsonElement<ApprovalRequest>(raw) }.getOrNull() ?: return true
         val terminal = approval.status == "resolved" || approval.status == "expired"
+        val activityAt = activityTimestamp(message.payload)
         if (state.value.sessions.none { it.matches(PROVIDER_CODEX, approval.sessionId) }) discoverSession(approval.sessionId)
         state.update { current ->
             fun updateSession(session: SessionSummary): SessionSummary =
@@ -3799,6 +3800,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     activeTurnId = approval.turnId ?: session.activeTurnId,
                     activityLabel = if (terminal) "Approval resolved" else approvalAttentionLabel(approval.type),
                     activityText = "",
+                    lastActivity = activityAt ?: session.lastActivity,
                 )
             current.copy(
                 approvals =
@@ -3867,6 +3869,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val raw = message.payload["input"] ?: return true
         val input = runCatching { json.decodeFromJsonElement<InputRequest>(raw) }.getOrNull() ?: return true
         val terminal = input.status == "resolved" || input.status == "expired"
+        val activityAt = activityTimestamp(message.payload)
         if (state.value.sessions.none { it.matches(PROVIDER_CODEX, input.sessionId) }) discoverSession(input.sessionId)
         state.update { current ->
             fun updateSession(session: SessionSummary): SessionSummary =
@@ -3876,6 +3879,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     activeTurnId = input.turnId ?: session.activeTurnId,
                     activityLabel = if (terminal) "Input request resolved" else inputAttentionLabel(input),
                     activityText = "",
+                    lastActivity = activityAt ?: session.lastActivity,
                 )
             current.copy(
                 inputs = if (current.inputs.any { it.id == input.id }) {
@@ -3963,13 +3967,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val identityKey = providerSessionKey(provider, sessionId)
         val event = message.eventObject()
         val kind = event["kind"]?.jsonPrimitive?.content ?: return
-        val activityAt =
-            if ("activityAt" in event) {
-                event["activityAt"]?.takeUnless { it is JsonNull }
-                    ?.jsonPrimitive?.content?.toLongOrNull()
-            } else {
-                event["observedAt"]?.jsonPrimitive?.content?.toLongOrNull()
-            }
+        val activityAt = activityTimestamp(event)
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
             if (action == "removed") {

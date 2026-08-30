@@ -231,13 +231,20 @@ class Foreman:
         self.web_server: Server | None = None
         self.started_monotonic = time.monotonic()
         self.session_overlays: dict[str, dict[str, Any]] = {}
+        self.session_activity_sources: dict[tuple[str, str], str] = {}
         for thread_id, settings in self.state.session_settings("codex").items():
             self.session_overlays[thread_id] = dict(settings)
         for thread_id, raw_usage in self.state.session_token_usage().items():
             if usage := thread_token_usage(raw_usage):
                 self.session_overlays.setdefault(thread_id, {})["tokenUsage"] = usage
         for thread_id, timestamps in self.state.session_timestamps("codex").items():
-            self.session_overlays.setdefault(thread_id, {}).update(timestamps)
+            restored = dict(timestamps)
+            source = restored.pop("activitySource", None)
+            if self.timestamp(restored.get("lastActivity")) is not None:
+                self.session_activity_sources[("codex", thread_id)] = (
+                    source if source in {"provider", "live"} else "legacy"
+                )
+            self.session_overlays.setdefault(thread_id, {}).update(restored)
         self.provider_enabled = {
             provider: self.state.provider_enabled(provider) for provider in PROVIDERS
         }
@@ -276,7 +283,13 @@ class Foreman:
         for session_id, timestamps in self.state.session_timestamps(
             "claude-code"
         ).items():
-            self.claude_session_overlays.setdefault(session_id, {}).update(timestamps)
+            restored = dict(timestamps)
+            source = restored.pop("activitySource", None)
+            if self.timestamp(restored.get("lastActivity")) is not None:
+                self.session_activity_sources[("claude-code", session_id)] = (
+                    source if source in {"provider", "live"} else "legacy"
+                )
+            self.claude_session_overlays.setdefault(session_id, {}).update(restored)
         self.claude_session_cwds: dict[str, str] = {}
         self.claude_session_messages: dict[str, list[dict[str, Any]]] = {}
         self.remote_restart_enabled = remote_restart_enabled
@@ -284,6 +297,7 @@ class Foreman:
         self.restart_scheduled = False
         self.restart_task: asyncio.Task[None] | None = None
         self.timestamp_persistence_pending: set[tuple[str, str]] = set()
+        self.timestamp_persistence_replacements: set[tuple[str, str]] = set()
         self.timestamp_persistence_task: asyncio.Task[bool] | None = None
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
@@ -707,6 +721,8 @@ class Foreman:
             outgoing_event["completedAt"] = self.timestamp(
                 overlay.get("terminalAt")
             )
+        if self.timestamp(overlay.get("lastActivity")) != known_activity:
+            self.session_activity_sources[("claude-code", session_id)] = "live"
         self.persist_overlay_timestamps("claude-code", session_id, overlay)
 
         outgoing = {
@@ -1091,6 +1107,7 @@ class Foreman:
             }
         )
         overlay.pop("terminalAt", None)
+        self.session_activity_sources[("claude-code", session_id)] = "live"
         self.persist_overlay_timestamps("claude-code", session_id, overlay)
         self.claude_session_messages.setdefault(session_id, []).append(
             {
@@ -1202,20 +1219,27 @@ class Foreman:
         params = message.get("params") or {}
         reconciled = params.get("_foremanReconciled") is True
         observed_at = int(time.time())
-        reconciled_activity = params.get(
-            "_foremanActivityAt", params.get("_foremanObservedAt")
-        )
+        advances_activity = event.pop("_foremanAdvancesActivity", False) is True
+        reconciled_activity = params.get("_foremanActivityAt")
+        activity_source: str | None = None
+        replace_activity = False
         if self.timestamp(reconciled_activity) is not None:
             event["activityAt"] = reconciled_activity
+            activity_source = "provider"
+            replace_activity = (
+                params.get("_foremanActivityComplete") is True
+                and event.get("status") not in ("working", "waiting")
+            )
         elif reconciled:
             event["activityAt"] = None
-        elif not reconciled and event.get("kind") not in ("route", "usage", "lifecycle"):
+        elif advances_activity:
             event_activity = self.timestamp(event.get("completedAt"))
             if event_activity is None:
                 event_activity = self.timestamp(event.get("startedAt"))
             event["activityAt"] = (
                 event_activity if event_activity is not None else observed_at
             )
+            activity_source = "live"
         event["observedAt"] = observed_at
         if (
             event.get("type") == "turn/started"
@@ -1227,7 +1251,12 @@ class Foreman:
             # The notification itself is the authoritative start signal even
             # when this app-server version omits the optional timestamp.
             event["startedAt"] = event["activityAt"]
-        self.remember_session_event(thread_id, event)
+        self.remember_session_event(
+            thread_id,
+            event,
+            activity_source=activity_source,
+            replace_activity=replace_activity,
+        )
         outgoing = {
             "version": VERSION,
             "type": "session.event",
@@ -1289,11 +1318,16 @@ class Foreman:
                     overlay["waitDescription"] = None
                 overlay["activityLabel"] = "Approval resolved"
                 overlay["lastActivity"] = observed_at
+        self.session_activity_sources[("codex", thread_id)] = "live"
         self.persist_overlay_timestamps("codex", thread_id, overlay)
         outgoing = {
             "version": VERSION,
             "type": f"approval.{action}",
-            "payload": {"approval": approval},
+            "payload": {
+                "approval": approval,
+                "activityAt": observed_at,
+                "observedAt": observed_at,
+            },
         }
         await asyncio.gather(
             *(
@@ -1343,11 +1377,16 @@ class Foreman:
                 overlay["waitDescription"] = None
             overlay["activityLabel"] = "Input request resolved"
             overlay["lastActivity"] = observed_at
+        self.session_activity_sources[("codex", thread_id)] = "live"
         self.persist_overlay_timestamps("codex", thread_id, overlay)
         outgoing = {
             "version": VERSION,
             "type": f"input.{action}",
-            "payload": {"input": pending},
+            "payload": {
+                "input": pending,
+                "activityAt": observed_at,
+                "observedAt": observed_at,
+            },
         }
         await asyncio.gather(
             *(
@@ -1432,20 +1471,50 @@ class Foreman:
         if self.session_presence_projection() != before:
             await self.broadcast_session_presence()
 
-    def remember_session_event(self, thread_id: str, event: dict[str, Any]) -> None:
+    def remember_session_event(
+        self,
+        thread_id: str,
+        event: dict[str, Any],
+        *,
+        activity_source: str | None = None,
+        replace_activity: bool = False,
+    ) -> None:
         overlay = self.session_overlays.setdefault(thread_id, {})
         kind = event.get("kind")
-        activity_at = event.get("activityAt", event.get("observedAt"))
+        key = ("codex", thread_id)
+        before_activity = self.timestamp(overlay.get("lastActivity"))
+        before_terminal = self.timestamp(overlay.get("terminalAt"))
+        before_source = self.session_activity_sources.get(key)
+        activity_at = event.get("activityAt")
         incoming_activity = self.timestamp(activity_at)
-        known_activity = self.timestamp(overlay.get("lastActivity"))
-        if kind not in ("route", "usage") and incoming_activity is not None:
-            activity_at = max(
-                value
-                for value in (known_activity, incoming_activity)
-                if value is not None
-            )
+        known_activity = before_activity
+        if incoming_activity is not None:
+            if (
+                replace_activity
+                and activity_source == "provider"
+                and before_source != "live"
+            ):
+                activity_at = incoming_activity
+            else:
+                activity_at = max(
+                    value
+                    for value in (known_activity, incoming_activity)
+                    if value is not None
+                )
             overlay["lastActivity"] = activity_at
             event["activityAt"] = activity_at
+            if activity_source in {"provider", "live"} and (
+                known_activity is None
+                or incoming_activity > known_activity
+                or (incoming_activity == known_activity and activity_source == "live")
+                or (
+                    replace_activity
+                    and activity_source == "provider"
+                    and before_source != "live"
+                )
+            ):
+                if before_source != "live" or activity_source == "live":
+                    self.session_activity_sources[key] = activity_source
         if kind == "status":
             projected_status = event.get("status")
             if isinstance(projected_status, str):
@@ -1547,7 +1616,20 @@ class Foreman:
             ):
                 overlay["tokenUsage"] = usage
                 self.state.remember_session_token_usage(thread_id, usage)
-        self.persist_overlay_timestamps("codex", thread_id, overlay)
+        timestamps_changed = (
+            before_activity != self.timestamp(overlay.get("lastActivity"))
+            or before_terminal != self.timestamp(overlay.get("terminalAt"))
+            or before_source != self.session_activity_sources.get(key)
+        )
+        if timestamps_changed:
+            self.persist_overlay_timestamps(
+                "codex",
+                thread_id,
+                overlay,
+                replace_activity=replace_activity,
+            )
+            if incoming_activity is not None:
+                event["activityAt"] = self.timestamp(overlay.get("lastActivity"))
 
     def projected_session(
         self, thread: dict[str, Any], include_messages: bool = False
@@ -1574,6 +1656,10 @@ class Foreman:
             merged,
             provider_activity=provider_activity,
             provider_terminal=provider_terminal,
+            provider_complete=(
+                isinstance(thread.get("status"), dict)
+                and self.timestamp(provider_activity) is not None
+            ),
         )
 
     @staticmethod
@@ -1620,6 +1706,7 @@ class Foreman:
         provider_activity: Any = None,
         provider_terminal: Any = None,
         provider_created: Any = None,
+        provider_complete: bool = False,
     ) -> dict[str, Any]:
         overlays = (
             self.session_overlays
@@ -1627,17 +1714,32 @@ class Foreman:
             else self.claude_session_overlays
         )
         overlay = overlays.setdefault(session_id, {})
+        key = (provider, session_id)
+        known_source = self.session_activity_sources.get(key)
         active = projected.get("status") in ("working", "waiting")
-        activity_candidates = [
+        known_activity = self.timestamp(overlay.get("lastActivity"))
+        known_terminal = self.timestamp(overlay.get("terminalAt"))
+        provider_candidates = [
             value
             for value in (
-                self.timestamp(overlay.get("lastActivity")),
                 self.timestamp(provider_activity),
                 self.timestamp(provider_terminal),
                 self.timestamp(provider_created),
             )
             if value is not None
         ]
+        authoritative_repair = (
+            provider == "codex"
+            and provider_complete
+            and not active
+            and known_source != "live"
+            and bool(provider_candidates)
+        )
+        activity_candidates = list(provider_candidates)
+        if known_terminal is not None:
+            activity_candidates.append(known_terminal)
+        if known_activity is not None and not authoritative_repair:
+            activity_candidates.append(known_activity)
         terminal_candidates = [
             value
             for value in (
@@ -1659,8 +1761,24 @@ class Foreman:
         timestamps = known if desired == known else desired
         overlay.pop("terminalAt", None)
         overlay.update(timestamps)
-        if desired != known:
-            self.queue_session_timestamp_persistence(provider, session_id)
+        desired_activity = self.timestamp(timestamps.get("lastActivity"))
+        if desired_activity is not None:
+            provider_max = max(provider_candidates) if provider_candidates else None
+            if known_source != "live" and (
+                authoritative_repair
+                or (
+                    provider_max is not None
+                    and (known_activity is None or provider_max > known_activity)
+                )
+            ):
+                self.session_activity_sources[key] = "provider"
+        source_changed = known_source != self.session_activity_sources.get(key)
+        if desired != known or source_changed:
+            self.queue_session_timestamp_persistence(
+                provider,
+                session_id,
+                replace_activity=authoritative_repair,
+            )
         return {
             **projected,
             "lastActivity": timestamps.get("lastActivity"),
@@ -1669,7 +1787,12 @@ class Foreman:
         }
 
     def persist_overlay_timestamps(
-        self, provider: str, session_id: str, overlay: dict[str, Any]
+        self,
+        provider: str,
+        session_id: str,
+        overlay: dict[str, Any],
+        *,
+        replace_activity: bool = False,
     ) -> None:
         active = overlay.get("status") in ("working", "waiting")
         activity_candidates = [
@@ -1688,12 +1811,25 @@ class Foreman:
             timestamps["terminalAt"] = terminal_at
         overlay.pop("terminalAt", None)
         overlay.update(timestamps)
-        self.queue_session_timestamp_persistence(provider, session_id)
+        self.queue_session_timestamp_persistence(
+            provider,
+            session_id,
+            replace_activity=replace_activity,
+        )
 
     def queue_session_timestamp_persistence(
-        self, provider: str, session_id: str
+        self,
+        provider: str,
+        session_id: str,
+        *,
+        replace_activity: bool = False,
     ) -> None:
-        self.timestamp_persistence_pending.add((provider, session_id))
+        key = (provider, session_id)
+        self.timestamp_persistence_pending.add(key)
+        if replace_activity:
+            self.timestamp_persistence_replacements.add(key)
+        elif self.session_activity_sources.get(key) == "live":
+            self.timestamp_persistence_replacements.discard(key)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1701,6 +1837,7 @@ class Foreman:
                 list(self.timestamp_persistence_pending)
             )
             self.timestamp_persistence_pending.clear()
+            self.timestamp_persistence_replacements.clear()
             return
         if (
             self.timestamp_persistence_task is None
@@ -1728,6 +1865,11 @@ class Foreman:
                     "lastActivity": self.timestamp(overlay.get("lastActivity")),
                     "terminalAt": self.timestamp(overlay.get("terminalAt")),
                     "clearTerminal": overlay.get("status") in ("working", "waiting"),
+                    "activitySource": self.session_activity_sources.get(
+                        (provider, session_id)
+                    ),
+                    "replaceActivity": (provider, session_id)
+                    in self.timestamp_persistence_replacements,
                 }
             )
         return entries
@@ -1751,6 +1893,9 @@ class Foreman:
                     self.state.remember_session_timestamp_batch,
                     entries,
                 )
+                for key in keys:
+                    if key not in self.timestamp_persistence_pending:
+                        self.timestamp_persistence_replacements.discard(key)
             return True
         except Exception:
             self.timestamp_persistence_pending.update(keys)
@@ -2623,6 +2768,7 @@ class Foreman:
                     )
                 await self.claude.delete_session(session_id, cwd)
                 self.claude_session_overlays.pop(session_id, None)
+                self.session_activity_sources.pop((provider, session_id), None)
                 self.claude_session_cwds.pop(session_id, None)
                 self.claude_session_messages.pop(session_id, None)
                 self.state.forget_session_settings(provider, session_id)
@@ -2782,6 +2928,7 @@ class Foreman:
                 await self.codex.archive_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.session_activity_sources.pop(("codex", thread_id), None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
             await self.flush_session_timestamp_persistence()
@@ -2799,6 +2946,7 @@ class Foreman:
                 await self.codex.delete_thread(thread_id)
             self.discard_subscriptions(thread_id)
             self.session_overlays.pop(thread_id, None)
+            self.session_activity_sources.pop(("codex", thread_id), None)
             self.state.forget_session_token_usage(thread_id)
             self.state.forget_session_settings("codex", thread_id)
             await self.flush_session_timestamp_persistence()
