@@ -1397,7 +1397,22 @@ def thread_token_usage(raw: Any) -> dict[str, Any] | None:
     }
 
 
-def rate_limit_window(raw: Any) -> dict[str, int | float] | None:
+MAX_RATE_LIMIT_WINDOWS = 16
+MAX_RATE_LIMIT_DURATION_MINS = 525_600
+MAX_PUBLIC_TIMESTAMP = 253_402_300_799
+MAX_RATE_LIMIT_TEXT = 100
+
+
+def _bounded_rate_limit_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    bounded = value.strip()[:MAX_RATE_LIMIT_TEXT]
+    return bounded or None
+
+
+def rate_limit_window(
+    raw: Any, *, fallback_id: str | None = None
+) -> dict[str, int | float | str] | None:
     if not isinstance(raw, dict):
         return None
     used = raw.get("usedPercent")
@@ -1405,31 +1420,97 @@ def rate_limit_window(raw: Any) -> dict[str, int | float] | None:
         return None
     if used != used or used in (float("inf"), float("-inf")):
         return None
-    result: dict[str, int | float] = {
+    result: dict[str, int | float | str] = {
         "usedPercent": round(max(0, min(100, used)), 1),
     }
     duration = token_count(raw.get("windowDurationMins"))
     resets_at = token_count(raw.get("resetsAt"))
-    if duration is not None:
-        result["windowDurationMins"] = min(duration, 525_600)
+    label = (
+        _bounded_rate_limit_text(raw.get("label"))
+        or _bounded_rate_limit_text(raw.get("name"))
+        or _bounded_rate_limit_text(raw.get("limitName"))
+    )
+    window_id = _bounded_rate_limit_text(raw.get("id"))
+    if not window_id and fallback_id and fallback_id.startswith("window-"):
+        if duration is not None and duration > 0:
+            window_id = f"duration-{min(duration, MAX_RATE_LIMIT_DURATION_MINS)}"
+        elif label:
+            window_id = f"label-{label.casefold()}"[:MAX_RATE_LIMIT_TEXT]
+    window_id = window_id or fallback_id
+    if window_id:
+        result["id"] = window_id
+    if label:
+        result["label"] = label
+    if duration is not None and duration > 0:
+        result["windowDurationMins"] = min(duration, MAX_RATE_LIMIT_DURATION_MINS)
     if resets_at is not None:
-        result["resetsAt"] = resets_at
+        result["resetsAt"] = min(resets_at, MAX_PUBLIC_TIMESTAMP)
     return result
 
 
 def rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    primary = rate_limit_window(raw.get("primary"))
-    secondary = rate_limit_window(raw.get("secondary"))
-    if not primary and not secondary:
+    windows: list[dict[str, int | float | str]] = []
+    raw_windows = raw.get("windows")
+    if isinstance(raw_windows, list) and raw_windows:
+        seen: set[str] = set()
+        for index, value in enumerate(raw_windows[:MAX_RATE_LIMIT_WINDOWS]):
+            projected = rate_limit_window(value, fallback_id=f"window-{index + 1}")
+            window_id = projected.get("id") if projected else None
+            if projected and isinstance(window_id, str) and window_id not in seen:
+                seen.add(window_id)
+                windows.append(projected)
+    else:
+        for key in ("primary", "secondary"):
+            projected = rate_limit_window(raw.get(key), fallback_id=key)
+            if projected:
+                windows.append(projected)
+    if not windows:
         return None
-    result: dict[str, Any] = {"primary": primary, "secondary": secondary}
+    primary = next((window for window in windows if window.get("id") == "primary"), None)
+    secondary = next((window for window in windows if window.get("id") == "secondary"), None)
+    result: dict[str, Any] = {
+        "windows": windows,
+        # Compatibility aliases for protocol-v1 clients. Provider-defined windows
+        # remain available through `windows`, even when there are more than two.
+        "primary": primary or windows[0],
+        "secondary": secondary or (windows[1] if len(windows) > 1 else None),
+    }
     for key in ("limitId", "limitName", "planType", "rateLimitReachedType"):
-        value = raw.get(key)
-        if isinstance(value, str) and value:
-            result[key] = value[:100]
+        value = _bounded_rate_limit_text(raw.get(key))
+        if value:
+            result[key] = value
     return result
+
+
+def merge_rate_limit_snapshots(previous: Any, incoming: Any) -> dict[str, Any] | None:
+    """Merge a sparse provider update without dropping unmentioned windows."""
+    older = rate_limit_snapshot(previous)
+    newer = rate_limit_snapshot(incoming)
+    if not newer:
+        return older
+    if not older:
+        return newer
+    merged_by_id = {
+        str(window["id"]): dict(window)
+        for window in older["windows"]
+        if isinstance(window.get("id"), str)
+    }
+    order = list(merged_by_id)
+    for window in newer["windows"]:
+        window_id = str(window["id"])
+        if window_id not in merged_by_id:
+            order.append(window_id)
+        merged_by_id[window_id] = {**merged_by_id.get(window_id, {}), **window}
+    metadata = {
+        key: value
+        for key in ("limitId", "limitName", "planType", "rateLimitReachedType")
+        if (value := newer.get(key, older.get(key))) is not None
+    }
+    return rate_limit_snapshot(
+        {**metadata, "windows": [merged_by_id[window_id] for window_id in order]}
+    )
 
 
 def session(thread: dict[str, Any], include_messages: bool = False) -> dict[str, Any]:

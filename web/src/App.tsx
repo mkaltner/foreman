@@ -34,6 +34,14 @@ import {
 } from "./client";
 import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
 import {
+  accountUsageWindows,
+  compactRateLimitLabel,
+  mostConstrainedWindow,
+  normalizeAccountUsage,
+  rateLimitLabel,
+  rateLimitResetLabel,
+} from "./account-usage";
+import {
   browserNotificationState,
   clearTurnNotification,
   notificationStateDescription,
@@ -101,6 +109,7 @@ import {
   forgetStoredHost,
   hostIdFromUrl,
   loadAppearance,
+  loadAccountUsage,
   loadCollapsedRepositories,
   loadHostNotificationOverride,
   loadHostRegistry,
@@ -108,6 +117,7 @@ import {
   loadSessionSearch,
   loadSessionOrganization,
   saveAppearance,
+  saveAccountUsage,
   saveCollapsedRepositories,
   clearHostNotificationOverride,
   clearRememberedSession,
@@ -257,7 +267,7 @@ function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
-  const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
+  const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(() => loadAccountUsage(initialHostId));
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [current, setCurrent] = useState<SessionSummary | null>(null);
@@ -717,7 +727,12 @@ function App() {
       return;
     }
     if (message.type === "usage.event") {
-      setAccountUsage(message.payload as unknown as AccountUsage);
+      const usage = normalizeAccountUsage(message.payload);
+      const hostId = activeHostIdRef.current;
+      if (usage && hostId) {
+        saveAccountUsage(usage, hostId);
+        setAccountUsage(usage);
+      }
       return;
     }
     if (message.type !== "session.event") return;
@@ -939,6 +954,7 @@ function App() {
         },
         onAuthenticationRejected: (detail) => {
           clearHostProjections();
+          setAccountUsage(loadAccountUsage(activeHostIdRef.current));
           setError(detail);
         },
       }),
@@ -1022,7 +1038,7 @@ function App() {
           : Promise.resolve({ levels: [] as AccessLevelInfo[] }),
         client.request<ServiceStatus & Record<string, unknown>>("service.status"),
         client.request<AccountUsage & Record<string, unknown>>("usage.status")
-          .catch(() => ({ providers: {} })),
+          .catch(() => null),
         client.request<{ repositories: RepositoryInfo[] } & Record<string, unknown>>("repository.list"),
         client.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list"),
       ]);
@@ -1099,7 +1115,9 @@ function App() {
       })));
       setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
-      setAccountUsage(usageResult);
+      const normalizedUsage = normalizeAccountUsage(usageResult) ?? loadAccountUsage(hostId);
+      if (normalizedUsage) saveAccountUsage(normalizedUsage, hostId);
+      setAccountUsage(normalizedUsage);
       setRepositories(repositoryResult.repositories);
       setPairedClients(clientResult.clients);
       if (reconnected) dashboardSubscriptions.current.clear();
@@ -1345,6 +1363,7 @@ function App() {
     if (switching) {
       client.disconnect();
       clearHostProjections();
+      setAccountUsage(loadAccountUsage(hostId));
       const next = selectStoredHost(registry, hostId);
       persistRegistry(next);
       const nextAppearance = loadAppearance(hostId);
@@ -1489,6 +1508,7 @@ function App() {
       clearHostProjections();
       const nextId = next.activeHostId;
       if (nextId) {
+        setAccountUsage(loadAccountUsage(nextId));
         setAppearance(loadAppearance(nextId));
         const nextNotifications = loadNotificationPreferences(nextId);
         setNotificationPreferences(nextNotifications);
@@ -1498,6 +1518,8 @@ function App() {
         const filters = parseSessionFilters(loadSessionSearch(nextId));
         searchFiltersRef.current = filters;
         setSearchFilters(filters);
+      } else {
+        setAccountUsage(null);
       }
     }
     setError("");
@@ -1523,6 +1545,7 @@ function App() {
       const next = addStoredHost(hostRegistryRef.current, saved);
       client.disconnect();
       clearHostProjections();
+      setAccountUsage(loadAccountUsage(saved.id));
       persistRegistry(next);
       setAppearance(loadAppearance(saved.id));
       const savedNotifications = loadNotificationPreferences(saved.id);
@@ -2219,14 +2242,16 @@ export function AccountUsageDock({ usage, providers: providerInfo, providerCatal
   const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
   const showProviderIdentity = shouldShowProviderIdentity(providerInfo, providerCatalogLoaded);
   if (!availableWindows.length && !providers.some(({ usage: providerUsage }) => providerUsage)) return null;
-  const usedPercent = availableWindows.length
-    ? Math.max(...availableWindows.map((window) => Math.max(0, Math.min(100, window.usedPercent))))
-    : 0;
-  const summary = providers.map(({ label, usage: providerUsage }) => `${showProviderIdentity ? `${label} ` : ""}${accountUsageRemaining(providerUsage)}`).join(", ");
+  const constrained = mostConstrainedWindow(availableWindows);
+  const usedPercent = constrained?.usedPercent ?? 0;
+  const remaining = constrained ? `${Math.max(0, Math.round(100 - constrained.usedPercent))}% left` : "unavailable";
+  const constrainedLabel = constrained ? compactRateLimitLabel(constrained) : "Account usage";
+  const additional = Math.max(0, availableWindows.length - 1);
+  const summary = `${remaining}, ${constrainedLabel}${additional ? `, ${additional} additional ${additional === 1 ? "limit" : "limits"}` : ""}`;
   return <div className="account-usage-anchor" ref={rootRef}>
     <button className="account-usage-dock" type="button" aria-label={`Account usage, ${summary}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       <UsageRing percentUsed={usedPercent} />
-      <span className="account-provider-summary">{providers.map(({ id, label, usage: providerUsage }) => <span key={id}>{showProviderIdentity && <b>{label}</b>}<strong>{accountUsageRemaining(providerUsage)}</strong></span>)}<small>Account usage</small></span>
+      <span className="account-provider-summary"><strong>{remaining}</strong><b>{constrainedLabel}</b><small>{additional ? `+${additional} more ${additional === 1 ? "limit" : "limits"}` : "Account usage"}</small></span>
     </button>
     {open && <aside className="account-usage-panel" aria-label="Account usage">
       <header><div>{showProviderIdentity && <span className="eyebrow">Across providers</span>}<strong>Account usage</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close account usage">×</button></header>
@@ -2236,9 +2261,10 @@ export function AccountUsageDock({ usage, providers: providerInfo, providerCatal
           {(showProviderIdentity || providerUsage?.experimental) && <div className="account-provider-heading">{showProviderIdentity && <strong>{label}</strong>}{providerUsage?.experimental && <span>Experimental</span>}</div>}
           {windows.length ? <div className="account-limit-list">{windows.map((window, index) => {
             const remaining = Math.max(0, Math.round(100 - window.usedPercent));
-            return <section key={`${window.windowDurationMins ?? "window"}-${index}`}>
-              <div><strong>{rateLimitLabel(window.windowDurationMins, index)}</strong><span>{remaining}% left</span></div>
-              <div className="context-meter" role="meter" aria-label={`${showProviderIdentity ? `${label} ` : ""}${rateLimitLabel(window.windowDurationMins, index)} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
+            const windowLabel = rateLimitLabel(window, index, windows.length);
+            return <section key={window.id ?? `${window.windowDurationMins ?? "window"}-${index}`}>
+              <div><strong>{windowLabel}</strong><span>{remaining}% left</span></div>
+              <div className="context-meter" role="meter" aria-label={`${showProviderIdentity ? `${label} ` : ""}${windowLabel} used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.usedPercent}><i style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }} /></div>
               <small>{rateLimitResetLabel(window.resetsAt)}</small>
             </section>;
           })}</div> : <p>{providerUsage?.availabilityReason || `${showProviderIdentity ? `${label} usage` : "Usage"} is unavailable.`}</p>}
@@ -2247,30 +2273,6 @@ export function AccountUsageDock({ usage, providers: providerInfo, providerCatal
       })}</div>
     </aside>}
   </div>;
-}
-
-function accountUsageWindows(usage: AccountUsage["providers"][ProviderId]) {
-  return [usage?.rateLimits?.primary, usage?.rateLimits?.secondary].filter(
-    (window): window is NonNullable<typeof window> => !!window && Number.isFinite(window.usedPercent),
-  );
-}
-
-function accountUsageRemaining(usage: AccountUsage["providers"][ProviderId]): string {
-  const windows = accountUsageWindows(usage);
-  if (!windows.length) return "unavailable";
-  return `${Math.max(0, Math.round(100 - Math.max(...windows.map((window) => window.usedPercent))))}% left`;
-}
-
-function rateLimitLabel(durationMins: number | undefined, index: number): string {
-  if (durationMins === 10_080) return "Weekly limit";
-  if (durationMins && durationMins % 60 === 0) return `${durationMins / 60}-hour limit`;
-  if (durationMins) return `${durationMins}-minute limit`;
-  return index === 0 ? "Primary limit" : "Secondary limit";
-}
-
-function rateLimitResetLabel(resetsAt: number | undefined): string {
-  if (!resetsAt) return "Reset time unavailable";
-  return `Resets ${new Date(resetsAt * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
 export function ConversationView({

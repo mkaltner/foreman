@@ -245,24 +245,37 @@ function boundedPercent(value) {
 function resetTimestamp(value) {
   if (typeof value !== "string") return undefined;
   const milliseconds = Date.parse(value);
-  return Number.isFinite(milliseconds) ? Math.max(0, Math.trunc(milliseconds / 1000)) : undefined;
+  return Number.isFinite(milliseconds)
+    ? Math.min(253_402_300_799, Math.max(0, Math.trunc(milliseconds / 1000)))
+    : undefined;
 }
 
-function claudeRateLimits(raw) {
+export function claudeRateLimits(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const project = (window, duration) => {
+  const knownDurations = { five_hour: 300, seven_day: 10_080 };
+  const project = (id, window) => {
     const usedPercent = boundedPercent(window?.utilization);
     if (usedPercent === undefined) return null;
     const resetsAt = resetTimestamp(window?.resets_at);
+    const suppliedDuration = boundedCount(window?.window_duration_mins ?? window?.duration_mins, 525_600);
+    const duration = knownDurations[id] ?? (suppliedDuration > 0 ? suppliedDuration : undefined);
+    const rawLabel = typeof window?.label === "string" ? window.label : window?.name;
+    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 100) : "";
     return {
+      id: id.slice(0, 100),
       usedPercent,
-      windowDurationMins: duration,
+      ...(duration ? { windowDurationMins: duration } : {}),
+      ...(label ? { label } : {}),
       ...(resetsAt !== undefined ? { resetsAt } : {}),
     };
   };
-  const primary = project(raw.five_hour, 300);
-  const secondary = project(raw.seven_day, 10_080);
-  return primary || secondary ? { primary, secondary } : null;
+  const windows = Object.entries(raw).slice(0, 16)
+    .map(([id, window]) => project(id, window))
+    .filter(Boolean);
+  if (!windows.length) return null;
+  const primary = windows.find((window) => window.id === "five_hour") ?? windows[0];
+  const secondary = windows.find((window) => window.id === "seven_day") ?? windows[1] ?? null;
+  return { windows, primary, secondary };
 }
 
 async function within(promise, milliseconds = 5_000) {

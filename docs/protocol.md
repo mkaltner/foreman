@@ -202,13 +202,19 @@ rate-limit snapshots of enabled providers, and receive
 `usage.event` updates. Provider usage is separate from per-session context: it
 exposes only quota percentages, window durations, reset timestamps, and bounded
 limit labels. Account identity, token activity history, credits, and raw
-provider payloads are not projected. Codex sparse rolling updates merge into
-the last complete snapshot without clearing an unmentioned quota window.
+provider payloads are not projected. Each `rateLimits` object carries an
+ordered, bounded `windows` collection. Every window has a stable `id`, bounded
+`usedPercent`, and optional provider `label`, `windowDurationMins`, and
+`resetsAt`. The legacy `primary` and `secondary` aliases remain populated from
+the first two windows for protocol-v1 clients. Sparse rolling updates merge by
+window ID without clearing an unmentioned quota window.
 Claude account limits come from an explicitly experimental Agent SDK method
 available only during a Foreman-managed Claude query, so the projection is
-labeled experimental and last-observed. The last bounded Claude percentages
-and reset times survive a Foreman restart; an unavailable reason is returned
-until the first usable snapshot exists.
+labeled experimental and last-observed. The last bounded Codex and Claude
+windows survive a Foreman restart; an unavailable reason is returned until the
+first usable snapshot exists. Web and Android also keep a host-scoped copy so
+reload/relaunch and reconnect continue to show the latest valid projection
+until fresher host data arrives.
 
 Conversation items may include bounded `compaction` entries. Codex identifies
 that compaction occurred; Claude may additionally provide automatic/manual

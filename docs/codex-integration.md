@@ -132,7 +132,10 @@ replay.
   summary itself.
 - Account rate-limit projections contain only bounded percentages, durations,
   reset times, and labels. They omit account identity, credits, and usage
-  history. Rolling sparse updates merge into the authenticated snapshot.
+  history. Every reported window is retained in an extensible `windows`
+  collection; compatibility `primary`/`secondary` aliases remain available.
+  Rolling sparse updates merge by stable window identity, and the bounded
+  snapshot survives a Foreman restart.
 - Access presets use allowed `:workspace` and `:danger-full-access` permission
   profiles. Standard approval routes to the user, automatic approval uses
   `auto_review`, and full access disables approval prompts.

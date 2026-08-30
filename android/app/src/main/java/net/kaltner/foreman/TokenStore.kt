@@ -424,6 +424,16 @@ class PreferenceStore(context: Context, hostId: String?) {
             (value as? String)?.take(100_000)?.let { providerKey to it }
         }.toMap()
 
+    fun loadAccountUsage(): AccountUsage =
+        decodeStoredAccountUsage(preferences.getString("accountUsage.v1", null))
+
+    fun setAccountUsage(usage: AccountUsage) {
+        preferences.edit().putString(
+            "accountUsage.v1",
+            encodeStoredAccountUsage(usage),
+        ).commit()
+    }
+
     fun setDraft(provider: String, sessionId: String, text: String) {
         val key = "draft.${providerSessionKey(provider, sessionId)}"
         if (text.isEmpty()) preferences.edit().remove(key).apply()

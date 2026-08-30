@@ -1,5 +1,7 @@
 import type { ActivityDetail } from "./activity-detail";
 import { isProviderId, type ProviderId } from "./protocol";
+import type { AccountUsage } from "./protocol";
+import { normalizeAccountUsage } from "./account-usage";
 
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
@@ -57,6 +59,7 @@ const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 const SESSION_SEARCH_KEY = "foreman.session-search.v1";
 const COLLAPSED_REPOSITORIES_KEY = "foreman.collapsed-repositories.v1";
 const LAST_SESSION_KEY = "foreman.last-session.v1";
+const ACCOUNT_USAGE_KEY = "foreman.account-usage.v1";
 const HOST_SCOPED_KEYS = [
   APPEARANCE_KEY,
   NOTIFICATIONS_KEY,
@@ -66,6 +69,7 @@ const HOST_SCOPED_KEYS = [
   SESSION_SEARCH_KEY,
   COLLAPSED_REPOSITORIES_KEY,
   LAST_SESSION_KEY,
+  ACCOUNT_USAGE_KEY,
 ];
 export const DEFAULT_APPEARANCE: Appearance = {
   theme: "system",
@@ -217,6 +221,21 @@ export function saveAppearance(
   storage: Storage = localStorage,
 ): void {
   storage.setItem(scopedKey(APPEARANCE_KEY, hostId), JSON.stringify(appearance));
+}
+
+export function loadAccountUsage(hostId?: string | null, storage: Storage = localStorage): AccountUsage | null {
+  if (!hostId) return null;
+  try {
+    return normalizeAccountUsage(JSON.parse(storage.getItem(scopedKey(ACCOUNT_USAGE_KEY, hostId)) ?? "null"));
+  } catch {
+    return null;
+  }
+}
+
+export function saveAccountUsage(usage: AccountUsage, hostId?: string | null, storage: Storage = localStorage): void {
+  if (!hostId) return;
+  const normalized = normalizeAccountUsage(usage);
+  if (normalized) storage.setItem(scopedKey(ACCOUNT_USAGE_KEY, hostId), JSON.stringify(normalized));
 }
 
 export function loadNotificationsEnabled(hostId?: string | null, storage: Storage = localStorage): boolean {

@@ -4,7 +4,7 @@ import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserT
 import type { ApprovalRequest, SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
-import { loadHostRegistry, loadRememberedSession, saveHostRegistry, saveRememberedSession, type StoredHost } from "./storage";
+import { loadHostRegistry, loadRememberedSession, saveAccountUsage, saveHostRegistry, saveRememberedSession, type StoredHost } from "./storage";
 
 const clientMock = vi.hoisted(() => ({
   pair: vi.fn(),
@@ -220,6 +220,20 @@ describe("host navigation history", () => {
 
     await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
     expect(window.location.pathname).toBe(`/sessions/codex/${session.id}`);
+  });
+
+  it("restores host-scoped account usage across reload while reconnecting", () => {
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    saveAccountUsage({ providers: { codex: { available: true, rateLimits: { windows: [
+      { id: "weekly", usedPercent: 35, windowDurationMins: 10_080 },
+    ] } } } }, home.id);
+    clientMock.start.mockImplementation(() => new Promise(() => undefined));
+
+    const first = render(<App />);
+    expect(screen.getByRole("button", { name: "Account usage, 65% left, Weekly" })).toBeInTheDocument();
+    first.unmount();
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Account usage, 65% left, Weekly" })).toBeInTheDocument();
   });
 
   it("keeps last sessions isolated while switching hosts", async () => {
@@ -771,7 +785,7 @@ describe("session context usage", () => {
       onHide={vi.fn()}
     />);
 
-    const trigger = screen.getByRole("button", { name: "Account usage, Codex 89% left, Claude 72% left" });
+    const trigger = screen.getByRole("button", { name: "Account usage, 72% left, Weekly, 3 additional limits" });
     expect(trigger.closest(".session-pane")).toBeInTheDocument();
     fireEvent.click(trigger);
     const panel = screen.getByRole("complementary", { name: "Account usage" });
@@ -797,11 +811,33 @@ describe("session context usage", () => {
       ]}
     />);
 
-    expect(screen.getByRole("button", { name: "Account usage, 88% left" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Account usage, 88% left" }));
+    expect(screen.getByRole("button", { name: "Account usage, 88% left, Usage" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Account usage, 88% left, Usage" }));
     expect(screen.queryByText("Across providers")).not.toBeInTheDocument();
     expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
+  });
+
+  it("shows all extensible windows while keeping the narrow dock concise", () => {
+    render(<AccountUsageDock
+      usage={{ providers: { codex: { available: true, rateLimits: { windows: [
+        { id: "short", usedPercent: 20, windowDurationMins: 300 },
+        { id: "week", usedPercent: 60, windowDurationMins: 10_080 },
+        { id: "rolling", usedPercent: 10, label: "Rolling month" },
+        { id: "anonymous", usedPercent: 5 },
+      ] } } } }}
+      providers={[{ id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] }]}
+    />);
+
+    const trigger = screen.getByRole("button", { name: "Account usage, 40% left, Weekly, 3 additional limits" });
+    expect(within(trigger).getByText("40% left")).toBeInTheDocument();
+    expect(within(trigger).getByText("+3 more limits")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    const panel = screen.getByRole("complementary", { name: "Account usage" });
+    expect(within(panel).getByText("5-hour limit")).toBeInTheDocument();
+    expect(within(panel).getByText("Weekly limit")).toBeInTheDocument();
+    expect(within(panel).getByText("Rolling month")).toBeInTheDocument();
+    expect(within(panel).getByText("Usage limit 4")).toBeInTheDocument();
   });
 });
 

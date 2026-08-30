@@ -130,6 +130,80 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun accountUsageUsesEveryProviderDefinedWindowAndHonestLabels() {
+        val usage = ProviderAccountUsage(
+            available = true,
+            rateLimits = RateLimitSnapshot(
+                windows = listOf(
+                    RateLimitWindow(id = "five-hour", usedPercent = 12.0, windowDurationMins = 300),
+                    RateLimitWindow(id = "weekly", usedPercent = 46.0, windowDurationMins = 10_080),
+                    RateLimitWindow(id = "rolling", label = "Rolling month", usedPercent = 8.0),
+                ),
+            ),
+        )
+
+        val windows = accountUsageWindows(usage)
+        assertEquals(3, windows.size)
+        assertEquals("5-hour limit", rateLimitLabel(windows[0], 0, windows.size))
+        assertEquals("Weekly limit", rateLimitLabel(windows[1], 1, windows.size))
+        assertEquals("Rolling month", rateLimitLabel(windows[2], 2, windows.size))
+        assertEquals("54% left", accountUsageRemaining(usage))
+        assertEquals("Weekly", compactRateLimitLabel(mostConstrainedWindow(windows)!!))
+        assertEquals(
+            CompactAccountUsage(46, "54% left · Weekly", "+2 more limits"),
+            compactAccountUsage(windows),
+        )
+    }
+
+    @Test
+    fun accountUsageSingleAnonymousWindowDoesNotFabricateAnother() {
+        val usage = ProviderAccountUsage(
+            available = true,
+            rateLimits = RateLimitSnapshot(windows = listOf(RateLimitWindow(usedPercent = 5.0))),
+        )
+
+        val windows = accountUsageWindows(usage)
+        assertEquals(1, windows.size)
+        assertEquals("Usage limit", rateLimitLabel(windows.single(), 0, 1))
+    }
+
+    @Test
+    fun accountUsageBoundsUntrustedPayloadAndSurvivesSerializationRoundTrip() {
+        val raw = AccountUsage(
+            providers = mapOf(
+                PROVIDER_CODEX to ProviderAccountUsage(
+                    available = true,
+                    observedAt = Long.MAX_VALUE,
+                    rateLimits = RateLimitSnapshot(
+                        windows = (0 until 20).map { index ->
+                            RateLimitWindow(
+                                id = "window-$index",
+                                label = "x".repeat(150),
+                                usedPercent = if (index == 0) 140.0 else -5.0,
+                                windowDurationMins = Long.MAX_VALUE,
+                                resetsAt = Long.MAX_VALUE,
+                            )
+                        },
+                    ),
+                ),
+                "unknown" to ProviderAccountUsage(available = true),
+            ),
+        ).normalized()
+
+        val encoded = encodeStoredAccountUsage(raw)
+        val restored = decodeStoredAccountUsage(encoded)
+        val windows = accountUsageWindows(restored.providers[PROVIDER_CODEX])
+        assertEquals(16, windows.size)
+        assertEquals(100.0, windows.first().usedPercent, 0.0)
+        assertEquals(525_600L, windows.first().windowDurationMins)
+        assertEquals(253_402_300_799L, windows.first().resetsAt)
+        assertEquals(100, windows.first().label?.length)
+        assertEquals(setOf(PROVIDER_CODEX), restored.providers.keys)
+        assertEquals(AccountUsage(), decodeStoredAccountUsage("not-json"))
+        assertFalse(HostStore.preferenceFile("host-a") == HostStore.preferenceFile("host-b"))
+    }
+
+    @Test
     fun sessionUsageAndCompactionDecodeFromProtocol() {
         val session = json.decodeFromString<SessionSummary>(
             """{"id":"thread","repository":"/repo","title":"Usage","status":"idle","messages":[{"id":"compact-1","kind":"compaction","description":"Context compacted","compactionTrigger":"auto","preTokens":900000,"postTokens":120000,"durationMs":2000}],"tokenUsage":{"total":{"totalTokens":950000},"last":{"totalTokens":120000,"cachedInputTokens":54000,"outputTokens":1100},"modelContextWindow":258000}}""",

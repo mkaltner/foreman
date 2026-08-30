@@ -165,6 +165,7 @@ export function query({ prompt, options }) {
     rate_limits: {
       five_hour: { utilization: 15, resets_at: "2027-01-15T12:00:00Z" },
       seven_day: { utilization: 28, resets_at: "2027-01-20T12:00:00Z" },
+      rolling_month: { utilization: 7, label: "Rolling month", duration_mins: 43_200, resets_at: "2027-02-01T12:00:00Z" },
     },
   });
   return iterator;

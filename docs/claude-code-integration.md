@@ -38,9 +38,11 @@ During a Foreman-managed query, the bridge requests the Agent SDK's stable
 context-usage breakdown and projects only total active-context tokens and the
 model window. It also defensively calls the SDK method explicitly named
 `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` for claude.ai
-5-hour and 7-day utilization. Those account limits are labeled experimental,
-bounded to percentages and reset timestamps, and the last observed snapshot is
-kept in Foreman's private state so it survives restart. They remain unavailable
+provider-defined utilization windows, including the commonly returned 5-hour
+and 7-day windows. Those account limits are labeled experimental, bounded to
+percentages, labels, durations, reset timestamps, and collection size, and the
+last observed snapshot is kept in Foreman's private state so it survives
+restart. They remain unavailable
 until a managed query yields a snapshot. API-key and third-party-provider
 sessions may never expose plan limits. Compact-boundary history/events are projected without
 their summary text, allowing the UI to show count, trigger, before/after tokens,

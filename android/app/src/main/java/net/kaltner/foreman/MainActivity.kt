@@ -1242,6 +1242,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 hasSavedConnection = activeHost != null,
                 savedHosts = hosts.all().map(SavedHost::summary),
                 activeHostId = activeHost?.id,
+                accountUsage = preferences.loadAccountUsage(),
                 composerDrafts = storedComposerDrafts(activeHost?.id, preferences.loadDrafts()),
                 themeMode = savedPreferences.themeMode,
                 accentColor = savedPreferences.accentColor,
@@ -2337,6 +2338,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 restartPhase = RestartPhase.Reconnecting,
                 connectionStatus = "reconnecting",
                 providerCatalogLoaded = false,
+                accountUsage = preferences.loadAccountUsage(),
             )
         }
         restartReconnectJob =
@@ -2553,7 +2555,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 sessions = emptyList(),
                 providers = emptyList(),
                 providerCatalogLoaded = false,
-                accountUsage = AccountUsage(),
+                accountUsage = preferences.loadAccountUsage(),
                 repositories = emptyList(),
                 selected = null,
                 showNewSession = false,
@@ -3136,8 +3138,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         .map { json.decodeFromJsonElement<RepositoryInfo>(it) }
                 val serviceStatus = serviceStatusRequest.await().payload
                 val accountUsage = usageRequest.await()?.payload?.let {
-                    runCatching { json.decodeFromJsonElement<AccountUsage>(it) }.getOrNull()
-                } ?: AccountUsage()
+                    runCatching { json.decodeFromJsonElement<AccountUsage>(it).normalized() }.getOrNull()
+                } ?: preferences.loadAccountUsage()
                 val codexStatus = serviceStatus["codex"]?.jsonObject
                 val repositoryRoot = serviceStatus["repositoryRoot"]?.jsonPrimitive?.content.orEmpty()
                 val models =
@@ -3224,6 +3226,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             ) || syncGeneration != sessionSyncGeneration
         ) return
         nonAuthoritativeSessionProviders = snapshot.nonAuthoritativeSessionProviders
+        preferences.setAccountUsage(snapshot.accountUsage)
         val applySelection = expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation)
         state.update {
             it.withSynchronizedSessions(
@@ -3900,8 +3903,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (handleInputEvent(message)) return
         if (message.type == "usage.event") {
             val usage = runCatching {
-                json.decodeFromJsonElement<AccountUsage>(message.payload)
+                json.decodeFromJsonElement<AccountUsage>(message.payload).normalized()
             }.getOrNull() ?: return
+            preferences.setAccountUsage(usage)
             state.update { it.copy(accountUsage = usage) }
             return
         }
@@ -5535,14 +5539,25 @@ private fun AccountUsageDock(
     providers: List<ProviderInfo>,
     providerCatalogLoaded: Boolean,
 ) {
-    val visible = providers.filter { it.enabled }.mapNotNull { provider ->
+    val usageProviders = if (providers.isEmpty()) {
+        usage.providers.map { (id, providerUsage) ->
+            ProviderInfo(
+                id = id,
+                displayName = providerDisplayName(id),
+                available = providerUsage.available,
+            )
+        }
+    } else {
+        providers.filter { it.enabled }
+    }
+    val visible = usageProviders.mapNotNull { provider ->
         usage.providers[provider.id]?.let { provider to it }
     }
     if (visible.isEmpty()) return
     val showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded)
     var open by remember { mutableStateOf(false) }
-    val usedPercent = visible.flatMap { accountUsageWindows(it.second) }
-        .maxOfOrNull { it.usedPercent }?.roundToInt()?.coerceIn(0, 100) ?: 0
+    val windows = visible.flatMap { accountUsageWindows(it.second) }
+    val compact = compactAccountUsage(windows)
     Surface(tonalElevation = 3.dp, shadowElevation = 4.dp) {
         Row(
             modifier = Modifier.fillMaxWidth().clickable { open = true }
@@ -5550,19 +5565,20 @@ private fun AccountUsageDock(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            UsageRing(usedPercent, 28.dp)
+            UsageRing(compact.usedPercent, 28.dp)
             Column(Modifier.weight(1f)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    visible.forEach { (provider, providerUsage) ->
-                        Text(
-                            (if (showProviderIdentity) "${provider.displayName.removeSuffix(" Code")} " else "") +
-                                accountUsageRemaining(providerUsage),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-                Text("Account usage", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    compact.primaryText,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+                Text(
+                    compact.secondaryText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -5602,7 +5618,7 @@ private fun AccountUsageDialog(
                                 val remaining = (100 - window.usedPercent).roundToInt().coerceIn(0, 100)
                                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(rateLimitLabel(window.windowDurationMins, index), style = MaterialTheme.typography.labelMedium)
+                                        Text(rateLimitLabel(window, index, windows.size), style = MaterialTheme.typography.labelMedium)
                                         Text("$remaining% left", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                     }
                                     LinearProgressIndicator(
@@ -5633,17 +5649,6 @@ private fun AccountUsageDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
-
-private fun rateLimitLabel(durationMinutes: Long?, index: Int): String =
-    when (durationMinutes) {
-        10_080L -> "Weekly limit"
-        null -> if (index == 0) "Primary limit" else "Secondary limit"
-        else -> when {
-            durationMinutes > 0 && durationMinutes % 60 == 0L -> "${durationMinutes / 60}-hour limit"
-            durationMinutes > 0 -> "$durationMinutes-minute limit"
-            else -> if (index == 0) "Primary limit" else "Secondary limit"
-        }
-    }
 
 @Composable
 private fun UsageRing(percentUsed: Int, size: Dp) {

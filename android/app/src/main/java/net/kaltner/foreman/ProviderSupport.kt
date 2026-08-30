@@ -3,6 +3,8 @@ package net.kaltner.foreman
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -71,6 +73,8 @@ data class PermissionModeInfo(
 
 @Serializable
 data class RateLimitWindow(
+    val id: String? = null,
+    val label: String? = null,
     val usedPercent: Double,
     val windowDurationMins: Long? = null,
     val resetsAt: Long? = null,
@@ -82,6 +86,7 @@ data class RateLimitSnapshot(
     val limitName: String? = null,
     val primary: RateLimitWindow? = null,
     val secondary: RateLimitWindow? = null,
+    val windows: List<RateLimitWindow> = emptyList(),
     val planType: String? = null,
     val rateLimitReachedType: String? = null,
 )
@@ -138,13 +143,115 @@ internal fun formatTokenCount(value: Long): String =
         else -> value.toString()
     }
 
-internal fun accountUsageWindows(usage: ProviderAccountUsage?): List<RateLimitWindow> =
-    listOfNotNull(usage?.rateLimits?.primary, usage?.rateLimits?.secondary)
+private const val MAX_RATE_LIMIT_WINDOWS = 16
+private const val MAX_RATE_LIMIT_DURATION_MINS = 525_600L
+private const val MAX_PUBLIC_TIMESTAMP = 253_402_300_799L
+private const val MAX_RATE_LIMIT_TEXT = 100
+
+private fun RateLimitWindow.normalized(fallbackId: String): RateLimitWindow? {
+    if (!usedPercent.isFinite()) return null
+    return copy(
+        id = id?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null } ?: fallbackId,
+        label = label?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+        usedPercent = usedPercent.coerceIn(0.0, 100.0),
+        windowDurationMins = windowDurationMins?.takeIf { it > 0 }
+            ?.coerceAtMost(MAX_RATE_LIMIT_DURATION_MINS),
+        resetsAt = resetsAt?.takeIf { it >= 0 }?.coerceAtMost(MAX_PUBLIC_TIMESTAMP),
+    )
+}
+
+internal fun accountUsageWindows(usage: ProviderAccountUsage?): List<RateLimitWindow> {
+    val limits = usage?.rateLimits ?: return emptyList()
+    val raw = limits.windows.takeIf { it.isNotEmpty() }
+        ?: listOfNotNull(limits.primary, limits.secondary)
+    val seen = mutableSetOf<String>()
+    return raw.take(MAX_RATE_LIMIT_WINDOWS).mapIndexedNotNull { index, window ->
+        val fallback = if (index == 0) "primary" else if (index == 1) "secondary" else "window-${index + 1}"
+        window.normalized(fallback)?.takeIf { seen.add(it.id!!) }
+    }
+}
+
+internal fun AccountUsage.normalized(): AccountUsage {
+    val projected = providers.mapNotNull { (provider, usage) ->
+        if (!supportedProvider(provider)) return@mapNotNull null
+        val windows = accountUsageWindows(usage)
+        val primary = windows.firstOrNull { it.id == "primary" } ?: windows.firstOrNull()
+        val secondary = windows.firstOrNull { it.id == "secondary" } ?: windows.getOrNull(1)
+        val limits = usage.rateLimits?.takeIf { windows.isNotEmpty() }?.copy(
+            limitId = usage.rateLimits.limitId?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+            limitName = usage.rateLimits.limitName?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+            primary = primary,
+            secondary = secondary,
+            windows = windows,
+            planType = usage.rateLimits.planType?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+            rateLimitReachedType = usage.rateLimits.rateLimitReachedType?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+        )
+        provider to usage.copy(
+            available = usage.available && windows.isNotEmpty(),
+            rateLimits = limits,
+            observedAt = usage.observedAt?.takeIf { it >= 0 }?.coerceAtMost(MAX_PUBLIC_TIMESTAMP),
+            availabilityReason = usage.availabilityReason?.trim()?.take(MAX_RATE_LIMIT_TEXT)?.ifBlank { null },
+        )
+    }.toMap()
+    return AccountUsage(projected)
+}
+
+private val accountUsageStorageJson = Json { ignoreUnknownKeys = true }
+
+internal fun encodeStoredAccountUsage(usage: AccountUsage): String =
+    accountUsageStorageJson.encodeToString(usage.normalized())
+
+internal fun decodeStoredAccountUsage(encoded: String?): AccountUsage =
+    encoded?.let {
+        runCatching { accountUsageStorageJson.decodeFromString<AccountUsage>(it).normalized() }
+            .getOrNull()
+    } ?: AccountUsage()
 
 internal fun accountUsageRemaining(usage: ProviderAccountUsage?): String {
     val windows = accountUsageWindows(usage)
     if (windows.isEmpty()) return "unavailable"
     return "${(100 - windows.maxOf { it.usedPercent }).roundToInt().coerceIn(0, 100)}% left"
+}
+
+internal fun mostConstrainedWindow(windows: List<RateLimitWindow>): RateLimitWindow? =
+    windows.maxByOrNull { it.usedPercent }
+
+internal fun rateLimitLabel(window: RateLimitWindow, index: Int, count: Int): String {
+    window.label?.let { return it }
+    return when (val durationMinutes = window.windowDurationMins) {
+        10_080L -> "Weekly limit"
+        null -> if (count == 1) "Usage limit" else "Usage limit ${index + 1}"
+        else -> when {
+            durationMinutes % 60 == 0L -> "${durationMinutes / 60}-hour limit"
+            else -> "$durationMinutes-minute limit"
+        }
+    }
+}
+
+internal fun compactRateLimitLabel(window: RateLimitWindow): String =
+    rateLimitLabel(window, 0, 1).removeSuffix(" limit")
+
+internal data class CompactAccountUsage(
+    val usedPercent: Int,
+    val primaryText: String,
+    val secondaryText: String,
+)
+
+internal fun compactAccountUsage(windows: List<RateLimitWindow>): CompactAccountUsage {
+    val constrained = mostConstrainedWindow(windows)
+        ?: return CompactAccountUsage(0, "Account usage unavailable", "Account usage")
+    val usedPercent = constrained.usedPercent.roundToInt().coerceIn(0, 100)
+    val remaining = (100 - constrained.usedPercent).roundToInt().coerceIn(0, 100)
+    val additional = (windows.size - 1).coerceAtLeast(0)
+    return CompactAccountUsage(
+        usedPercent = usedPercent,
+        primaryText = "$remaining% left · ${compactRateLimitLabel(constrained)}",
+        secondaryText = if (additional > 0) {
+            "+$additional more ${if (additional == 1) "limit" else "limits"}"
+        } else {
+            "Account usage"
+        },
+    )
 }
 
 data class SessionIdentity(

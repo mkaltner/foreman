@@ -109,6 +109,8 @@ export interface ThreadTokenUsage {
 }
 
 export interface RateLimitWindow {
+  id?: string;
+  label?: string;
   usedPercent: number;
   windowDurationMins?: number;
   resetsAt?: number;
@@ -119,6 +121,7 @@ export interface RateLimitSnapshot {
   limitName?: string;
   primary?: RateLimitWindow | null;
   secondary?: RateLimitWindow | null;
+  windows?: RateLimitWindow[];
   planType?: string;
   rateLimitReachedType?: string;
 }
