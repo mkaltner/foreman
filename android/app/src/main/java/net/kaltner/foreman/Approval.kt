@@ -23,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -161,7 +160,7 @@ internal fun ApprovalCard(
     var scope by remember(approval.id) { mutableStateOf<String?>(null) }
     val choices = remember(approval) { permissionChoices(approval) }
     val disabled = !connected || submitting || approval.status != "pending"
-    val warning = Color(0xFFF79009)
+    val warning = LocalForemanColors.current.attention
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceContainer,

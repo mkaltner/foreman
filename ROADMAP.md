@@ -17,7 +17,8 @@ update the applicable boundary documentation before implementation starts.
 ## Now — finish the current product pass
 
 - [ ] [#56 Replace accent selection with coherent
-  themes](https://github.com/mkaltner/foreman/issues/56).
+  themes](https://github.com/mkaltner/foreman/issues/56)
+  ([PR #79](https://github.com/mkaltner/foreman/pull/79)).
 
 ## Next — updates and releases
 

@@ -1,18 +1,31 @@
 import type { Appearance } from "./storage";
 
+const THEME_CHROME_COLORS: Record<Appearance["themeId"], { light: string; dark: string }> = {
+  foreman: { light: "#6b3fb5", dark: "#1d1926" },
+  harbor: { light: "#006b75", dark: "#142226" },
+  grove: { light: "#356a3f", dark: "#19231a" },
+  ember: { light: "#8a3d61", dark: "#25191e" },
+  dune: { light: "#7a4f00", dark: "#221c12" },
+  slate: { light: "#365a8c", dark: "#171f2b" },
+  "high-contrast": { light: "#0033a0", dark: "#000000" },
+};
+
 export function resolvedTheme(
-  theme: Appearance["theme"],
+  colorMode: Appearance["colorMode"],
   prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches,
 ): "light" | "dark" {
-  return theme === "system" ? (prefersDark ? "dark" : "light") : theme;
+  return colorMode === "system" ? (prefersDark ? "dark" : "light") : colorMode;
 }
 
 export function applyAppearance(appearance: Appearance): () => void {
   const media = window.matchMedia("(prefers-color-scheme: dark)");
   const apply = () => {
-    document.documentElement.dataset.theme = resolvedTheme(appearance.theme, media.matches);
-    document.documentElement.dataset.accent = appearance.accent;
-    document.documentElement.style.colorScheme = resolvedTheme(appearance.theme, media.matches);
+    const mode = resolvedTheme(appearance.colorMode, media.matches);
+    document.documentElement.dataset.colorMode = mode;
+    document.documentElement.dataset.foremanTheme = appearance.themeId;
+    document.documentElement.style.colorScheme = mode;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute("content", THEME_CHROME_COLORS[appearance.themeId][mode]);
   };
   apply();
   media.addEventListener("change", apply);

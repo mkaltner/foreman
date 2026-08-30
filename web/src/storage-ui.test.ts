@@ -119,12 +119,63 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(suggestedHostDisplayName("workstation.local")).toBe("workstation.local");
   });
 
-  it("persists theme and accent with safe defaults", () => {
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
-    saveAppearance({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
-    expect(loadAppearance()).toEqual({ theme: "dark", accent: "teal", activityDetail: "full", groupSessionsByRepository: false });
-    localStorage.setItem("foreman.appearance.v1", '{"theme":"broken","accent":"chartreuse"}');
-    expect(loadAppearance()).toEqual({ theme: "system", accent: "purple", activityDetail: "focused", groupSessionsByRepository: true });
+  it("persists color mode and curated theme with safe defaults", () => {
+    expect(loadAppearance()).toEqual({ colorMode: "system", themeId: "foreman", activityDetail: "focused", groupSessionsByRepository: true });
+    saveAppearance({ colorMode: "dark", themeId: "harbor", activityDetail: "full", groupSessionsByRepository: false });
+    expect(loadAppearance()).toEqual({ colorMode: "dark", themeId: "harbor", activityDetail: "full", groupSessionsByRepository: false });
+    expect(localStorage.getItem("foreman.appearance.v2")).toContain('"version":2');
+    expect(localStorage.getItem("foreman.appearance.v2")).not.toContain("accent");
+
+    localStorage.setItem("foreman.appearance.v2", '{"version":2,"colorMode":"light","themeId":"chartreuse","activityDetail":"full","groupSessionsByRepository":false}');
+    expect(loadAppearance()).toEqual({ colorMode: "light", themeId: "foreman", activityDetail: "full", groupSessionsByRepository: false });
+    localStorage.setItem("foreman.appearance.v2", "not-json");
+    expect(loadAppearance()).toEqual({ colorMode: "system", themeId: "foreman", activityDetail: "focused", groupSessionsByRepository: true });
+  });
+
+  it("migrates every legacy accent deterministically without losing unrelated appearance settings", () => {
+    const migrations = {
+      purple: "foreman",
+      blue: "harbor",
+      teal: "harbor",
+      green: "grove",
+      orange: "ember",
+      red: "ember",
+      pink: "ember",
+    } as const;
+    for (const [accent, themeId] of Object.entries(migrations)) {
+      localStorage.clear();
+      localStorage.setItem("foreman.appearance.v1.host-a", JSON.stringify({
+        theme: "dark",
+        accent,
+        activityDetail: "full",
+        groupSessionsByRepository: false,
+      }));
+      expect(loadAppearance("host-a")).toEqual({
+        colorMode: "dark",
+        themeId,
+        activityDetail: "full",
+        groupSessionsByRepository: false,
+      });
+      expect(localStorage.getItem("foreman.appearance.v1.host-a")).toBeNull();
+      expect(localStorage.getItem("foreman.appearance.v2.host-a")).toContain(`"themeId":"${themeId}"`);
+    }
+
+    localStorage.clear();
+    localStorage.setItem("foreman.appearance.v1.host-a", '{"theme":4,"accent":[],"activityDetail":{},"groupSessionsByRepository":"bad"}');
+    expect(loadAppearance("host-a")).toEqual({ colorMode: "system", themeId: "foreman", activityDetail: "focused", groupSessionsByRepository: true });
+  });
+
+  it("keeps appearance isolated across host switches and removes it with a forgotten host", () => {
+    saveAppearance({ colorMode: "light", themeId: "grove", activityDetail: "focused", groupSessionsByRepository: true }, "home");
+    saveAppearance({ colorMode: "dark", themeId: "ember", activityDetail: "full", groupSessionsByRepository: false }, "work");
+    expect(loadAppearance("home").themeId).toBe("grove");
+    expect(loadAppearance("work").themeId).toBe("ember");
+
+    const home = createStoredHost({ displayName: "Home", host: "home.local", webPort: 8766, deviceToken: "fmt_home" });
+    const registry = { hosts: [{ ...home, id: "home" }], activeHostId: "home" };
+    forgetStoredHost(registry, "home");
+    expect(localStorage.getItem("foreman.appearance.v2.home")).toBeNull();
+    expect(loadAppearance("work").themeId).toBe("ember");
   });
 
   it("persists bounded browser-local dashboard presentation choices", () => {

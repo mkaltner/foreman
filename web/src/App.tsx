@@ -95,7 +95,7 @@ import {
   type WireMessage,
 } from "./protocol";
 import {
-  ACCENTS,
+  CURATED_THEMES,
   addStoredHost,
   createStoredHost,
   forgetStoredHost,
@@ -1659,6 +1659,8 @@ function App() {
         const filters = parseSessionFilters(loadSessionSearch(nextId));
         searchFiltersRef.current = filters;
         setSearchFilters(filters);
+      } else {
+        setAppearance(loadAppearance(null));
       }
     }
     setError("");
@@ -3042,7 +3044,7 @@ export function RouteSelect({
           }
         }}
       >
-        <span>{displayValue}</span><i aria-hidden="true">⌄</i>
+        <span>{selected?.warning && <span className="permission-warning-icon" aria-hidden="true">⚠ </span>}{displayValue}</span><i aria-hidden="true">⌄</i>
       </button>
       {open && (
         <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>
@@ -3069,7 +3071,7 @@ export function RouteSelect({
                 }
               }}
             >
-              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+              <span><strong>{option.warning && <span className="permission-warning-icon" aria-hidden="true">⚠ </span>}{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
               {option.value === value && <i aria-hidden="true">✓</i>}
             </button>
           ))}
@@ -3441,7 +3443,7 @@ function SettingsView({
     <header><span className="eyebrow">Preferences</span><h1>Settings</h1></header>
     <section className="settings-card"><h2>Saved hosts</h2><div className="saved-hosts">{hosts.map((saved) => <div className={`saved-host ${saved.id === host.id ? "active" : ""}`} key={saved.id}><button className="saved-host-main" onClick={() => onSelect(saved.id)}><strong>{saved.displayName}</strong><small>{saved.host}:{saved.webPort} · {saved.id === host.id ? "active" : saved.lastKnownStatus}</small></button><button onClick={() => { const name = window.prompt("Host display name", saved.displayName)?.trim(); if (name) onRename(saved.id, name); }}>Rename</button><button className="danger-link" onClick={() => { if (window.confirm(`Forget “${saved.displayName}”? Its browser-local token and preferences will be removed.`)) onForget(saved.id); }}>Forget</button></div>)}</div><button className="secondary add-host" onClick={onAdd}>Add host</button></section>
     <ProviderSettings providers={providers} onProviderEnabled={onProviderEnabled} />
-    <section className="settings-card"><h2>Appearance</h2><label>Theme<select value={appearance.theme} onChange={(event) => onAppearance({ ...appearance, theme: event.target.value as Appearance["theme"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><label className="check-row"><input type="checkbox" checked={appearance.groupSessionsByRepository} onChange={(event) => onAppearance({ ...appearance, groupSessionsByRepository: event.target.checked })} /><span><strong>Group sessions by repository</strong><small>Keep each project together and show its active sessions first.</small></span></label><div><span className="field-label">Accent</span><div className="accent-grid">{ACCENTS.map((accent) => <button key={accent} className={`accent-swatch ${appearance.accent === accent ? "selected" : ""}`} data-color={accent} onClick={() => onAppearance({ ...appearance, accent })}><i />{titleCase(accent)}</button>)}</div></div></section>
+    <section className="settings-card"><h2>Appearance</h2><label>Color mode<select aria-label="Color mode" value={appearance.colorMode} onChange={(event) => onAppearance({ ...appearance, colorMode: event.target.value as Appearance["colorMode"] })}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><div><span className="field-label" id="theme-selector-label">Theme</span><div className="theme-grid" role="group" aria-labelledby="theme-selector-label">{CURATED_THEMES.map((theme) => { const selected = appearance.themeId === theme.id; return <button key={theme.id} type="button" className={`theme-option ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={() => onAppearance({ ...appearance, themeId: theme.id })}><span className="theme-preview" aria-hidden="true">{theme.preview.map((color) => <i key={color} style={{ backgroundColor: color }} />)}</span><span><strong>{theme.name}{selected && <span className="selection-cue"> ✓</span>}</strong><small>{theme.description}</small></span></button>; })}</div></div><label>Activity detail<select value={appearance.activityDetail} onChange={(event) => onAppearance({ ...appearance, activityDetail: event.target.value as ActivityDetail })}><option value="focused">Focused</option><option value="full">Full</option></select><small>Focused groups routine completed commands and tools. Failures, live work, approvals, and input stay visible.</small></label><label className="check-row"><input type="checkbox" checked={appearance.groupSessionsByRepository} onChange={(event) => onAppearance({ ...appearance, groupSessionsByRepository: event.target.checked })} /><span><strong>Group sessions by repository</strong><small>Keep each project together and show its active sessions first.</small></span></label></section>
     <section className="settings-card notification-preferences">
       <h2>Notifications</h2>
       <div className="notification-setting"><div><strong>Browser permission: {notificationState}</strong><p>{notificationStateDescription(notificationState, notificationState === "granted")}</p><p>Alerts are evaluated locally. Foreman must stay open in a tab; browsers cannot run this monitor after the site is fully closed.</p>{notificationTestResult && <p className="notification-test-result" role="status">{notificationTestResult}</p>}</div><div className="notification-actions"><button className="secondary" disabled={permissionUnavailable || notificationState === "granted"} onClick={() => void onNotificationPermission()}>{notificationState === "granted" ? "Allowed" : notificationState === "denied" ? "Blocked" : "Allow"}</button>{notificationState === "granted" && <button className="secondary" disabled={testingNotification} onClick={() => { setTestingNotification(true); setNotificationTestResult(""); void onNotificationTest().then((method) => setNotificationTestResult(`Browser accepted the test via ${method === "page" ? "the page" : "the service worker"}. If no system alert appeared, check OS notification settings and Do Not Disturb.`)).catch((caught) => setNotificationTestResult(caught instanceof Error ? `Test failed: ${caught.message}` : "Test failed: the browser rejected the notification.")).finally(() => setTestingNotification(false)); }}>{testingNotification ? "Sending…" : "Send test"}</button>}</div></div>

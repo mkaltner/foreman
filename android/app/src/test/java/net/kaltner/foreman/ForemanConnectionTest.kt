@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
 import java.util.Calendar
 import java.util.concurrent.Executors
+import kotlin.math.pow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -910,38 +911,79 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun accentPresetsAreDistinctAndProvideLightAndDarkRoles() {
-        assertEquals(AccentColor.Purple, parseAccentColor(null))
-        assertEquals(AccentColor.Purple, parseAccentColor("unsupported"))
-        assertEquals(AccentColor.Teal, parseAccentColor("Teal"))
-
-        val accents = AccentColor.values().toList()
+    fun curatedThemesShareStableIdentityAndProvideCompleteLightAndDarkRoles() {
         assertEquals(
-            accents.size,
-            accents.map { foremanColorScheme(it, darkTheme = false).primary }.distinct().size,
+            listOf("foreman", "harbor", "grove", "ember", "dune", "slate", "high-contrast"),
+            ThemeId.entries.map(ThemeId::id),
         )
-        accents.forEach { accent ->
-            val palette = accentPalette(accent)
-            val light = foremanColorScheme(accent, darkTheme = false)
-            val dark = foremanColorScheme(accent, darkTheme = true)
+        assertEquals(
+            listOf("Foreman", "Harbor", "Grove", "Ember", "Dune", "Slate", "High Contrast"),
+            ThemeId.entries.map(ThemeId::displayName),
+        )
+        assertEquals(ThemeId.Foreman, parseThemeId(null))
+        assertEquals(ThemeId.Foreman, parseThemeId("unsupported"))
 
-            assertEquals(palette.light.primary, light.primary)
-            assertEquals(
-                mutedAccentContainer(palette.light, darkTheme = false),
-                light.secondaryContainer,
-            )
-            assertEquals(palette.light.onContainer, light.onSecondaryContainer)
-            assertEquals(palette.dark.primary, dark.primary)
-            assertEquals(
-                mutedAccentContainer(palette.dark, darkTheme = true),
-                dark.secondaryContainer,
-            )
-            assertEquals(palette.dark.onContainer, dark.onSecondaryContainer)
-            assertFalse(light.primaryContainer == light.secondaryContainer)
-            assertFalse(dark.primaryContainer == dark.secondaryContainer)
+        assertEquals(
+            ThemeId.entries.size,
+            ThemeId.entries.map { foremanColorScheme(it, darkTheme = false).primary }.distinct().size,
+        )
+        ThemeId.entries.forEach { themeId ->
+            listOf(false, true).forEach { dark ->
+                val palette = foremanThemeVariant(themeId, dark)
+                val scheme = foremanColorScheme(themeId, dark)
+                assertEquals(palette.accent, scheme.primary)
+                assertEquals(palette.background, scheme.background)
+                assertEquals(palette.surface, scheme.surface)
+                assertEquals(palette.alternateSurface, scheme.surfaceVariant)
+                assertEquals(palette.border, scheme.outline)
+                assertEquals(palette.text, scheme.onSurface)
+                assertEquals(palette.mutedText, scheme.onSurfaceVariant)
+                assertTrue(contrastRatio(palette.text, palette.background) >= 7.0)
+                assertTrue(contrastRatio(palette.onAccent, palette.accent) >= 4.5)
+                assertTrue(contrastRatio(palette.semantic.failure, palette.semantic.failureContainer) >= 4.5)
+                assertTrue(contrastRatio(palette.semantic.fullAccess, palette.semantic.fullAccessContainer) >= 4.5)
+                assertFalse(palette.semantic.fullAccess == palette.semantic.working)
+                assertFalse(palette.semantic.failure == palette.semantic.attention)
+                if (themeId == ThemeId.HighContrast) {
+                    assertTrue(contrastRatio(palette.mutedText, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.border, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.accent, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.disabledText, palette.disabledSurface) >= 4.5)
+                    with(palette.semantic) {
+                        listOf(
+                            success to successContainer,
+                            working to workingContainer,
+                            attention to attentionContainer,
+                            warning to warningContainer,
+                            failure to failureContainer,
+                            fullAccess to fullAccessContainer,
+                        ).forEach { (foreground, container) ->
+                            assertTrue(contrastRatio(foreground, container) >= 7.0)
+                        }
+                    }
+                }
+            }
         }
     }
 
+    @Test
+    fun everyLegacyAccentMigratesDeterministicallyAndMalformedValuesAreSafe() {
+        val expected = mapOf(
+            "Purple" to ThemeId.Foreman,
+            "Blue" to ThemeId.Harbor,
+            "Teal" to ThemeId.Harbor,
+            "Green" to ThemeId.Grove,
+            "Orange" to ThemeId.Ember,
+            "Red" to ThemeId.Ember,
+            "Pink" to ThemeId.Ember,
+        )
+        expected.forEach { (legacy, theme) ->
+            assertEquals(theme, migratedThemeId(1, null, legacy))
+        }
+        assertEquals(ThemeId.Foreman, migratedThemeId(null, null, null))
+        assertEquals(ThemeId.Foreman, migratedThemeId(2, "not-a-theme", "Teal"))
+        assertEquals(ThemeId.Grove, migratedThemeId(2, "grove", "Red"))
+    }
     @Test
     fun composerUsesConversationalKeyboardDefaults() {
         assertEquals(KeyboardCapitalization.Sentences, composerKeyboardOptions.capitalization)
@@ -2285,4 +2327,16 @@ class ForemanConnectionTest {
                 sessionSearchRequestKey(base.copy(provider = PROVIDER_CODEX)),
         )
     }
+}
+
+private fun contrastRatio(foreground: Color, background: Color): Double {
+    val lighter = maxOf(relativeLuminance(foreground), relativeLuminance(background))
+    val darker = minOf(relativeLuminance(foreground), relativeLuminance(background))
+    return (lighter + 0.05) / (darker + 0.05)
+}
+
+private fun relativeLuminance(color: Color): Double {
+    fun linear(value: Float): Double =
+        if (value <= 0.04045f) value / 12.92 else ((value + 0.055) / 1.055).pow(2.4)
+    return 0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
 }

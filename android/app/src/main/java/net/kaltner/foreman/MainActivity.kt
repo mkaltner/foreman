@@ -174,194 +174,6 @@ internal val composerKeyboardOptions =
         keyboardType = KeyboardType.Text,
     )
 
-internal data class AccentTones(
-    val primary: Color,
-    val onPrimary: Color,
-    val container: Color,
-    val onContainer: Color,
-    val secondary: Color,
-)
-
-internal data class AccentPalette(val light: AccentTones, val dark: AccentTones)
-
-internal fun accentPalette(color: AccentColor): AccentPalette =
-    when (color) {
-        AccentColor.Purple ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFF6C2BD9),
-                        Color.White,
-                        Color(0xFFE9DDFF),
-                        Color(0xFF22005D),
-                        Color(0xFF4A18A8),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFFCBB4FF),
-                        Color(0xFF381E72),
-                        Color(0xFF4A18A8),
-                        Color(0xFFEADDFF),
-                        Color(0xFF9D76F2),
-                    ),
-            )
-        AccentColor.Blue ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFF2563EB),
-                        Color.White,
-                        Color(0xFFDBEAFE),
-                        Color(0xFF172554),
-                        Color(0xFF1D4ED8),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFF93C5FD),
-                        Color(0xFF1E3A8A),
-                        Color(0xFF1E40AF),
-                        Color(0xFFDBEAFE),
-                        Color(0xFF60A5FA),
-                    ),
-            )
-        AccentColor.Teal ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFF0F766E),
-                        Color.White,
-                        Color(0xFFCCFBF1),
-                        Color(0xFF042F2E),
-                        Color(0xFF0D9488),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFF5EEAD4),
-                        Color(0xFF134E4A),
-                        Color(0xFF115E59),
-                        Color(0xFFCCFBF1),
-                        Color(0xFF2DD4BF),
-                    ),
-            )
-        AccentColor.Green ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFF15803D),
-                        Color.White,
-                        Color(0xFFDCFCE7),
-                        Color(0xFF052E16),
-                        Color(0xFF166534),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFF86EFAC),
-                        Color(0xFF14532D),
-                        Color(0xFF166534),
-                        Color(0xFFDCFCE7),
-                        Color(0xFF4ADE80),
-                    ),
-            )
-        AccentColor.Orange ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFFC2410C),
-                        Color.White,
-                        Color(0xFFFFEDD5),
-                        Color(0xFF431407),
-                        Color(0xFFEA580C),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFFFDBA74),
-                        Color(0xFF7C2D12),
-                        Color(0xFF9A3412),
-                        Color(0xFFFFEDD5),
-                        Color(0xFFFB923C),
-                    ),
-            )
-        AccentColor.Red ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFFB91C1C),
-                        Color.White,
-                        Color(0xFFFEE2E2),
-                        Color(0xFF450A0A),
-                        Color(0xFFDC2626),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFFFCA5A5),
-                        Color(0xFF7F1D1D),
-                        Color(0xFF991B1B),
-                        Color(0xFFFEE2E2),
-                        Color(0xFFF87171),
-                    ),
-            )
-        AccentColor.Pink ->
-            AccentPalette(
-                light =
-                    AccentTones(
-                        Color(0xFFBE185D),
-                        Color.White,
-                        Color(0xFFFCE7F3),
-                        Color(0xFF500724),
-                        Color(0xFFDB2777),
-                    ),
-                dark =
-                    AccentTones(
-                        Color(0xFFF9A8D4),
-                        Color(0xFF831843),
-                        Color(0xFF9D174D),
-                        Color(0xFFFCE7F3),
-                        Color(0xFFF472B6),
-                    ),
-            )
-    }
-
-internal fun mutedAccentContainer(tones: AccentTones, darkTheme: Boolean): Color =
-    tones.primary
-        .copy(alpha = if (darkTheme) 0.14f else 0.10f)
-        .compositeOver(if (darkTheme) Color(0xFF3D3A43) else Color(0xFFE7E0EB))
-
-internal fun foremanColorScheme(accentColor: AccentColor, darkTheme: Boolean) =
-    accentPalette(accentColor).let { palette ->
-        val tones = if (darkTheme) palette.dark else palette.light
-        if (darkTheme) {
-            darkColorScheme(
-                primary = tones.primary,
-                onPrimary = tones.onPrimary,
-                primaryContainer = tones.container,
-                onPrimaryContainer = tones.onContainer,
-                secondary = tones.secondary,
-                secondaryContainer = mutedAccentContainer(tones, darkTheme = true),
-                onSecondaryContainer = tones.onContainer,
-                background = Color(0xFF111827),
-                surface = Color(0xFF182235),
-                surfaceVariant = Color(0xFF374151),
-                onBackground = Color(0xFFF6F7F9),
-                onSurface = Color(0xFFF6F7F9),
-            )
-        } else {
-            lightColorScheme(
-                primary = tones.primary,
-                onPrimary = tones.onPrimary,
-                primaryContainer = tones.container,
-                onPrimaryContainer = tones.onContainer,
-                secondary = tones.secondary,
-                secondaryContainer = mutedAccentContainer(tones, darkTheme = false),
-                onSecondaryContainer = tones.onContainer,
-                background = Color(0xFFF6F7F9),
-                surface = Color.White,
-                surfaceVariant = Color(0xFFE7E0EB),
-                onBackground = Color(0xFF111827),
-                onSurface = Color(0xFF111827),
-            )
-        }
-    }
-
 class MainActivity : ComponentActivity() {
     private val foremanViewModel: ForemanViewModel by viewModels()
     private val notificationPermission =
@@ -1002,7 +814,7 @@ internal data class UiState(
     val composerDrafts: Map<ComposerDraftKey, String> = emptyMap(),
     val showNewSession: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.System,
-    val accentColor: AccentColor = AccentColor.Purple,
+    val themeId: ThemeId = ThemeId.Foreman,
     val activityDetail: ActivityDetail = ActivityDetail.Focused,
     val groupSessionsByRepository: Boolean = true,
     val collapsedRepositoriesByHost: Map<String, Set<String>> = emptyMap(),
@@ -1270,7 +1082,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 activeHostId = activeHost?.id,
                 composerDrafts = storedComposerDrafts(activeHost?.id, preferences.loadDrafts()),
                 themeMode = savedPreferences.themeMode,
-                accentColor = savedPreferences.accentColor,
+                themeId = savedPreferences.themeId,
                 activityDetail = savedPreferences.activityDetail,
                 groupSessionsByRepository = savedPreferences.groupSessionsByRepository,
                 collapsedRepositoriesByHost = activeHost?.id?.let { hostId ->
@@ -2083,9 +1895,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         state.update { it.copy(themeMode = mode) }
     }
 
-    fun setAccentColor(color: AccentColor) {
-        preferences.setAccentColor(color)
-        state.update { it.copy(accentColor = color) }
+    fun setThemeId(themeId: ThemeId) {
+        preferences.setThemeId(themeId)
+        state.update { it.copy(themeId = themeId) }
     }
 
     fun setActivityDetail(detail: ActivityDetail) {
@@ -2313,7 +2125,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         pinnedSessionIds = restored.pinnedSessionIds,
                         hiddenSessionIds = restored.hiddenSessionIds,
                         themeMode = restored.themeMode,
-                        accentColor = restored.accentColor,
+                        themeId = restored.themeId,
                         activityDetail = restored.activityDetail,
                         groupSessionsByRepository = restored.groupSessionsByRepository,
                         followNewMessages = restored.followNewMessages,
@@ -2555,7 +2367,18 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             restorationProvider = PROVIDER_CODEX
             restorationSessionId = null
             preferences = PreferenceStore(getApplication(), null)
-            state.update { it.withForgottenConnection() }
+            val restored = preferences.load()
+            state.update {
+                it.withForgottenConnection().copy(
+                    themeMode = restored.themeMode,
+                    themeId = restored.themeId,
+                    activityDetail = restored.activityDetail,
+                    groupSessionsByRepository = restored.groupSessionsByRepository,
+                    followNewMessages = restored.followNewMessages,
+                    hapticsEnabled = restored.hapticsEnabled,
+                    monitorActiveTurns = restored.monitorActiveTurns,
+                )
+            }
             return
         }
         state.update {
@@ -2702,7 +2525,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 diagnosticsError = null,
                 restartPhase = RestartPhase.Idle,
                 themeMode = restored.themeMode,
-                accentColor = restored.accentColor,
+                themeId = restored.themeId,
                 activityDetail = restored.activityDetail,
                 groupSessionsByRepository = restored.groupSessionsByRepository,
                 followNewMessages = restored.followNewMessages,
@@ -4575,7 +4398,7 @@ private fun ForemanApp(
             }
         }
     }
-    MaterialTheme(colorScheme = foremanColorScheme(state.accentColor, darkTheme)) {
+    ForemanTheme(themeId = state.themeId, darkTheme = darkTheme) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
@@ -4814,7 +4637,7 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                         restartProgressLabel(state.restartPhase),
                         color =
                             when (state.restartPhase) {
-                                RestartPhase.Succeeded -> Color(0xFF12B76A)
+                                RestartPhase.Succeeded -> LocalForemanColors.current.success
                                 RestartPhase.Failed, RestartPhase.TimedOut -> MaterialTheme.colorScheme.error
                                 else -> MaterialTheme.colorScheme.primary
                             },
@@ -5059,7 +4882,7 @@ private fun UnifiedOverviewScreen(
             item {
                 Text("ALL SAVED HOSTS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Text("Status is aggregated on this device; hosts remain independently paired.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (totals.staleHosts > 0) Text("Aggregate counts include ${totals.staleHosts} stale host snapshot${if (totals.staleHosts == 1) "" else "s"}.", color = Color(0xFFF79009), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                if (totals.staleHosts > 0) Text("Aggregate counts include ${totals.staleHosts} stale host snapshot${if (totals.staleHosts == 1) "" else "s"}.", color = LocalForemanColors.current.warning, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5102,7 +4925,7 @@ private fun UnifiedOverviewScreen(
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(item.type.uppercase(), color = if (item.type == "failed") MaterialTheme.colorScheme.error else Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                Text(item.type.uppercase(), color = if (item.type == "failed") LocalForemanColors.current.failure else LocalForemanColors.current.attention, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                 Text(overviewAge(item.startedAt) + if (stale) " · STALE" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Row(
@@ -5338,7 +5161,7 @@ private fun DashboardHealthCard(state: UiState) {
                 }
                 Text(
                     if (state.connected) "CONNECTED" else "DISCONNECTED",
-                    color = if (state.connected) Color(0xFF17B26A) else MaterialTheme.colorScheme.error,
+                    color = if (state.connected) LocalForemanColors.current.success else MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -5458,9 +5281,9 @@ private fun HostOverviewCard(
                     Text(host.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text("${host.host}:${host.tcpPort}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Text(snapshot?.connection ?: host.lastKnownStatus, color = if (live) Color(0xFF17B26A) else Color(0xFFF79009), style = MaterialTheme.typography.labelMedium)
+                Text(snapshot?.connection ?: host.lastKnownStatus, color = if (live) LocalForemanColors.current.success else LocalForemanColors.current.warning, style = MaterialTheme.typography.labelMedium)
             }
-            if (!live) Text("STALE · Last connected ${overviewAge(host.lastConnectedAt)} · checked ${overviewAge(snapshot?.observedAt)}", color = Color(0xFFF79009), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            if (!live) Text("STALE · Last connected ${overviewAge(host.lastConnectedAt)} · checked ${overviewAge(snapshot?.observedAt)}", color = LocalForemanColors.current.warning, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             Text("Foreman ${snapshot?.foremanVersion ?: "—"} · Codex ${snapshot?.codexVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
             Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Foreman-managed runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
             Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
@@ -7127,7 +6950,7 @@ private fun PromptBox(
                                     fontWeight = FontWeight.SemiBold,
                                     color =
                                         if (level.id in setOf("full", "bypassPermissions")) {
-                                            MaterialTheme.colorScheme.error
+                                            LocalForemanColors.current.fullAccess
                                         } else {
                                             Color.Unspecified
                                         },
@@ -7160,7 +6983,7 @@ private fun PromptBox(
                 Icon(
                     Icons.Default.Security,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = LocalForemanColors.current.fullAccess,
                 )
             },
             title = { Text("Enable full access?") },
@@ -7180,7 +7003,7 @@ private fun PromptBox(
                         confirmFullAccess = false
                     },
                 ) {
-                    Text("Enable", color = MaterialTheme.colorScheme.error)
+                    Text("Enable full access", color = LocalForemanColors.current.fullAccess)
                 }
             },
         )
@@ -7189,7 +7012,7 @@ private fun PromptBox(
         AlertDialog(
             onDismissRequest = { confirmBypassPermissions = false },
             icon = {
-                Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                Icon(Icons.Default.Security, contentDescription = null, tint = LocalForemanColors.current.fullAccess)
             },
             title = { Text("Bypass Claude permissions?") },
             text = {
@@ -7206,7 +7029,7 @@ private fun PromptBox(
                         selectAccessLevel("bypassPermissions")
                         confirmBypassPermissions = false
                     },
-                ) { Text("Use high-risk mode", color = MaterialTheme.colorScheme.error) }
+                ) { Text("Use high-risk mode", color = LocalForemanColors.current.fullAccess) }
             },
         )
     }
@@ -7339,8 +7162,8 @@ private fun ComposerRouteRow(
                 colors =
                     if (accessLevelId in setOf("full", "bypassPermissions")) {
                         ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error,
-                            disabledContentColor = MaterialTheme.colorScheme.error,
+                            contentColor = LocalForemanColors.current.fullAccess,
+                            disabledContentColor = LocalForemanColors.current.fullAccess,
                         )
                     } else {
                         ButtonDefaults.textButtonColors(
@@ -7571,7 +7394,7 @@ private fun UiSettingsMenu(
     onSessionAction: ((SessionAction) -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    var showingAccentColors by remember { mutableStateOf(false) }
+    var showingThemes by remember { mutableStateOf(false) }
     var showingActivityDetail by remember { mutableStateOf(false) }
     var showingProviders by remember { mutableStateOf(false) }
     var showingNotifications by remember { mutableStateOf(false) }
@@ -7584,7 +7407,7 @@ private fun UiSettingsMenu(
     Box(modifier) {
         IconButton(
             onClick = {
-                showingAccentColors = false
+                showingThemes = false
                 showingActivityDetail = false
                 showingProviders = false
                 showingNotifications = false
@@ -7598,18 +7421,18 @@ private fun UiSettingsMenu(
             expanded = expanded,
             onDismissRequest = {
                 expanded = false
-                showingAccentColors = false
+                showingThemes = false
                 showingActivityDetail = false
                 showingProviders = false
                 showingNotifications = false
                 notificationRepositoryId = null
             },
         ) {
-            if (showingAccentColors) {
+            if (showingThemes) {
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "Accent color",
+                            "Theme",
                             style = MaterialTheme.typography.labelLarge,
                         )
                     },
@@ -7619,23 +7442,40 @@ private fun UiSettingsMenu(
                             contentDescription = "Back to settings",
                         )
                     },
-                    onClick = { showingAccentColors = false },
+                    onClick = { showingThemes = false },
                 )
                 HorizontalDivider()
-                AccentColor.values().forEach { color ->
-                    val selected = state.accentColor == color
+                ThemeId.entries.forEach { themeId ->
+                    val selected = state.themeId == themeId
                     DropdownMenuItem(
-                        text = { Text(color.name) },
-                        leadingIcon = { AccentSwatch(color, selected) },
+                        text = {
+                            Column {
+                                Text(themeId.displayName)
+                                Text(
+                                    when (themeId) {
+                                        ThemeId.Foreman -> "Signature violet Foreman palette"
+                                        ThemeId.Harbor -> "Calm ocean blue and teal surfaces"
+                                        ThemeId.Grove -> "Natural green with warm neutrals"
+                                        ThemeId.Ember -> "Warm plum and clay surfaces"
+                                        ThemeId.Dune -> "Warm sand and amber with earthy neutrals"
+                                        ThemeId.Slate -> "Cool blue-gray surfaces with a steady blue accent"
+                                        ThemeId.HighContrast -> "Maximum separation for text, controls, and status cues"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        leadingIcon = { ThemePreview(themeId, selected) },
                         trailingIcon = {
                             if (selected) {
                                 Icon(Icons.Default.Check, contentDescription = "Selected")
                             }
                         },
                         onClick = {
-                            viewModel.setAccentColor(color)
+                            viewModel.setThemeId(themeId)
                             expanded = false
-                            showingAccentColors = false
+                            showingThemes = false
                         },
                     )
                 }
@@ -7934,7 +7774,7 @@ private fun UiSettingsMenu(
                     }
                 }
                 Text(
-                    "Theme",
+                    "Color mode",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -7955,12 +7795,12 @@ private fun UiSettingsMenu(
                     )
                 }
                 DropdownMenuItem(
-                    text = { Text("Accent color") },
-                    leadingIcon = { AccentSwatch(state.accentColor) },
+                    text = { Text("Theme") },
+                    leadingIcon = { ThemePreview(state.themeId) },
                     trailingIcon = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                state.accentColor.name,
+                                state.themeId.displayName,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -7970,7 +7810,7 @@ private fun UiSettingsMenu(
                             )
                         }
                     },
-                    onClick = { showingAccentColors = true },
+                    onClick = { showingThemes = true },
                 )
                 DropdownMenuItem(
                     text = { Text("Activity detail") },
@@ -8304,11 +8144,12 @@ private fun RepositoryOverrideItem(
 }
 
 @Composable
-private fun AccentSwatch(color: AccentColor, selected: Boolean = false) {
+private fun ThemePreview(themeId: ThemeId, selected: Boolean = false) {
+    val palette = foremanThemePalette(themeId).light
     Surface(
-        modifier = Modifier.size(20.dp),
-        shape = CircleShape,
-        color = accentPalette(color).light.primary,
+        modifier = Modifier.width(44.dp).height(24.dp),
+        shape = RoundedCornerShape(7.dp),
+        color = palette.background,
         border =
             BorderStroke(
                 if (selected) 2.dp else 1.dp,
@@ -8318,7 +8159,17 @@ private fun AccentSwatch(color: AccentColor, selected: Boolean = false) {
                     MaterialTheme.colorScheme.outline
                 },
             ),
-    ) {}
+    ) {
+        Row(
+            modifier = Modifier.padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf(palette.surface, palette.accent, palette.accentContainer).forEach { color ->
+                Box(Modifier.size(9.dp).background(color, CircleShape))
+            }
+        }
+    }
 }
 
 @Composable
@@ -8443,16 +8294,24 @@ private fun ProviderBadge(provider: String) {
 
 @Composable
 private fun StatusPill(status: String) {
-    val color = when (status) {
-        "working" -> Color(0xFF2563EB)
-        "waiting" -> Color(0xFFD97706)
-        "failed" -> Color(0xFFDC2626)
-        "interrupted" -> Color(0xFF7C3AED)
-        else -> Color(0xFF4B5563)
+    val semantic = LocalForemanColors.current
+    val (color, contentColor) = when (status) {
+        "working" -> semantic.workingContainer to semantic.working
+        "waiting" -> semantic.attentionContainer to semantic.attention
+        "failed" -> semantic.failureContainer to semantic.failure
+        "completed" -> semantic.successContainer to semantic.success
+        "interrupted" -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Text(
-        status,
-        color = Color.White,
+        when (status) {
+            "working" -> "ACTIVE · Working"
+            "waiting" -> "ATTENTION · Waiting"
+            "failed" -> "FAILED"
+            "completed" -> "COMPLETED"
+            else -> status.uppercase()
+        },
+        color = contentColor,
         style = MaterialTheme.typography.labelSmall,
         modifier = Modifier.background(color, RoundedCornerShape(20.dp)).padding(horizontal = 9.dp, vertical = 4.dp),
     )
@@ -8691,7 +8550,7 @@ private fun NewSessionDialog(
                         Text(
                             "Full access allows commands outside the workspace without approval.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            color = LocalForemanColors.current.fullAccess,
                         )
                     }
                 }
@@ -8733,7 +8592,7 @@ private fun NewSessionDialog(
     if (pendingHighRiskMode != null) {
         AlertDialog(
             onDismissRequest = { pendingHighRiskMode = null },
-            icon = { Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            icon = { Icon(Icons.Default.Security, contentDescription = null, tint = LocalForemanColors.current.fullAccess) },
             title = { Text("Bypass Claude permissions?") },
             text = {
                 Text(
@@ -8749,7 +8608,7 @@ private fun NewSessionDialog(
                         permissionMode = requireNotNull(pendingHighRiskMode)
                         pendingHighRiskMode = null
                     },
-                ) { Text("Use high-risk mode", color = MaterialTheme.colorScheme.error) }
+                ) { Text("Use high-risk mode", color = LocalForemanColors.current.fullAccess) }
             },
         )
     }
