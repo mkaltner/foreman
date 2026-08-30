@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#55 Add About information to web and
-  Android](https://github.com/mkaltner/foreman/issues/55).
 - [ ] [#56 Replace accent selection with coherent
   themes](https://github.com/mkaltner/foreman/issues/56).
 
@@ -61,6 +59,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Add About information to web and Android
+  ([PR #72](https://github.com/mkaltner/foreman/pull/72)).
 - [x] Fail closed when tagged release assets are incomplete
   ([PR #70](https://github.com/mkaltner/foreman/pull/70)).
 - [x] Hide provider UI when only one provider is enabled
