@@ -12,6 +12,8 @@ describe("curated Foreman themes", () => {
     expect(html).not.toMatch(/<script>(.|\n)*foreman\.appearance/s);
     expect(readFileSync(join(process.cwd(), "public/assets/theme-startup.js"), "utf8"))
       .toContain("foreman.appearance.v2");
+    const startup = readFileSync(join(process.cwd(), "public/assets/theme-startup.js"), "utf8");
+    for (const { id } of CURATED_THEMES) expect(startup).toContain(`"${id}"`);
   });
 
   it("uses the same stable IDs and names as Android", () => {
@@ -20,6 +22,9 @@ describe("curated Foreman themes", () => {
       { id: "harbor", name: "Harbor" },
       { id: "grove", name: "Grove" },
       { id: "ember", name: "Ember" },
+      { id: "dune", name: "Dune" },
+      { id: "slate", name: "Slate" },
+      { id: "high-contrast", name: "High Contrast" },
     ]);
   });
 
@@ -87,6 +92,15 @@ describe("curated Foreman themes", () => {
         expect(contrast(palette["--failure"], palette["--failure-container"]), `${id} ${dark ? "dark" : "light"} failure`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(palette["--full-access"], palette["--full-access-container"]), `${id} ${dark ? "dark" : "light"} full access`).toBeGreaterThanOrEqual(4.5);
         expect(palette["--full-access"]).not.toBe(palette["--working"]);
+        if (id === "high-contrast") {
+          expect(contrast(palette["--text-muted"], palette["--app-background"]), `${dark ? "dark" : "light"} high contrast muted text`).toBeGreaterThanOrEqual(7);
+          expect(contrast(palette["--border-default"], palette["--app-background"]), `${dark ? "dark" : "light"} high contrast borders`).toBeGreaterThanOrEqual(7);
+          expect(contrast(palette["--accent-primary"], palette["--app-background"]), `${dark ? "dark" : "light"} high contrast accent`).toBeGreaterThanOrEqual(7);
+          expect(contrast(palette["--disabled-text"], palette["--disabled-surface"]), `${dark ? "dark" : "light"} high contrast disabled`).toBeGreaterThanOrEqual(4.5);
+          for (const role of ["success", "working", "attention", "warning", "failure", "full-access"]) {
+            expect(contrast(palette[`--${role}`], palette[`--${role}-container`]), `${dark ? "dark" : "light"} high contrast ${role}`).toBeGreaterThanOrEqual(7);
+          }
+        }
       }
     }
   });

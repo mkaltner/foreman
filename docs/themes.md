@@ -13,8 +13,13 @@ Both clients use the same stable theme IDs and names:
 | `harbor` | Harbor | Ocean blue and teal |
 | `grove` | Grove | Natural green and warm neutral |
 | `ember` | Ember | Warm plum and clay |
+| `dune` | Dune | Warm sand, amber, and earthy neutral |
+| `slate` | Slate | Cool blue-gray and steady blue |
+| `high-contrast` | High Contrast | Maximum separation for text, controls, borders, focus, and status cues |
 
 Every theme has an explicit light and dark palette. Semantic success, working, attention, warning, failure, and full-access roles remain consistent and separate from theme accents. Labels, icons, borders, and selected-state marks supplement color throughout the UI.
+
+High Contrast uses stronger surface boundaries, focus indicators, disabled-state separation, and AAA-level contrast targets for primary, muted, accent, and semantic foreground roles. It remains a named palette independent from System/Light/Dark color mode, so users can combine it with either forced mode or their current OS mode.
 
 ## Local persistence and migration
 

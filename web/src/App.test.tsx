@@ -207,6 +207,7 @@ describe("host navigation history", () => {
     render(<App />);
 
     expect(screen.getByRole("combobox", { name: "Color mode" })).toHaveValue("system");
+    expect(screen.getByRole("button", { name: /High Contrast/ })).toHaveAttribute("aria-pressed", "false");
     const harbor = screen.getByRole("button", { name: /Harbor/ });
     expect(harbor).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(harbor);

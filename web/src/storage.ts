@@ -2,7 +2,7 @@ import type { ActivityDetail } from "./activity-detail";
 import { isProviderId, type ProviderId } from "./protocol";
 
 export type ColorMode = "system" | "light" | "dark";
-export type ThemeId = "foreman" | "harbor" | "grove" | "ember";
+export type ThemeId = "foreman" | "harbor" | "grove" | "ember" | "dune" | "slate" | "high-contrast";
 type LegacyAccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
 export type { ActivityDetail } from "./activity-detail";
 export type StoredHostStatus = "connected" | "reconnecting" | "disconnected";
@@ -107,6 +107,24 @@ export const CURATED_THEMES: readonly CuratedTheme[] = [
     name: "Ember",
     description: "Warm plum and clay without masking alerts.",
     preview: ["#faf3f4", "#ffffff", "#8a3d61", "#f0c9d8"],
+  },
+  {
+    id: "dune",
+    name: "Dune",
+    description: "Warm sand and amber with earthy neutrals.",
+    preview: ["#faf6ed", "#fffdf8", "#7a4f00", "#f3dca9"],
+  },
+  {
+    id: "slate",
+    name: "Slate",
+    description: "Cool blue-gray surfaces with a steady blue accent.",
+    preview: ["#f3f6fa", "#ffffff", "#365a8c", "#d8e6f8"],
+  },
+  {
+    id: "high-contrast",
+    name: "High Contrast",
+    description: "Maximum separation for text, controls, and status cues.",
+    preview: ["#ffffff", "#000000", "#0033a0", "#ffdd57"],
   },
 ];
 export const THEME_IDS = CURATED_THEMES.map(({ id }) => id);

@@ -507,6 +507,9 @@ enum class ThemeId(val id: String, val displayName: String) {
     Harbor("harbor", "Harbor"),
     Grove("grove", "Grove"),
     Ember("ember", "Ember"),
+    Dune("dune", "Dune"),
+    Slate("slate", "Slate"),
+    HighContrast("high-contrast", "High Contrast"),
 }
 
 internal fun parseThemeId(value: String?): ThemeId =

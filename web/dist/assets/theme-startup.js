@@ -14,7 +14,7 @@
     const colorMode = current?.version === 2 && ["system", "light", "dark"].includes(current?.colorMode)
       ? current.colorMode
       : ["system", "light", "dark"].includes(legacy?.theme) ? legacy.theme : fallback.colorMode;
-    const themeId = current?.version === 2 && ["foreman", "harbor", "grove", "ember"].includes(current?.themeId)
+    const themeId = current?.version === 2 && ["foreman", "harbor", "grove", "ember", "dune", "slate", "high-contrast"].includes(current?.themeId)
       ? current.themeId
       : legacyThemes[legacy?.accent] || fallback.themeId;
     const resolved = colorMode === "system"
@@ -28,6 +28,9 @@
       harbor: { light: "#006b75", dark: "#142226" },
       grove: { light: "#356a3f", dark: "#19231a" },
       ember: { light: "#8a3d61", dark: "#25191e" },
+      dune: { light: "#7a4f00", dark: "#221c12" },
+      slate: { light: "#365a8c", dark: "#171f2b" },
+      "high-contrast": { light: "#0033a0", dark: "#000000" },
     };
     document.querySelector('meta[name="theme-color"]').content = chromeColors[themeId][resolved];
   } catch {

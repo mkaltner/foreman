@@ -146,7 +146,7 @@ one paired client can use every provider available on that host.
 - Suppress redundant alerts while another paired client visibly focuses the
   exact session, and consolidate Android monitoring, attention, and foreground
   outcomes into one OS notification.
-- Choose System, Light, or Dark color mode independently from a curated Foreman, Harbor, Grove, or Ember theme.
+- Choose System, Light, or Dark color mode independently from curated Foreman, Harbor, Grove, Ember, Dune, Slate, and High Contrast themes.
 - Use dedicated Android and responsive web clients.
 - Install as a rootless user-level systemd service without pip or a Python venv.
 

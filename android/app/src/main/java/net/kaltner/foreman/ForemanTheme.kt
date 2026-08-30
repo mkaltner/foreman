@@ -93,6 +93,38 @@ private val darkSemantic =
         fullAccessContainer = Color(0xFF5C1F2B),
     )
 
+private val highContrastLightSemantic =
+    ForemanSemanticColors(
+        success = Color(0xFF005A2B),
+        successContainer = Color(0xFFD5F5DF),
+        working = Color(0xFF0033A0),
+        workingContainer = Color(0xFFDBE7FF),
+        attention = Color(0xFF7A3E00),
+        attentionContainer = Color(0xFFFFEDC2),
+        warning = Color(0xFF6B3C00),
+        warningContainer = Color(0xFFFFF0C7),
+        failure = Color(0xFF970B0B),
+        failureContainer = Color(0xFFFFE0E0),
+        fullAccess = Color(0xFF8F1232),
+        fullAccessContainer = Color(0xFFFFDCE5),
+    )
+
+private val highContrastDarkSemantic =
+    ForemanSemanticColors(
+        success = Color(0xFF7FF0A8),
+        successContainer = Color(0xFF002E16),
+        working = Color(0xFF9BC7FF),
+        workingContainer = Color(0xFF00265C),
+        attention = Color(0xFFFFD27A),
+        attentionContainer = Color(0xFF442400),
+        warning = Color(0xFFFFE08A),
+        warningContainer = Color(0xFF3A2600),
+        failure = Color(0xFFFF9E9E),
+        failureContainer = Color(0xFF4A0000),
+        fullAccess = Color(0xFFFF9FBD),
+        fullAccessContainer = Color(0xFF4A0018),
+    )
+
 private fun lightVariant(
     background: Long,
     surface: Long,
@@ -106,6 +138,10 @@ private fun lightVariant(
     onAccentContainer: Long,
     link: Long,
     focus: Long,
+    disabledSurface: Long = 0xFFE7E3EB,
+    disabledText: Long = 0xFF8A8492,
+    disabledBorder: Long = 0xFFD3CDD9,
+    semantic: ForemanSemanticColors = lightSemantic,
 ) = ForemanThemeVariant(
     background = Color(background),
     surface = Color(surface),
@@ -124,9 +160,9 @@ private fun lightVariant(
     focus = Color(focus),
     selection = Color(accentContainer),
     selectionText = Color(onAccentContainer),
-    disabledSurface = Color(0xFFE7E3EB),
-    disabledText = Color(0xFF8A8492),
-    disabledBorder = Color(0xFFD3CDD9),
+    disabledSurface = Color(disabledSurface),
+    disabledText = Color(disabledText),
+    disabledBorder = Color(disabledBorder),
     card = Color(surface),
     groupedHeader = Color(alternate),
     usageTrack = Color(alternate),
@@ -136,7 +172,7 @@ private fun lightVariant(
     navigation = Color(surface),
     dialog = Color(surface),
     popover = Color(surface),
-    semantic = lightSemantic,
+    semantic = semantic,
 )
 
 private fun darkVariant(
@@ -153,6 +189,10 @@ private fun darkVariant(
     onAccentContainer: Long,
     link: Long,
     focus: Long,
+    disabledSurface: Long = 0xFF2D2834,
+    disabledText: Long = 0xFF746C7D,
+    disabledBorder: Long = 0xFF3A3442,
+    semantic: ForemanSemanticColors = darkSemantic,
 ) = ForemanThemeVariant(
     background = Color(background),
     surface = Color(surface),
@@ -171,9 +211,9 @@ private fun darkVariant(
     focus = Color(focus),
     selection = Color(accentContainer),
     selectionText = Color(onAccentContainer),
-    disabledSurface = Color(0xFF2D2834),
-    disabledText = Color(0xFF746C7D),
-    disabledBorder = Color(0xFF3A3442),
+    disabledSurface = Color(disabledSurface),
+    disabledText = Color(disabledText),
+    disabledBorder = Color(disabledBorder),
     card = Color(surface),
     groupedHeader = Color(alternate),
     usageTrack = Color(alternate),
@@ -183,7 +223,7 @@ private fun darkVariant(
     navigation = Color(surface),
     dialog = Color(surface),
     popover = Color(surface),
-    semantic = darkSemantic,
+    semantic = semantic,
 )
 
 internal fun foremanThemePalette(themeId: ThemeId): ForemanThemePalette =
@@ -203,6 +243,32 @@ internal fun foremanThemePalette(themeId: ThemeId): ForemanThemePalette =
         ThemeId.Ember -> ForemanThemePalette(
             light = lightVariant(0xFFFAF3F4, 0xFFFFFFFF, 0xFFF3E7EB, 0xFFE4D2D9, 0xFF291B21, 0xFF77636B, 0xFF8A3D61, 0xFF6D2A4B, 0xFFF0D3DF, 0xFF48142D, 0xFF7D3558, 0xFF97496D),
             dark = darkVariant(0xFF1A1115, 0xFF25191E, 0xFF34242B, 0xFF523B45, 0xFFFFF1F5, 0xFFC0A7B1, 0xFFEFACC8, 0xFF521A35, 0xFFD888AA, 0xFF6B2948, 0xFFFFE8F1, 0xFFFFC0DA, 0xFFEFACC8),
+        )
+        ThemeId.Dune -> ForemanThemePalette(
+            light = lightVariant(0xFFFAF6ED, 0xFFFFFDF8, 0xFFF2E7D2, 0xFFD9C6A3, 0xFF2B2115, 0xFF6F604D, 0xFF7A4F00, 0xFF5D3C00, 0xFFF3DCA9, 0xFF3F2900, 0xFF704600, 0xFF8A5A00),
+            dark = darkVariant(0xFF18140D, 0xFF221C12, 0xFF302719, 0xFF55462F, 0xFFFFF6E4, 0xFFC0AD8B, 0xFFF2C66D, 0xFF3E2D00, 0xFFD7A942, 0xFF5A4213, 0xFFFFEBBD, 0xFFFFD587, 0xFFF2C66D),
+        )
+        ThemeId.Slate -> ForemanThemePalette(
+            light = lightVariant(0xFFF3F6FA, 0xFFFFFFFF, 0xFFE7EDF4, 0xFFCBD5E1, 0xFF172033, 0xFF59677B, 0xFF365A8C, 0xFF27456F, 0xFFD8E6F8, 0xFF152F52, 0xFF2D5489, 0xFF40699E),
+            dark = darkVariant(0xFF0F141C, 0xFF171F2B, 0xFF222D3B, 0xFF3B4A5F, 0xFFF2F6FB, 0xFFAAB7C7, 0xFF9FC5F5, 0xFF183656, 0xFF78A7DD, 0xFF294F78, 0xFFE4F0FF, 0xFFAFD2FF, 0xFF9FC5F5),
+        )
+        ThemeId.HighContrast -> ForemanThemePalette(
+            light = lightVariant(
+                0xFFFFFFFF, 0xFFFFFFFF, 0xFFE6E6E6, 0xFF1A1A1A, 0xFF000000, 0xFF333333,
+                0xFF0033A0, 0xFF001F66, 0xFFC9DCFF, 0xFF001B54, 0xFF0033A0, 0xFF7A1F00,
+                disabledSurface = 0xFFD9D9D9,
+                disabledText = 0xFF595959,
+                disabledBorder = 0xFF595959,
+                semantic = highContrastLightSemantic,
+            ),
+            dark = darkVariant(
+                0xFF000000, 0xFF050505, 0xFF1A1A1A, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFE0E0E0,
+                0xFF79B8FF, 0xFF000000, 0xFFA9D1FF, 0xFF002D73, 0xFFFFFFFF, 0xFF8FC6FF, 0xFFFFDD57,
+                disabledSurface = 0xFF1F1F1F,
+                disabledText = 0xFFB3B3B3,
+                disabledBorder = 0xFF999999,
+                semantic = highContrastDarkSemantic,
+            ),
         )
     }
 

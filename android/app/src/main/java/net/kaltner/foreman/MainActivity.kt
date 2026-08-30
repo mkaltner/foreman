@@ -7459,6 +7459,9 @@ private fun UiSettingsMenu(
                                         ThemeId.Harbor -> "Calm ocean blue and teal surfaces"
                                         ThemeId.Grove -> "Natural green with warm neutrals"
                                         ThemeId.Ember -> "Warm plum and clay surfaces"
+                                        ThemeId.Dune -> "Warm sand and amber with earthy neutrals"
+                                        ThemeId.Slate -> "Cool blue-gray surfaces with a steady blue accent"
+                                        ThemeId.HighContrast -> "Maximum separation for text, controls, and status cues"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,

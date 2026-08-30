@@ -913,11 +913,11 @@ class ForemanConnectionTest {
     @Test
     fun curatedThemesShareStableIdentityAndProvideCompleteLightAndDarkRoles() {
         assertEquals(
-            listOf("foreman", "harbor", "grove", "ember"),
+            listOf("foreman", "harbor", "grove", "ember", "dune", "slate", "high-contrast"),
             ThemeId.entries.map(ThemeId::id),
         )
         assertEquals(
-            listOf("Foreman", "Harbor", "Grove", "Ember"),
+            listOf("Foreman", "Harbor", "Grove", "Ember", "Dune", "Slate", "High Contrast"),
             ThemeId.entries.map(ThemeId::displayName),
         )
         assertEquals(ThemeId.Foreman, parseThemeId(null))
@@ -944,6 +944,24 @@ class ForemanConnectionTest {
                 assertTrue(contrastRatio(palette.semantic.fullAccess, palette.semantic.fullAccessContainer) >= 4.5)
                 assertFalse(palette.semantic.fullAccess == palette.semantic.working)
                 assertFalse(palette.semantic.failure == palette.semantic.attention)
+                if (themeId == ThemeId.HighContrast) {
+                    assertTrue(contrastRatio(palette.mutedText, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.border, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.accent, palette.background) >= 7.0)
+                    assertTrue(contrastRatio(palette.disabledText, palette.disabledSurface) >= 4.5)
+                    with(palette.semantic) {
+                        listOf(
+                            success to successContainer,
+                            working to workingContainer,
+                            attention to attentionContainer,
+                            warning to warningContainer,
+                            failure to failureContainer,
+                            fullAccess to fullAccessContainer,
+                        ).forEach { (foreground, container) ->
+                            assertTrue(contrastRatio(foreground, container) >= 7.0)
+                        }
+                    }
+                }
             }
         }
     }
