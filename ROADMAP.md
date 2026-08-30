@@ -14,11 +14,10 @@ approved product direction for design, not implementation commitments. Their
 issues must first produce a reviewed architecture and security decision and
 update the applicable boundary documentation before implementation starts.
 
-## Now — finish the current product pass
+## Now — current product pass complete
 
-- [ ] [#56 Replace accent selection with coherent
-  themes](https://github.com/mkaltner/foreman/issues/56)
-  ([PR #79](https://github.com/mkaltner/foreman/pull/79)).
+The current product pass is complete. Work proceeds through the **Next** list
+unless a correctness or security issue requires reprioritization.
 
 ## Next — updates and releases
 
@@ -65,6 +64,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Replace accent selection with coherent themes
+  ([PR #79](https://github.com/mkaltner/foreman/pull/79)).
 - [x] View and restore archived Codex sessions from filters
   ([PR #78](https://github.com/mkaltner/foreman/pull/78)).
 - [x] Complete restart-safe session activity restoration across Codex resume
