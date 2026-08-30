@@ -678,6 +678,58 @@ class StateTests(unittest.TestCase):
             self.assertNotIn("shared-id", restored.session_timestamps("codex"))
             self.assertIn("shared-id", restored.session_timestamps("claude-code"))
 
+    def test_session_timestamp_provenance_repairs_legacy_but_protects_live_work(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            state.remember_session_timestamps(
+                "codex", "legacy", last_activity=1_900_000_000
+            )
+            repaired = state.remember_session_timestamps(
+                "codex",
+                "legacy",
+                last_activity=1_700_000_000,
+                activity_source="provider",
+                replace_activity=True,
+            )
+            live = state.remember_session_timestamps(
+                "codex",
+                "legacy",
+                last_activity=1_800_000_000,
+                activity_source="live",
+            )
+            protected = state.remember_session_timestamps(
+                "codex",
+                "legacy",
+                last_activity=1_600_000_000,
+                activity_source="provider",
+                replace_activity=True,
+            )
+
+            self.assertEqual(
+                repaired,
+                {"lastActivity": 1_700_000_000, "activitySource": "provider"},
+            )
+            self.assertEqual(
+                live,
+                {"lastActivity": 1_800_000_000, "activitySource": "live"},
+            )
+            self.assertEqual(protected, live)
+
+            state.remember_session_timestamp_batch(
+                [
+                    {
+                        "provider": "codex",
+                        "sessionId": f"bounded-{index}",
+                        "lastActivity": index,
+                        "activitySource": "provider",
+                    }
+                    for index in range(505)
+                ]
+            )
+            self.assertEqual(len(state.session_timestamps("codex")), 500)
+
     def test_provider_account_usage_can_restore_a_bounded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = State(directory)
@@ -1688,6 +1740,20 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
 
         await self.app.codex_event(
             {
+                "method": "thread/goal/cleared",
+                "params": {"threadId": "thread-1"},
+            }
+        )
+        await self.app.codex_event(
+            {
+                "method": "thread/futureMetadata/updated",
+                "params": {"threadId": "thread-1"},
+            }
+        )
+        self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
+
+        await self.app.codex_event(
+            {
                 "method": "thread/settings/updated",
                 "params": {
                     "threadId": "thread-1",
@@ -1699,6 +1765,91 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(self.app.session_overlays["thread-1"]["lastActivity"], 124)
+
+    async def test_authoritative_repair_is_inactive_only_and_preserves_live_evidence(
+        self,
+    ) -> None:
+        for thread_id in (
+            "legacy-active",
+            "legacy-waiting",
+            "legacy-idle",
+            "legacy-partial",
+            "legacy-terminal",
+        ):
+            self.app.state.remember_session_timestamps(
+                "codex", thread_id, last_activity=1_900_000_000
+            )
+        self.app.state.remember_session_timestamps(
+            "codex",
+            "live-idle",
+            last_activity=1_900_000_100,
+            activity_source="live",
+        )
+        restored = Foreman(
+            "127.0.0.1",
+            0,
+            Path(self.temporary.name),
+            State(Path(self.temporary.name) / "state"),
+            "fake-codex",
+            codex_factory=FakeCodex,
+        )
+
+        def project(
+            thread_id: str,
+            raw_status: dict[str, Any],
+            recency: int | None,
+            turns: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
+            return restored.projected_session(
+                {
+                    **THREAD,
+                    "id": thread_id,
+                    "status": raw_status,
+                    "recencyAt": recency,
+                    "updatedAt": recency,
+                    "turns": turns or [],
+                }
+            )
+
+        active = project(
+            "legacy-active",
+            {"type": "active", "activeFlags": []},
+            1_700_000_000,
+            [{"id": "turn-active", "status": "inProgress", "items": []}],
+        )
+        waiting = project(
+            "legacy-waiting",
+            {"type": "active", "activeFlags": ["waitingOnApproval"]},
+            1_700_000_100,
+            [{"id": "turn-wait", "status": "inProgress", "items": []}],
+        )
+        repaired = project(
+            "legacy-idle", {"type": "idle"}, 1_700_000_200
+        )
+        partial = project("legacy-partial", {"type": "idle"}, None)
+        live = project("live-idle", {"type": "idle"}, 1_700_000_300)
+        terminal = project(
+            "legacy-terminal",
+            {"type": "idle"},
+            1_700_000_400,
+            [
+                {
+                    "id": "turn-terminal",
+                    "status": "failed",
+                    "completedAt": 1_700_000_450,
+                    "items": [],
+                }
+            ],
+        )
+
+        self.assertEqual(active["lastActivity"], 1_900_000_000)
+        self.assertEqual(waiting["lastActivity"], 1_900_000_000)
+        self.assertEqual(repaired["lastActivity"], 1_700_000_200)
+        self.assertEqual(partial["lastActivity"], 1_900_000_000)
+        self.assertEqual(live["lastActivity"], 1_900_000_100)
+        self.assertEqual(terminal["lastActivity"], 1_700_000_450)
+        self.assertEqual(terminal["terminalAt"], 1_700_000_450)
+        await restored.flush_session_timestamp_persistence()
 
     async def test_distinct_session_times_survive_service_recreation_with_partial_provider_data(
         self,
@@ -1956,15 +2107,16 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
             "remember_session_timestamp_batch",
             side_effect=fail_once,
         ):
-            self.app.remember_session_event(
-                "thread-retry",
-                {
-                    "kind": "activity",
-                    "label": "Responding",
-                    "activityAt": 1_700_000_321,
-                    "observedAt": 1_900_000_000,
-                },
-            )
+            with patch("foreman_service.time.time", return_value=1_700_000_321):
+                await self.app.codex_event(
+                    {
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": "thread-retry",
+                            "turn": {"id": "turn-retry"},
+                        },
+                    }
+                )
             await self.app.flush_session_timestamp_persistence()
 
         self.assertEqual(attempts, 2)
@@ -1991,6 +2143,10 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(projected["lastActivity"], 1_700_000_321)
+        self.assertEqual(
+            restored.session_activity_sources[("codex", "thread-retry")],
+            "live",
+        )
 
     async def test_session_context_snapshot_survives_service_recreation(self) -> None:
         await self.app.codex_event(
@@ -2223,6 +2379,28 @@ Tighten up this layout, please.
         )
         self.assertEqual(malformed["tokenUsage"], {})
         self.assertNotIn("ignored", str(malformed))
+
+    def test_unknown_thread_notifications_are_metadata_not_activity(self) -> None:
+        thread_id, event = normalize_event(
+            {
+                "method": "mcpServer/startupStatus/updated",
+                "params": {"threadId": "thread-1", "server": "filesystem"},
+            }
+        )
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(event["kind"], "metadata")
+        self.assertNotIn("_foremanAdvancesActivity", event)
+
+        _, status_event = normalize_event(
+            {
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "status": {"type": "idle"},
+                },
+            }
+        )
+        self.assertFalse(status_event["_foremanAdvancesActivity"])
 
     def test_maps_bounded_account_rate_limits(self) -> None:
         snapshot = rate_limit_snapshot(

@@ -222,6 +222,56 @@ describe("host navigation history", () => {
     expect(window.location.pathname).toBe(`/sessions/codex/${session.id}`);
   });
 
+  it("uses server activity for live work and ignores metadata observation time", async () => {
+    const session: SessionSummary = {
+      id: "thread-timed",
+      repository: "/repo",
+      title: "Timed session",
+      status: "idle",
+      lastActivity: 1_000,
+      messages: [],
+    };
+    vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions?host=${home.id}`);
+    mockConnectedState([session]);
+    render(<App />);
+
+    const card = await screen.findByRole("heading", { name: session.title });
+    expect(card.closest("article")).toHaveTextContent("16m ago");
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: {
+        sessionId: session.id,
+        event: {
+          kind: "metadata",
+          type: "thread/goal/cleared",
+          observedAt: 1_990,
+        },
+      },
+    }));
+    expect(card.closest("article")).toHaveTextContent("16m ago");
+
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "approval.requested",
+      payload: {
+        approval: {
+          id: "approval-timed",
+          sessionId: session.id,
+          type: "command",
+          title: "Approval required",
+          createdAt: 1,
+          status: "pending",
+        },
+        activityAt: 1_990,
+        observedAt: 2_000,
+      },
+    }));
+    await waitFor(() => expect(card.closest("article")).toHaveTextContent("Just now"));
+  });
+
   it("keeps last sessions isolated while switching hosts", async () => {
     const homeSession: SessionSummary = { id: "home-thread", repository: "/home", title: "Home session", status: "idle", messages: [] };
     const workSession: SessionSummary = { id: "work-thread", provider: "claude-code", repositoryId: "work", repository: "/work", title: "Work session", status: "idle", messages: [] };

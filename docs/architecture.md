@@ -100,7 +100,11 @@ keyed by provider plus stable session ID, restored before provider discovery,
 and removed with the matching provider session. Provider discovery may advance
 known activity, an explicit active state may clear a prior terminal boundary,
 and missing provider timestamps cannot substitute service startup or observation
-time. `observedAt` remains projection metadata rather than session activity.
+time. Stored activity provenance distinguishes complete provider projections
+from genuine live work. This lets an inactive Codex projection repair a legacy
+restart-time value while preventing older reconciliation from replacing known
+live activity. `observedAt` remains projection metadata rather than session
+activity.
 
 ### Multi-host overview connections
 

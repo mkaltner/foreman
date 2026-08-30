@@ -228,7 +228,9 @@ describe("dashboard projections", () => {
     expect(attentionState({ ...base, status: "working" }, { ...service, codex: { ...service.codex, connected: false } }, now)?.type).toBe("disconnected");
     const active = { ...base, status: "working", lastActivity: now / 1000 - 601 };
     expect(isStaleActive(active, service, now)).toBe(true);
-    const refreshed = applySessionSummaryEvent(active, { kind: "activity", label: "Running tests", observedAt: now / 1000 });
+    const observedOnly = applySessionSummaryEvent(active, { kind: "metadata", observedAt: now / 1000 });
+    expect(isStaleActive(observedOnly, service, now)).toBe(true);
+    const refreshed = applySessionSummaryEvent(active, { kind: "activity", label: "Running tests", activityAt: now / 1000, observedAt: now / 1000 });
     expect(isStaleActive(refreshed, service, now)).toBe(false);
   });
 

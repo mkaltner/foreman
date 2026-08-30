@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
+ACTIVITY_SOURCES = {"provider", "live"}
+
+
 def _token(prefix: str, byte_count: int = 24) -> str:
     value = base64.urlsafe_b64encode(secrets.token_bytes(byte_count)).decode().rstrip("=")
     return prefix + value
@@ -187,6 +190,9 @@ class State:
                     for key in ("lastActivity", "terminalAt")
                     if (value := _timestamp(item.get(key))) is not None
                 }
+                activity_source = item.get("activitySource")
+                if activity_source in ACTIVITY_SOURCES and "lastActivity" in projected:
+                    projected["activitySource"] = activity_source
                 recorded_at = _timestamp(item.get("recordedAt")) or 0
                 if projected:
                     valid.append(
@@ -214,6 +220,8 @@ class State:
         last_activity: int | float | None = None,
         terminal_at: int | float | None = None,
         clear_terminal: bool = False,
+        activity_source: str | None = None,
+        replace_activity: bool = False,
     ) -> dict[str, Any]:
         return self.remember_session_timestamp_batch(
             [
@@ -223,6 +231,8 @@ class State:
                     "lastActivity": last_activity,
                     "terminalAt": terminal_at,
                     "clearTerminal": clear_terminal,
+                    "activitySource": activity_source,
+                    "replaceActivity": replace_activity,
                 }
             ]
         ).get((provider, session_id), {})
@@ -231,7 +241,15 @@ class State:
         self, entries: list[dict[str, Any]]
     ) -> dict[tuple[str, str], dict[str, Any]]:
         normalized: list[
-            tuple[str, str, int | float | None, int | float | None, bool]
+            tuple[
+                str,
+                str,
+                int | float | None,
+                int | float | None,
+                bool,
+                str | None,
+                bool,
+            ]
         ] = []
         for entry in entries:
             provider = entry.get("provider")
@@ -247,6 +265,12 @@ class State:
                     _timestamp(entry.get("lastActivity")),
                     _timestamp(entry.get("terminalAt")),
                     entry.get("clearTerminal") is True,
+                    (
+                        entry.get("activitySource")
+                        if entry.get("activitySource") in ACTIVITY_SOURCES
+                        else None
+                    ),
+                    entry.get("replaceActivity") is True,
                 )
             )
         if not normalized:
@@ -265,6 +289,8 @@ class State:
                 incoming_activity,
                 incoming_terminal,
                 clear_terminal,
+                incoming_source,
+                replace_activity,
             ) in normalized:
                 by_provider = stored.setdefault(provider, {})
                 if not isinstance(by_provider, dict):
@@ -276,16 +302,38 @@ class State:
                     previous = {}
                 previous_activity = _timestamp(previous.get("lastActivity"))
                 previous_terminal = _timestamp(previous.get("terminalAt"))
+                previous_source = (
+                    previous.get("activitySource")
+                    if previous.get("activitySource") in ACTIVITY_SOURCES
+                    else None
+                )
                 activity_candidates = [
-                    value
-                    for value in (
-                        previous_activity,
-                        incoming_activity,
-                        previous_terminal,
-                        incoming_terminal,
+                    (value, source)
+                    for value, source in (
+                        (previous_activity, previous_source),
+                        (incoming_activity, incoming_source),
+                        (previous_terminal, previous_source),
+                        (incoming_terminal, incoming_source),
                     )
                     if value is not None
                 ]
+                if (
+                    replace_activity
+                    and incoming_activity is not None
+                    and previous_source != "live"
+                ):
+                    # A complete inactive provider projection may repair a
+                    # legacy or provider-derived value. A known live event is
+                    # never moved backward by reconciliation.
+                    activity_candidates = [
+                        (value, source)
+                        for value, source in (
+                            (incoming_activity, incoming_source),
+                            (previous_terminal, previous_source),
+                            (incoming_terminal, incoming_source),
+                        )
+                        if value is not None
+                    ]
                 terminal_candidates = [
                     value
                     for value in (previous_terminal, incoming_terminal)
@@ -293,7 +341,18 @@ class State:
                 ]
                 projected: dict[str, Any] = {}
                 if activity_candidates:
-                    projected["lastActivity"] = max(activity_candidates)
+                    selected_activity, selected_source = max(
+                        activity_candidates,
+                        key=lambda candidate: (
+                            candidate[0],
+                            {None: 0, "provider": 1, "live": 2}[candidate[1]],
+                        ),
+                    )
+                    if previous_source == "live":
+                        selected_source = "live"
+                    projected["lastActivity"] = selected_activity
+                    if selected_source is not None:
+                        projected["activitySource"] = selected_source
                 if terminal_candidates and not clear_terminal:
                     projected["terminalAt"] = max(terminal_candidates)
                 if projected:
