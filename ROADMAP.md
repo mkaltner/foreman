@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#52 Preserve session activity times across service
-  restarts](https://github.com/mkaltner/foreman/issues/52).
 - [ ] [#74 View and restore archived sessions from
   filters](https://github.com/mkaltner/foreman/issues/74).
 - [ ] [#56 Replace accent selection with coherent
@@ -68,6 +66,9 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Complete restart-safe session activity restoration across Codex resume
+  notifications ([PR #77](https://github.com/mkaltner/foreman/pull/77)),
+  building on the durable timestamp groundwork in PR #64.
 - [x] Hide redundant repository metadata on grouped session cards
   ([PR #76](https://github.com/mkaltner/foreman/pull/76)).
 - [x] Add About information to web and Android
