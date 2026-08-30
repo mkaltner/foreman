@@ -59,6 +59,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Show and retain every provider account-usage limit
+  ([PR #75](https://github.com/mkaltner/foreman/pull/75)).
 - [x] Add About information to web and Android
   ([PR #72](https://github.com/mkaltner/foreman/pull/72)).
 - [x] Fail closed when tagged release assets are incomplete
