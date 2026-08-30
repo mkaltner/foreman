@@ -7164,8 +7164,6 @@ private fun ComposerRouteRow(
                         ButtonDefaults.textButtonColors(
                             contentColor = LocalForemanColors.current.fullAccess,
                             disabledContentColor = LocalForemanColors.current.fullAccess,
-                            containerColor = LocalForemanColors.current.fullAccessContainer,
-                            disabledContainerColor = LocalForemanColors.current.fullAccessContainer,
                         )
                     } else {
                         ButtonDefaults.textButtonColors(
