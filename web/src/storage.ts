@@ -1,8 +1,9 @@
 import type { ActivityDetail } from "./activity-detail";
 import { isProviderId, type ProviderId } from "./protocol";
 
-export type ThemeMode = "system" | "light" | "dark";
-export type AccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
+export type ColorMode = "system" | "light" | "dark";
+export type ThemeId = "foreman" | "harbor" | "grove" | "ember";
+type LegacyAccentColor = "purple" | "blue" | "teal" | "green" | "orange" | "red" | "pink";
 export type { ActivityDetail } from "./activity-detail";
 export type StoredHostStatus = "connected" | "reconnecting" | "disconnected";
 
@@ -41,15 +42,23 @@ interface LegacyStoredHost {
 }
 
 export interface Appearance {
-  theme: ThemeMode;
-  accent: AccentColor;
+  colorMode: ColorMode;
+  themeId: ThemeId;
   activityDetail: ActivityDetail;
   groupSessionsByRepository: boolean;
 }
 
+export interface CuratedTheme {
+  id: ThemeId;
+  name: string;
+  description: string;
+  preview: readonly [string, string, string, string];
+}
+
 const LEGACY_HOST_KEY = "foreman.host.v1";
 const HOSTS_KEY = "foreman.hosts.v2";
-const APPEARANCE_KEY = "foreman.appearance.v1";
+const LEGACY_APPEARANCE_KEY = "foreman.appearance.v1";
+const APPEARANCE_KEY = "foreman.appearance.v2";
 const NOTIFICATIONS_KEY = "foreman.notifications.v1";
 const NOTIFICATION_PREFERENCES_KEY = "foreman.notification-preferences.v2";
 const DASHBOARD_KEY = "foreman.dashboard.v1";
@@ -58,6 +67,7 @@ const SESSION_SEARCH_KEY = "foreman.session-search.v1";
 const COLLAPSED_REPOSITORIES_KEY = "foreman.collapsed-repositories.v1";
 const LAST_SESSION_KEY = "foreman.last-session.v1";
 const HOST_SCOPED_KEYS = [
+  LEGACY_APPEARANCE_KEY,
   APPEARANCE_KEY,
   NOTIFICATIONS_KEY,
   NOTIFICATION_PREFERENCES_KEY,
@@ -68,20 +78,46 @@ const HOST_SCOPED_KEYS = [
   LAST_SESSION_KEY,
 ];
 export const DEFAULT_APPEARANCE: Appearance = {
-  theme: "system",
-  accent: "purple",
+  colorMode: "system",
+  themeId: "foreman",
   activityDetail: "focused",
   groupSessionsByRepository: true,
 };
-export const ACCENTS: AccentColor[] = [
-  "purple",
-  "blue",
-  "teal",
-  "green",
-  "orange",
-  "red",
-  "pink",
+export const CURATED_THEMES: readonly CuratedTheme[] = [
+  {
+    id: "foreman",
+    name: "Foreman",
+    description: "The signature violet Foreman palette.",
+    preview: ["#f5f3fa", "#ffffff", "#6b3fb5", "#d9c8f2"],
+  },
+  {
+    id: "harbor",
+    name: "Harbor",
+    description: "Calm ocean blue and teal surfaces.",
+    preview: ["#f1f7f8", "#ffffff", "#006b75", "#b8e4e8"],
+  },
+  {
+    id: "grove",
+    name: "Grove",
+    description: "Natural green with warm neutral surfaces.",
+    preview: ["#f4f7f1", "#ffffff", "#356a3f", "#cce5c8"],
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    description: "Warm plum and clay without masking alerts.",
+    preview: ["#faf3f4", "#ffffff", "#8a3d61", "#f0c9d8"],
+  },
 ];
+export const THEME_IDS = CURATED_THEMES.map(({ id }) => id);
+
+export function themeIdForLegacyAccent(value: unknown): ThemeId {
+  const accent = typeof value === "string" ? value.toLowerCase() as LegacyAccentColor : "purple";
+  if (accent === "blue" || accent === "teal") return "harbor";
+  if (accent === "green") return "grove";
+  if (accent === "orange" || accent === "red" || accent === "pink") return "ember";
+  return "foreman";
+}
 
 export function loadHostRegistry(storage: Storage = localStorage): HostRegistry {
   const stored = parseRegistry(storage.getItem(HOSTS_KEY));
@@ -193,22 +229,62 @@ export function withHostInSearch(search: string, hostId: string | null): string 
 }
 
 export function loadAppearance(hostId?: string | null, storage: Storage = localStorage): Appearance {
+  const currentKey = scopedKey(APPEARANCE_KEY, hostId);
+  const current = parseAppearance(storage.getItem(currentKey));
+  if (current) return current;
+
+  const legacyKey = scopedKey(LEGACY_APPEARANCE_KEY, hostId);
+  const migrated = migrateLegacyAppearance(storage.getItem(legacyKey));
+  if (storage.getItem(legacyKey) !== null) {
+    saveAppearance(migrated, hostId, storage);
+    storage.removeItem(legacyKey);
+  }
+  return migrated;
+}
+
+function parseAppearance(raw: string | null): Appearance | null {
+  if (raw === null) return null;
   try {
-    const parsed = JSON.parse(storage.getItem(scopedKey(APPEARANCE_KEY, hostId)) ?? "null") as Partial<Appearance> | null;
+    const parsed = JSON.parse(raw) as (Partial<Appearance> & { version?: unknown }) | null;
+    if (!parsed || typeof parsed !== "object" || parsed.version !== 2) return null;
+    return normalizeAppearance(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function migrateLegacyAppearance(raw: string | null): Appearance {
+  try {
+    const parsed = JSON.parse(raw ?? "null") as {
+      theme?: unknown;
+      accent?: unknown;
+      activityDetail?: unknown;
+      groupSessionsByRepository?: unknown;
+    } | null;
     return {
-      theme:
-        parsed?.theme === "light" || parsed?.theme === "dark" || parsed?.theme === "system"
-          ? parsed.theme
-          : DEFAULT_APPEARANCE.theme,
-      accent: ACCENTS.includes(parsed?.accent as AccentColor)
-        ? (parsed?.accent as AccentColor)
-        : DEFAULT_APPEARANCE.accent,
+      colorMode: isColorMode(parsed?.theme) ? parsed.theme : DEFAULT_APPEARANCE.colorMode,
+      themeId: themeIdForLegacyAccent(parsed?.accent),
       activityDetail: parsed?.activityDetail === "full" ? "full" : "focused",
       groupSessionsByRepository: parsed?.groupSessionsByRepository !== false,
     };
   } catch {
-    return DEFAULT_APPEARANCE;
+    return { ...DEFAULT_APPEARANCE };
   }
+}
+
+function normalizeAppearance(parsed: Partial<Appearance>): Appearance {
+  return {
+    colorMode: isColorMode(parsed.colorMode) ? parsed.colorMode : DEFAULT_APPEARANCE.colorMode,
+    themeId: THEME_IDS.includes(parsed.themeId as ThemeId)
+      ? parsed.themeId as ThemeId
+      : DEFAULT_APPEARANCE.themeId,
+    activityDetail: parsed.activityDetail === "full" ? "full" : "focused",
+    groupSessionsByRepository: parsed.groupSessionsByRepository !== false,
+  };
+}
+
+function isColorMode(value: unknown): value is ColorMode {
+  return value === "system" || value === "light" || value === "dark";
 }
 
 export function saveAppearance(
@@ -216,7 +292,7 @@ export function saveAppearance(
   hostId?: string | null,
   storage: Storage = localStorage,
 ): void {
-  storage.setItem(scopedKey(APPEARANCE_KEY, hostId), JSON.stringify(appearance));
+  storage.setItem(scopedKey(APPEARANCE_KEY, hostId), JSON.stringify({ version: 2, ...appearance }));
 }
 
 export function loadNotificationsEnabled(hostId?: string | null, storage: Storage = localStorage): boolean {

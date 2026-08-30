@@ -201,6 +201,22 @@ describe("host navigation history", () => {
     expect(window.location.pathname).toBe(`/sessions/claude-code/${session.id}`);
   });
 
+  it("keeps Color mode separate from the curated Theme selector and applies selection immediately", async () => {
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/settings?host=${home.id}`);
+    render(<App />);
+
+    expect(screen.getByRole("combobox", { name: "Color mode" })).toHaveValue("system");
+    const harbor = screen.getByRole("button", { name: /Harbor/ });
+    expect(harbor).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(harbor);
+
+    await waitFor(() => expect(document.documentElement.dataset.foremanTheme).toBe("harbor"));
+    expect(harbor).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem(`foreman.appearance.v2.${home.id}`)).toContain('"themeId":"harbor"');
+    expect(screen.queryByText("Accent")).not.toBeInTheDocument();
+  });
+
   it("resumes the last session when Sessions is entered from Dashboard", async () => {
     const session: SessionSummary = { id: "dashboard-return", repository: "/repo", title: "Dashboard return", status: "idle", messages: [] };
     saveHostRegistry({ hosts: [home], activeHostId: home.id });

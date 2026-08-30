@@ -356,7 +356,7 @@ class PreferenceStore(context: Context, hostId: String?) {
                         preferences.getString("themeMode", ThemeMode.System.name)!!,
                     )
                 }.getOrDefault(ThemeMode.System),
-            accentColor = parseAccentColor(preferences.getString("accentColor", null)),
+            themeId = loadThemeId(),
             activityDetail = enumPreference("activityDetail", ActivityDetail.Focused),
             groupSessionsByRepository = preferences.getBoolean("groupSessionsByRepository", true),
             followNewMessages = preferences.getBoolean("followNewMessages", true),
@@ -394,7 +394,13 @@ class PreferenceStore(context: Context, hostId: String?) {
         )
 
     fun setThemeMode(mode: ThemeMode) { preferences.edit().putString("themeMode", mode.name).apply() }
-    fun setAccentColor(color: AccentColor) { preferences.edit().putString("accentColor", color.name).apply() }
+    fun setThemeId(themeId: ThemeId) {
+        preferences.edit()
+            .putInt(APPEARANCE_VERSION_KEY, APPEARANCE_VERSION)
+            .putString(THEME_ID_KEY, themeId.id)
+            .remove(LEGACY_ACCENT_KEY)
+            .apply()
+    }
     fun setActivityDetail(detail: ActivityDetail) { preferences.edit().putString("activityDetail", detail.name).apply() }
     fun setGroupSessionsByRepository(enabled: Boolean) { preferences.edit().putBoolean("groupSessionsByRepository", enabled).apply() }
     fun setFollowNewMessages(enabled: Boolean) { preferences.edit().putBoolean("followNewMessages", enabled).apply() }
@@ -467,16 +473,63 @@ class PreferenceStore(context: Context, hostId: String?) {
             .filter { it.length <= 300 }
             .map(::legacySessionKey)
             .toCollection(linkedSetOf())
+
+    private fun loadThemeId(): ThemeId {
+        val version = runCatching { preferences.getInt(APPEARANCE_VERSION_KEY, 0) }.getOrNull()
+        val savedThemeId = runCatching { preferences.getString(THEME_ID_KEY, null) }.getOrNull()
+        val legacyAccent = runCatching { preferences.getString(LEGACY_ACCENT_KEY, null) }.getOrNull()
+        val themeId = migratedThemeId(version, savedThemeId, legacyAccent)
+        if (
+            version != APPEARANCE_VERSION ||
+            savedThemeId != themeId.id ||
+            preferences.contains(LEGACY_ACCENT_KEY)
+        ) {
+            preferences.edit()
+                .putInt(APPEARANCE_VERSION_KEY, APPEARANCE_VERSION)
+                .putString(THEME_ID_KEY, themeId.id)
+                .remove(LEGACY_ACCENT_KEY)
+                .commit()
+        }
+        return themeId
+    }
+
+    companion object {
+        private const val APPEARANCE_VERSION = 2
+        private const val APPEARANCE_VERSION_KEY = "appearanceVersion"
+        private const val THEME_ID_KEY = "themeId"
+        private const val LEGACY_ACCENT_KEY = "accentColor"
+    }
 }
 
 enum class ThemeMode { System, Light, Dark }
-enum class AccentColor { Purple, Blue, Teal, Green, Orange, Red, Pink }
-internal fun parseAccentColor(value: String?): AccentColor =
-    AccentColor.values().firstOrNull { it.name == value } ?: AccentColor.Purple
+enum class ThemeId(val id: String, val displayName: String) {
+    Foreman("foreman", "Foreman"),
+    Harbor("harbor", "Harbor"),
+    Grove("grove", "Grove"),
+    Ember("ember", "Ember"),
+}
+
+internal fun parseThemeId(value: String?): ThemeId =
+    ThemeId.entries.firstOrNull { it.id == value } ?: ThemeId.Foreman
+
+internal fun themeIdForLegacyAccent(value: String?): ThemeId =
+    when (value?.lowercase()) {
+        "blue", "teal" -> ThemeId.Harbor
+        "green" -> ThemeId.Grove
+        "orange", "red", "pink" -> ThemeId.Ember
+        else -> ThemeId.Foreman
+    }
+
+internal fun migratedThemeId(
+    appearanceVersion: Int?,
+    savedThemeId: String?,
+    legacyAccent: String?,
+): ThemeId =
+    if (appearanceVersion == 2) parseThemeId(savedThemeId) else themeIdForLegacyAccent(legacyAccent)
 
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.System,
-    val accentColor: AccentColor = AccentColor.Purple,
+    val themeId: ThemeId = ThemeId.Foreman,
     val activityDetail: ActivityDetail = ActivityDetail.Focused,
     val groupSessionsByRepository: Boolean = true,
     val followNewMessages: Boolean = true,
