@@ -360,6 +360,57 @@ describe("host navigation history", () => {
     expect(document.querySelector(".status-pill.archived")).not.toBeInTheDocument();
   });
 
+  it("refreshes an open archived detail when an external restore omits its projection", async () => {
+    const session: SessionSummary = {
+      provider: "codex",
+      id: "externally-restored-detail",
+      repository: "/projects/foreman",
+      title: "Externally restored detail",
+      status: "idle",
+      archived: true,
+      readOnly: true,
+      capabilities: ["session.read", "session.restore"],
+      messages: [],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(
+      null,
+      "",
+      `/sessions/codex/${session.id}?host=${home.id}&scope=archived`,
+    );
+    mockConnectedState([session], [{
+      id: "codex",
+      displayName: "Codex",
+      enabled: true,
+      available: true,
+      capabilities: ["session.archived.list", "session.restore"],
+    }]);
+    render(<App />);
+    await screen.findByText("Archived · Read only");
+
+    session.archived = false;
+    session.readOnly = false;
+    session.capabilities = ["session.read", "session.archive", "session.delete"];
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: {
+        provider: "codex",
+        sessionId: session.id,
+        event: { kind: "lifecycle", action: "restored" },
+      },
+    }));
+
+    await waitFor(() => expect(screen.queryByText("Archived · Read only")).not.toBeInTheDocument());
+    expect(clientMock.request.mock.calls.filter(([type, payload]) =>
+      type === "provider.session.read" &&
+      payload?.sessionId === session.id &&
+      payload?.scope !== "archived"
+    )).toHaveLength(1);
+    expect(window.location.pathname).toBe(`/sessions/codex/${session.id}`);
+    expect(window.location.search).not.toContain("scope=archived");
+  });
+
   it("uses server activity for live work and ignores metadata observation time", async () => {
     const session: SessionSummary = {
       id: "thread-timed",

@@ -840,11 +840,12 @@ function App() {
           setBusy(true);
         }
       } else if (action === "restored") {
-        setArchivedSessions((previous) => {
-          const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
-          archivedSessionsRef.current = next;
-          return next;
-        });
+        archivedSessionsRef.current = archivedSessionsRef.current.filter(
+          (session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey,
+        );
+        setArchivedSessions((previous) => previous.filter(
+          (session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey,
+        ));
         if (payload.event.session) {
           const projected = { ...payload.event.session, provider, archived: false, readOnly: false };
           setSessions((previous) => {
@@ -858,6 +859,19 @@ function App() {
             currentRef.current = projected;
             setCurrent(projected);
           }
+        }
+        if (
+          selectedIdRef.current === payload.sessionId &&
+          selectedProviderRef.current === provider &&
+          !restoringSessionsRef.current.has(identityKey)
+        ) {
+          const nextFilters = { ...searchFiltersRef.current, scope: "normal" as const };
+          searchFiltersRef.current = nextFilters;
+          setSearchFilters(nextFilters);
+          currentRef.current = null;
+          setCurrent(null);
+          setBusy(true);
+          openSessionRef.current(provider, payload.sessionId, false);
         }
         setSearchRevision((value) => value + 1);
         void clientRef.current?.request<{ sessions: SessionSummary[] } & Record<string, unknown>>(
