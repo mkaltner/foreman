@@ -16,8 +16,6 @@ update the applicable boundary documentation before implementation starts.
 
 ## Now — finish the current product pass
 
-- [ ] [#74 View and restore archived sessions from
-  filters](https://github.com/mkaltner/foreman/issues/74).
 - [ ] [#56 Replace accent selection with coherent
   themes](https://github.com/mkaltner/foreman/issues/56).
 
@@ -66,6 +64,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] View and restore archived Codex sessions from filters
+  ([PR #78](https://github.com/mkaltner/foreman/pull/78)).
 - [x] Complete restart-safe session activity restoration across Codex resume
   notifications ([PR #77](https://github.com/mkaltner/foreman/pull/77)),
   building on the durable timestamp groundwork in PR #64.
