@@ -665,6 +665,76 @@ describe("Claude session deletion", () => {
   });
 });
 
+describe("session card repository context", () => {
+  const repository: SessionSummary = {
+    id: "repository-session",
+    repository: "/projects/foreman/src",
+    title: "Repository work",
+    status: "working",
+    lastActivity: 1_700_000_300,
+  };
+  const workspace: SessionSummary = {
+    id: "workspace-session",
+    repository: "/home/operator",
+    title: "Workspace work",
+    status: "idle",
+    lastActivity: 1_700_000_200,
+  };
+  const results = [repository, workspace].map((session, index) => ({
+    session,
+    pinned: index === 0,
+    hidden: false,
+    matches: [],
+  }));
+  const baseProps = {
+    results,
+    repositories: [{ id: "foreman", name: "foreman", path: "foreman", branch: "main", dirty: false }],
+    repositoryRoot: "/projects",
+    repositoryOptions: [],
+    searchLoading: false,
+    searchError: "",
+    selectedId: null,
+    selectedProvider: "codex" as const,
+    disabled: false,
+    onOpen: vi.fn(),
+    onRefresh: vi.fn(),
+    onNew: vi.fn(),
+    onAction: vi.fn(),
+    onFilters: vi.fn(),
+    onSearchNow: vi.fn(),
+    onPin: vi.fn(),
+    onHide: vi.fn(),
+  };
+
+  it("removes repository and workspace rows from matching groups without removing other card content", () => {
+    const view = render(<SessionList {...baseProps} filters={DEFAULT_SESSION_FILTERS} groupByRepository />);
+    const repositoryCard = screen.getByRole("heading", { name: "Repository work" }).closest("article") as HTMLElement;
+    const workspaceCard = screen.getByRole("heading", { name: "Workspace work" }).closest("article") as HTMLElement;
+
+    expect(screen.getByRole("button", { name: /Collapse Repository: foreman/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Collapse Workspace: \/home\/operator/ })).toBeInTheDocument();
+    expect(repositoryCard).toHaveClass("repository-metadata-suppressed");
+    expect(workspaceCard).toHaveClass("repository-metadata-suppressed");
+    expect(repositoryCard.querySelector(".repository")).toBeNull();
+    expect(workspaceCard.querySelector(".repository")).toBeNull();
+    expect(within(repositoryCard).getByText("Active")).toBeInTheDocument();
+    expect(within(repositoryCard).getByLabelText("Unpin Repository work")).toBeInTheDocument();
+    expect(repositoryCard.querySelector(".session-meta")).toBeInTheDocument();
+
+    view.rerender(<SessionList {...baseProps} filters={DEFAULT_SESSION_FILTERS} groupByRepository={false} />);
+    expect(within(screen.getByRole("heading", { name: "Repository work" }).closest("article") as HTMLElement).getByText("src")).toBeInTheDocument();
+    expect(within(screen.getByRole("heading", { name: "Workspace work" }).closest("article") as HTMLElement).getByText("operator")).toBeInTheDocument();
+  });
+
+  it("keeps full identity in filtered results even when grouping is enabled", () => {
+    render(<SessionList {...baseProps} filters={{ ...DEFAULT_SESSION_FILTERS, query: "work" }} groupByRepository />);
+
+    expect(screen.getByText("/projects/foreman/src")).toBeInTheDocument();
+    expect(screen.getByText("/home/operator")).toBeInTheDocument();
+    expect(screen.getByLabelText("Unpin Repository work")).toBeInTheDocument();
+  });
+});
+
 describe("user message links", () => {
   it("opens safe bare links without interpreting other message text as markup", () => {
     render(<LinkedUserText text={'Review <b>literal</b> at https://example.com/pr/11.'} />);

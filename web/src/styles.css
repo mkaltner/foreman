@@ -59,6 +59,7 @@ button.full{width:100%;min-height:44px}
 .session-title-row{align-items:start;gap:8px;display:flex}
 .session-title-row h3{white-space:nowrap;text-overflow:ellipsis;flex:1;margin:0;font-size:14px;line-height:1.35;overflow:hidden}
 .repository{color:var(--muted);text-overflow:ellipsis;margin:4px 0 9px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;overflow:hidden}
+.session-card.repository-metadata-suppressed>.session-meta{margin-top:6px}
 .session-meta{color:var(--muted);justify-content:space-between;align-items:center;font-size:11px;display:flex}
 .card-actions{opacity:0;transition:opacity .15s;display:flex}
 .session-card:hover .card-actions,.session-card:focus-within .card-actions{opacity:1}

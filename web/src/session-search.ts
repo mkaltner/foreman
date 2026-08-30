@@ -34,6 +34,11 @@ export interface RepositorySessionGroup {
   sessions: VisibleSession[];
 }
 
+export interface SessionCardRenderContext {
+  groupByRepository: boolean;
+  repositoryGroupId?: string | null;
+}
+
 export type CollapsedRepositoriesByHost = ReadonlyMap<string, ReadonlySet<string>>;
 
 export function toggleCollapsedRepository(
@@ -115,6 +120,16 @@ export function repositorySessionGroups(
         || left.index - right.index)
       .map(({ session }) => session),
   }));
+}
+
+export function showSessionCardRepository(
+  session: SessionSummary,
+  repositories: RepositoryInfo[],
+  repositoryRoot: string,
+  context: SessionCardRenderContext,
+): boolean {
+  if (!context.groupByRepository || !context.repositoryGroupId) return true;
+  return repositoryIdentity(session.repository, repositories, repositoryRoot).id !== context.repositoryGroupId;
 }
 
 export function dateBounds(

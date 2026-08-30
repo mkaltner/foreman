@@ -135,8 +135,10 @@ import {
   repositoryFilterOptions,
   repositorySessionGroups,
   sessionFiltersSearch,
+  showSessionCardRepository,
   toggleCollapsedRepository,
   type CollapsedRepositoriesByHost,
+  type SessionCardRenderContext,
   type SessionFilters,
   type RepositoryFilterOption,
   type VisibleSession,
@@ -2165,7 +2167,10 @@ export function SessionList({
               <span>{group.repository.label}</span>
               <span>{group.sessions.length} {collapsedRepositories.has(group.repository.id) ? "›" : "⌄"}</span>
             </button>
-            {!collapsedRepositories.has(group.repository.id) && group.sessions.map(({ session }) => renderSessionCard(session))}
+            {!collapsedRepositories.has(group.repository.id) && group.sessions.map(({ session }) => renderSessionCard(session, {
+              groupByRepository,
+              repositoryGroupId: group.repository.id,
+            }))}
           </section>
         )) : (["pinned", "waiting", "active", "recent"] as const).map((group) =>
           groups[group].length ? (
@@ -2181,16 +2186,20 @@ export function SessionList({
     </aside>
   );
 
-  function renderSessionCard(session: SessionSummary) {
+  function renderSessionCard(
+    session: SessionSummary,
+    context: SessionCardRenderContext = { groupByRepository: false },
+  ) {
     const provider = sessionProvider(session);
     const pinned = results.find((item) => item.session.id === session.id && sessionProvider(item.session) === provider)?.pinned;
+    const showRepository = showSessionCardRepository(session, repositories, repositoryRoot, context);
     return <article
       key={`${provider}:${session.id}`}
-      className={`session-card ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
+      className={`session-card ${showRepository ? "" : "repository-metadata-suppressed"} ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
       onClick={() => onOpen(provider, session.id)}
     >
       <div className="session-title-row"><h3>{session.title}</h3>{showProviderIdentity && <ProviderBadge provider={provider} />}<StatusPill status={session.status} /></div>
-      <p className="repository">{shortRepository(session.repository)}</p>
+      {showRepository && <p className="repository">{shortRepository(session.repository)}</p>}
       {provider === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
       <div className="session-meta">
         <span>{formatActivity(session.lastActivity)}</span>
