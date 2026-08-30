@@ -904,6 +904,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(unsubscribed["subscribed"])
             self.assertNotIn("codex:thread-live", client.subscriptions)
             self.assertNotIn("thread-live", client.subscriptions)
+            await app.stop()
 
     async def test_optional_adapter_lifecycle_and_internal_provider_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3344,7 +3345,12 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(paired["deviceToken"], str(paired_clients))
         self.app.started_monotonic -= 12
         service_status = await self.request("service.status")
-        self.assertEqual(service_status["foremanVersion"], "1.0.0")
+        self.assertEqual(
+            service_status["foremanVersion"],
+            (ROOT / "release.properties").read_text(encoding="utf-8")
+            .split("foremanVersion=", 1)[1]
+            .splitlines()[0],
+        )
         self.assertGreaterEqual(service_status["uptimeSeconds"], 12)
         self.assertEqual(service_status["codex"]["mode"], "fallback")
         self.assertEqual(service_status["codex"]["version"], "0.145.0")

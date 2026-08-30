@@ -38,6 +38,7 @@ archive_listing="$(tar -tzf "$archive")"
 require_archive_entry 'linux/vendor/websockets-16.1.1.dist-info/licenses/LICENSE'
 require_archive_entry 'web/dist/index.html'
 require_archive_entry 'release.properties'
+require_archive_entry 'LICENSE'
 require_archive_entry 'THIRD_PARTY_NOTICES.md'
 require_archive_entry 'linux/claude_code.py'
 require_archive_entry 'linux/claude_bridge/bridge.mjs'

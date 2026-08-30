@@ -172,6 +172,10 @@ Recent activity is intentionally not a persistent audit history.
 Host Status also includes a compact sanitized Diagnostics disclosure with manual
 refresh, copy, and—when enabled—a confirmed Foreman restart. Android exposes the
 same bounded view from Settings. Neither client streams logs.
+Both Settings surfaces include About information with the client build and
+commit embedded at build time. The connected server version is labeled
+separately and can be unavailable while offline; client build information does
+not depend on a live connection.
 
 Browser turn notifications can be enabled under **Settings → Notifications**.
 Browsers require HTTPS or localhost for system notifications; plain LAN HTTP

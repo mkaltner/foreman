@@ -17,6 +17,17 @@ val foremanVersionName =
     providers.gradleProperty("foremanVersionName").orNull
         ?: releaseProperties.getProperty("foremanVersion")
 val foremanProtocolVersion = releaseProperties.getProperty("protocolVersion").toInt()
+val foremanReleaseBuild =
+    releaseProperties.getProperty("releaseBuild")?.toBooleanStrictOrNull()
+        ?: error("release.properties: releaseBuild must be true or false")
+val foremanBuildCommit =
+    providers.environmentVariable("FOREMAN_BUILD_COMMIT").orNull?.trim()?.takeIf {
+        it.matches(Regex("[0-9A-Za-z._-]{1,64}"))
+    } ?: runCatching {
+        providers.exec {
+            commandLine("git", "-C", rootProject.projectDir.parent, "rev-parse", "--short=12", "HEAD")
+        }.standardOutput.asText.get().trim()
+    }.getOrDefault("unknown").takeIf { it.matches(Regex("[0-9a-f]{7,40}")) } ?: "unknown"
 val releaseKeystorePath = System.getenv("FOREMAN_ANDROID_KEYSTORE")
 
 android {
@@ -30,6 +41,8 @@ android {
         versionCode = foremanVersionCode
         versionName = foremanVersionName
         buildConfigField("int", "FOREMAN_PROTOCOL_VERSION", foremanProtocolVersion.toString())
+        buildConfigField("String", "FOREMAN_BUILD_COMMIT", "\"$foremanBuildCommit\"")
+        buildConfigField("boolean", "FOREMAN_RELEASE_BUILD", foremanReleaseBuild.toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

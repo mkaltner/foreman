@@ -111,7 +111,7 @@ jobs:
             --exclude='linux/claude_bridge/test_fake_sdk.mjs' \
             -czf "dist/foreman-linux-${RELEASE_TAG}.tar.gz" \
             install.sh release.properties requirements.txt linux web/dist \
-            scripts/vendor_python_dependencies.sh docs README.md THIRD_PARTY_NOTICES.md
+            scripts/vendor_python_dependencies.sh docs README.md LICENSE THIRD_PARTY_NOTICES.md
           (cd dist && sha256sum foreman-* > SHA256SUMS)
           bash scripts/verify_release_payload.sh "$RELEASE_TAG" dist
       - name: Create draft GitHub release

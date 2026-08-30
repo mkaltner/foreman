@@ -422,4 +422,5 @@ Issues and feedback are welcome in the
 - [Compatibility policy](docs/compatibility.md)
 - [Release guide](docs/releasing.md)
 - [v1.0 acceptance record](docs/acceptance-v1.0.0.md)
+- [License](LICENSE)
 - [Third-party notice inventory](THIRD_PARTY_NOTICES.md)

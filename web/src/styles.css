@@ -262,6 +262,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .settings-card dl div{border-bottom:1px solid var(--border);grid-template-columns:120px 1fr;padding:10px 0;display:grid}
 .settings-card dt{color:var(--muted);font-size:12px}
 .settings-card dd{overflow-wrap:anywhere;margin:0;font-size:13px}
+.about-identity{align-items:center;gap:14px;margin-bottom:18px;display:flex}.about-identity img{width:58px;height:58px;border-radius:14px;box-shadow:0 8px 24px #18203324}.about-identity h2{margin:0 0 4px;font-size:21px}.about-identity p{color:var(--muted);margin:0;font-size:13px}.about-versions{border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:16px!important}.about-links{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;display:grid}.about-links a{border:1px solid var(--border);background:var(--surface-alt);color:var(--text);border-radius:9px;padding:10px 12px;text-decoration:none;font-size:12px;font-weight:700}.about-links a:hover{border-color:var(--accent);color:var(--accent-strong)}
 .provider-settings>p{margin:-8px 0 14px}.provider-setting-list{border:1px solid var(--border);border-radius:11px;overflow:hidden}.provider-setting-list .check-row{border-bottom:1px solid var(--border);margin:0;padding:12px 13px}.provider-setting-list .check-row:last-child{border-bottom:0}.provider-setting-list input:disabled{cursor:not-allowed;opacity:.55}
 .danger{border:1px solid color-mix(in srgb, var(--danger) 45%, var(--border));color:var(--danger);background:0 0;border-radius:9px;margin-top:18px;padding:9px 12px;font-size:12px;font-weight:700}
 .modal-backdrop{z-index:20;-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px);background:#070c1694;place-items:center;padding:18px;display:grid;position:fixed;inset:0}
@@ -470,6 +471,7 @@ input,select{border:1px solid var(--border);background:var(--bg);border-radius:9
 .settings-page{padding:25px 14px 50px}
 .accent-grid{grid-template-columns:repeat(2,1fr)}
 .settings-card>label,.settings-card dl div{grid-template-columns:1fr;gap:5px}
+.about-links{grid-template-columns:1fr}
 .dashboard-page{padding:20px 12px 46px}
 .dashboard-heading{align-items:start}
 .dashboard-heading h1{font-size:25px}
