@@ -167,7 +167,17 @@ internal fun accountUsageWindows(usage: ProviderAccountUsage?): List<RateLimitWi
     val seen = mutableSetOf<String>()
     return raw.take(MAX_RATE_LIMIT_WINDOWS).mapIndexedNotNull { index, window ->
         val fallback = if (index == 0) "primary" else if (index == 1) "secondary" else "window-${index + 1}"
-        window.normalized(fallback)?.takeIf { seen.add(it.id!!) }
+        window.normalized(fallback)?.let { normalized ->
+            val baseId = normalized.id!!
+            var id = baseId
+            var duplicate = 2
+            while (id in seen) {
+                val suffix = "-${duplicate++}"
+                id = baseId.take(MAX_RATE_LIMIT_TEXT - suffix.length) + suffix
+            }
+            seen.add(id)
+            normalized.copy(id = id)
+        }
     }
 }
 

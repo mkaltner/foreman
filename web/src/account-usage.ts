@@ -51,8 +51,16 @@ export function normalizeAccountUsage(value: unknown): AccountUsage | null {
     const seen = new Set<string>();
     rawWindows.forEach((window, index) => {
       const projected = normalizeWindow(window, index === 0 ? "primary" : index === 1 ? "secondary" : `window-${index + 1}`);
-      if (!projected || seen.has(projected.id!)) return;
-      seen.add(projected.id!);
+      if (!projected) return;
+      const baseId = projected.id!;
+      let id = baseId;
+      let duplicate = 2;
+      while (seen.has(id)) {
+        const suffix = `-${duplicate++}`;
+        id = `${baseId.slice(0, MAX_TEXT - suffix.length)}${suffix}`;
+      }
+      projected.id = id;
+      seen.add(id);
       windows.push(projected);
     });
     let rateLimits: RateLimitSnapshot | undefined;

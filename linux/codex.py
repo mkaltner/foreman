@@ -1458,7 +1458,14 @@ def rate_limit_snapshot(raw: Any) -> dict[str, Any] | None:
         for index, value in enumerate(raw_windows[:MAX_RATE_LIMIT_WINDOWS]):
             projected = rate_limit_window(value, fallback_id=f"window-{index + 1}")
             window_id = projected.get("id") if projected else None
-            if projected and isinstance(window_id, str) and window_id not in seen:
+            if projected and isinstance(window_id, str):
+                base_id = window_id
+                duplicate = 2
+                while window_id in seen:
+                    suffix = f"-{duplicate}"
+                    window_id = f"{base_id[: MAX_RATE_LIMIT_TEXT - len(suffix)]}{suffix}"
+                    duplicate += 1
+                projected["id"] = window_id
                 seen.add(window_id)
                 windows.append(projected)
     else:

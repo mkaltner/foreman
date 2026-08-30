@@ -2301,6 +2301,25 @@ Tighten up this layout, please.
         self.assertEqual(snapshot["primary"], snapshot["windows"][0])
         self.assertEqual(snapshot["secondary"], snapshot["windows"][1])
 
+    def test_idless_windows_with_matching_metadata_remain_distinct(self) -> None:
+        snapshot = rate_limit_snapshot(
+            {
+                "windows": [
+                    {"usedPercent": 10, "windowDurationMins": 300},
+                    {"usedPercent": 20, "windowDurationMins": 300},
+                    {"usedPercent": 30, "label": "Rolling"},
+                    {"usedPercent": 40, "label": "Rolling"},
+                ]
+            }
+        )
+
+        assert snapshot is not None
+        self.assertEqual(len(snapshot["windows"]), 4)
+        self.assertEqual(
+            [window["id"] for window in snapshot["windows"]],
+            ["duration-300", "duration-300-2", "label-rolling", "label-rolling-2"],
+        )
+
     def test_merges_sparse_extensible_window_by_identity(self) -> None:
         merged = merge_rate_limit_snapshots(
             {

@@ -168,6 +168,26 @@ class ProviderSupportTest {
     }
 
     @Test
+    fun accountUsageKeepsDuplicateProviderWindowIdsDistinct() {
+        val usage = ProviderAccountUsage(
+            available = true,
+            rateLimits = RateLimitSnapshot(
+                windows = listOf(
+                    RateLimitWindow(id = "same", usedPercent = 10.0),
+                    RateLimitWindow(id = "same", usedPercent = 20.0),
+                    RateLimitWindow(usedPercent = 30.0),
+                    RateLimitWindow(usedPercent = 40.0),
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("same", "same-2", "window-3", "window-4"),
+            accountUsageWindows(usage).map { it.id },
+        )
+    }
+
+    @Test
     fun accountUsageBoundsUntrustedPayloadAndSurvivesSerializationRoundTrip() {
         val raw = AccountUsage(
             providers = mapOf(

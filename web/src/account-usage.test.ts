@@ -40,6 +40,19 @@ describe("account usage protocol compatibility and retention", () => {
     expect(normalized?.providers).not.toHaveProperty("secret");
   });
 
+  it("keeps windows with duplicate or missing provider identities distinct", () => {
+    const normalized = normalizeAccountUsage({ providers: { codex: { available: true, rateLimits: { windows: [
+      { id: "same", usedPercent: 10 },
+      { id: "same", usedPercent: 20 },
+      { usedPercent: 30 },
+      { usedPercent: 40 },
+    ] } } } });
+
+    expect(accountUsageWindows(normalized?.providers.codex).map((window) => window.id)).toEqual([
+      "same", "same-2", "window-3", "window-4",
+    ]);
+  });
+
   it("retains host-isolated snapshots across reload and removes them when forgotten", () => {
     const storage = localStorage;
     storage.clear();
