@@ -62,7 +62,7 @@ adapter and complete web/Android parity.
 ## Recently completed
 
 - [x] Support signed Android APK self-update through Android's system installer
-  ([Issue #59](https://github.com/mkaltner/foreman/issues/59)).
+  ([PR #88](https://github.com/mkaltner/foreman/pull/88)).
 - [x] Add a shared recoverable Foreman server update mechanism
   ([PR #85](https://github.com/mkaltner/foreman/pull/85)).
 - [x] Show when a supported Foreman release is available without installing it
