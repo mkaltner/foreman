@@ -15,8 +15,9 @@ operation.
 See the [product roadmap](ROADMAP.md) for current priorities and longer-term
 direction.
 
-> Claude Code support requires an authenticated local Claude Code CLI, Node.js
-> 20 or newer, and the packaged pinned Agent SDK. External Claude sessions are
+> A Foreman host requires an authenticated Codex or Claude Code CLI (or both).
+> Claude Code additionally requires Node.js 20 or newer and the pinned Agent SDK.
+> External Claude sessions are
 > discoverable and resumable, but Foreman cannot live-attach to their running
 > CLI process or use Claude Remote Control.
 
@@ -41,6 +42,10 @@ for low-latency local use and does not attempt to replace every first-party
 Remote capability.
 
 ## Install
+
+Install and authenticate at least one supported provider CLI: Codex (`codex`) or
+Claude Code (`claude`). A Claude-capable host also needs Node.js 20 or newer.
+Foreman does not install or authenticate either provider CLI.
 
 ```sh
 git clone https://github.com/mkaltner/foreman.git
@@ -83,10 +88,11 @@ rollback to an external user-systemd helper. A verified checkout plus
 `./install.sh` remains the manual installation and recovery path. For exact
 exit codes and recovery commands, see the [installation guide](docs/install.md).
 
-Foreman requires Linux with user systemd, Python 3.10+, Git, OpenSSL, and an authenticated
-`codex` CLI. Its pinned Python dependency and prebuilt web assets are included,
-so installation does not require pip, a Python virtual environment, Node, Java,
-root access, or network access. Tagged Linux archives and signed Android APKs
+Foreman requires Linux with user systemd, Python 3.10+, Git, OpenSSL, and at
+least one authenticated `codex` or `claude` CLI. Its pinned Python dependency
+and prebuilt web assets are included, so Codex-only installation does not
+require pip, a Python virtual environment, Node, Java, root access, or network
+access. Tagged Linux archives and signed Android APKs
 are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
 as an alternative.
 
@@ -98,10 +104,15 @@ offline; discovery itself never installs, downloads, restarts, or replaces
 anything. Explicit server and Android app update actions consume the same signed
 release contract through separate confirmation and recovery flows.
 
-Claude Code is optional. Enabling it requires Node.js 20+, local Claude CLI
-authentication, and the packaged pinned Agent SDK. A missing or failed Claude
-bridge leaves Codex and Foreman startup unaffected. Pairing remains host-level:
-one paired client can use every provider available on that host.
+Claude Code requires Node.js 20+, local Claude CLI authentication, and the
+pinned Agent SDK. Tagged release archives package the SDK for offline install.
+For a source clone that does not already contain the dependency, `install.sh`
+runs the lockfile-exact `npm ci --omit=dev --ignore-scripts` in its disposable
+staging payload; this step can require package-registry access. If Claude is the
+only detected provider, installation stops before activation when that runtime
+cannot be prepared. If Codex is also usable, a missing Claude runtime leaves
+Codex and Foreman startup unaffected. Pairing remains host-level: one paired
+client can use every provider available on that host.
 
 ## Features
 
@@ -437,8 +448,8 @@ does not stop Desktop's Codex runtime.
   transcripts, active monitoring, and notifications remain scoped to one host.
 - Recent dashboard activity is not a persistent audit history.
 - Dashboard stale activity is an observation, not a failure or automatic action.
-- Claude support requires Node.js 20+, an authenticated local Claude CLI, and
-  the packaged pinned Agent SDK.
+- Every host requires at least one authenticated Codex or Claude Code CLI.
+  Claude additionally requires Node.js 20+ and the pinned Agent SDK.
 - External Claude sessions are resumable but not live-attachable. Foreman cannot
   stream or interrupt their current external process or answer its approvals.
 - Claude Remote Control, Claude images, Claude transcript search, and Claude

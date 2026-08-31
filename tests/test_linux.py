@@ -1062,6 +1062,65 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await app.stop()
             self.assertTrue(claude.stopped)
 
+    async def test_fresh_claude_only_state_enables_only_available_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "missing-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                provider_prerequisites={"codex": False, "claude-code": True},
+            )
+
+            await app.start()
+            try:
+                statuses = await app.provider_status()
+                self.assertFalse(app.codex.started)
+                self.assertTrue(FakeClaude.instances[-1].started)
+                self.assertEqual(
+                    [(item["enabled"], item["available"]) for item in statuses],
+                    [(False, False), (True, True)],
+                )
+                self.assertEqual(
+                    [item["installed"] for item in statuses], [False, True]
+                )
+                self.assertFalse(app.health()["codexConnected"])
+                self.assertFalse(app.health()["fallbackRuntimeActive"])
+            finally:
+                await app.stop()
+
+            restored = State(root / "state")
+            self.assertFalse(restored.provider_enabled("codex"))
+            self.assertTrue(restored.provider_enabled("claude-code"))
+
+    async def test_provider_reconciliation_preserves_choices_and_adds_usable_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            state.set_provider_enabled("codex", True)
+            state.set_provider_enabled("claude-code", False)
+
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "missing-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                provider_prerequisites={"codex": False, "claude-code": True},
+            )
+
+            self.assertTrue(app.provider_enabled["codex"])
+            self.assertTrue(app.provider_enabled["claude-code"])
+            self.assertTrue(State(root / "state").provider_enabled("codex"))
+            self.assertTrue(State(root / "state").provider_enabled("claude-code"))
+
     async def test_provider_enablement_is_persisted_guarded_and_applied(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1079,6 +1138,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.authenticated = True
             await app.start()
             try:
+                claude = FakeClaude.instances[-1]
                 disabled_claude = await app.dispatch(
                     client,
                     {
@@ -1104,6 +1164,25 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         "payload": {"provider": "claude-code", "enabled": True},
                     },
                 )
+                claude.status_value = {
+                    "provider": "claude-code",
+                    "available": False,
+                    "limitation": "Node.js 20 or newer is required",
+                }
+                with self.assertRaisesRegex(ValueError, "available provider"):
+                    await app.dispatch(
+                        client,
+                        {
+                            "type": "provider.configure",
+                            "payload": {"provider": "codex", "enabled": False},
+                        },
+                    )
+                claude.status_value = {
+                    "provider": "claude-code",
+                    "available": True,
+                    "cliVersion": "2.1.220",
+                    "sdkVersion": "0.3.220",
+                }
                 app.session_overlays["thread-1"] = {"status": "working"}
                 with self.assertRaisesRegex(ValueError, "active or waiting"):
                     await app.dispatch(
@@ -1158,6 +1237,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(FakeClaude.instances[-1].started)
                 statuses = await app.provider_status()
                 self.assertFalse(statuses[0]["enabled"])
+                self.assertTrue(statuses[0]["installed"])
                 self.assertFalse(statuses[0]["available"])
                 self.assertTrue(statuses[1]["enabled"])
             finally:

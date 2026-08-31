@@ -110,8 +110,8 @@ contains paths, logs, session content, or credentials. The complete state and
 security contract is in `docs/server-updates.md`.
 
 `provider.list` reports the adapters actually available on the authenticated
-host. Each bounded entry contains an ID, display name, separate `enabled` and
-`available` states, safe
+host. Each bounded entry contains an ID, display name, and separate `installed`,
+`enabled`, and `available` states, safe
 version fields, supported capabilities, and explicit limitations. Claude Code
 unavailability is non-fatal and is reduced to one safe reason such as
 `cli-missing`, `node-missing`, `sdk-missing`,
@@ -122,7 +122,7 @@ access to every provider available on that host.
 `provider.configure` accepts an exact provider ID and boolean `enabled` value.
 The host persists this preference, starts or stops the corresponding adapter,
 and publishes refreshed `provider.event` and `usage.event` projections. At least
-one provider must remain enabled. A provider with active or waiting work cannot
+one available provider must remain enabled. A provider with active or waiting work cannot
 be disabled. Disabled providers remain in the catalog but expose no capabilities;
 their sessions and account usage are omitted without deleting provider data.
 

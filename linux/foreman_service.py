@@ -14,6 +14,7 @@ import json
 import math
 import mimetypes
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -82,7 +83,8 @@ SEARCH_STATUSES = {
     "failed",
     "interrupted",
 }
-PROVIDERS = {"codex", "claude-code"}
+PROVIDER_ORDER = ("codex", "claude-code")
+PROVIDERS = set(PROVIDER_ORDER)
 CODEX_OPERATIONS = {
     "model.list",
     "access.list",
@@ -230,6 +232,8 @@ class Foreman:
         claude_factory=None,
         claude_node: str = "node",
         claude_bridge: str | Path | None = None,
+        provider_prerequisites: dict[str, bool] | None = None,
+        provider_installed: dict[str, bool] | None = None,
         release_updates: ReleaseUpdateCache | None = None,
         update_manager: ServerUpdateManager | None = None,
     ) -> None:
@@ -264,12 +268,42 @@ class Foreman:
                     source if source in {"provider", "live"} else "legacy"
                 )
             self.session_overlays.setdefault(thread_id, {}).update(restored)
-        self.provider_enabled = {
-            provider: self.state.provider_enabled(provider) for provider in PROVIDERS
+        self.provider_prerequisites = {
+            provider: bool((provider_prerequisites or {}).get(provider, True))
+            for provider in PROVIDER_ORDER
         }
-        if not any(self.provider_enabled.values()):
-            self.provider_enabled["codex"] = True
-            self.state.set_provider_enabled("codex", True)
+        installed = provider_installed or provider_prerequisites or {}
+        self.provider_installed = {
+            provider: bool(installed.get(provider, True))
+            for provider in PROVIDER_ORDER
+        }
+        configured_providers = self.state.provider_enablement()
+        self.provider_enabled = {
+            provider: configured_providers.get(
+                provider, self.provider_prerequisites[provider]
+            )
+            for provider in PROVIDER_ORDER
+        }
+        if not any(
+            self.provider_enabled[provider]
+            and self.provider_prerequisites[provider]
+            for provider in PROVIDER_ORDER
+        ):
+            fallback = next(
+                (
+                    provider
+                    for provider in PROVIDER_ORDER
+                    if self.provider_prerequisites[provider]
+                ),
+                None,
+            )
+            if fallback is not None:
+                self.provider_enabled[fallback] = True
+        for provider in PROVIDER_ORDER:
+            if configured_providers.get(provider) != self.provider_enabled[provider]:
+                self.state.set_provider_enabled(
+                    provider, self.provider_enabled[provider]
+                )
         self.account_usage: dict[str, Any] = {"available": False}
         self.claude_account_usage: dict[str, Any] = {
             "available": False,
@@ -830,6 +864,8 @@ class Foreman:
             if self.claude is not None and claude_enabled
             else {"provider": "claude-code", "available": False}
         )
+        codex_available = codex_enabled and self.codex.is_connected
+        claude_available = claude_enabled and claude.get("available") is True
         codex_capabilities = [
             "session.list",
             "session.read",
@@ -862,32 +898,34 @@ class Foreman:
             "turn.interrupt",
             "model.select",
             "permission.select",
-        ] if claude.get("available") else []
+        ]
         return [
             {
                 "id": "codex",
                 "provider": "codex",
                 "displayName": "Codex",
+                "installed": self.provider_installed["codex"],
                 "enabled": codex_enabled,
-                "available": codex_enabled and self.codex.is_connected,
+                "available": codex_available,
                 "version": self.codex.version,
                 "runtime": self.codex.runtime_status,
-                "capabilities": codex_capabilities if codex_enabled and self.codex.is_connected else [],
+                "capabilities": codex_capabilities if codex_available else [],
                 "limitations": [],
             },
             {
                 "id": "claude-code",
                 "provider": "claude-code",
                 "displayName": "Claude Code",
+                "installed": self.provider_installed["claude-code"],
                 "enabled": claude_enabled,
-                "available": claude_enabled and claude.get("available") is True,
+                "available": claude_available,
                 "cliVersion": claude.get("cliVersion"),
                 "sdkVersion": claude.get("sdkVersion"),
                 "nodeVersion": claude.get("nodeVersion"),
-                "capabilities": claude_capabilities if claude_enabled else [],
+                "capabilities": claude_capabilities if claude_available else [],
                 "limitations": CLAUDE_LIMITATIONS,
                 "unavailableReason": (
-                    None if not claude_enabled or claude.get("available")
+                    None if not claude_enabled or claude_available
                     else self.claude_unavailable_reason(claude)
                 ),
             },
@@ -988,6 +1026,16 @@ class Foreman:
         if not enabled:
             if sum(self.provider_enabled.values()) <= 1:
                 raise ValueError("at least one provider must remain enabled")
+            statuses = await self.provider_status()
+            current = next(item for item in statuses if item["id"] == provider)
+            other_usable = any(
+                item["id"] != provider
+                and item["enabled"]
+                and item["available"]
+                for item in statuses
+            )
+            if current["available"] and not other_usable:
+                raise ValueError("at least one available provider must remain enabled")
             if await self.provider_has_active_work(provider):
                 raise ValueError(
                     "provider has active or waiting sessions; resolve them before disabling it"
@@ -2539,15 +2587,17 @@ class Foreman:
 
     def health(self) -> dict[str, Any]:
         runtime = self.codex.runtime_status
-        available = runtime == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
+        codex_enabled = self.provider_enabled["codex"]
+        codex_connected = codex_enabled and getattr(self.codex, "is_connected", True)
+        shared = codex_connected and runtime == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
         return {
             "status": "ok",
             "foremanVersion": FOREMAN_VERSION,
             "protocolVersion": VERSION,
             "foremanConnected": True,
-            "codexConnected": getattr(self.codex, "is_connected", True),
-            "sharedDesktopRuntimeAttached": available,
-            "fallbackRuntimeActive": not available,
+            "codexConnected": codex_connected,
+            "sharedDesktopRuntimeAttached": shared,
+            "fallbackRuntimeActive": codex_connected and not shared,
             "codexRuntime": runtime,
         }
 
@@ -3987,6 +4037,41 @@ def git(path: Path, *args: str) -> str:
         return ""
 
 
+def executable_available(executable: str) -> bool:
+    return shutil.which(executable, path=os.environ.get("PATH")) is not None
+
+
+def node_20_or_newer(executable: str) -> bool:
+    resolved = shutil.which(executable, path=os.environ.get("PATH"))
+    if resolved is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [resolved, "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+        version = completed.stdout.strip().removeprefix("v").split(".", 1)[0]
+        return completed.returncode == 0 and int(version) >= 20
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
+def claude_prerequisites_available(args: argparse.Namespace) -> bool:
+    bridge = Path(args.claude_bridge).expanduser().resolve()
+    sdk = bridge.parent / "node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+    claude = os.environ.get("FOREMAN_CLAUDE_EXECUTABLE", "claude")
+    return (
+        executable_available(claude)
+        and node_20_or_newer(args.node)
+        and bridge.is_file()
+        and sdk.is_file()
+    )
+
+
 async def run_service(args: argparse.Namespace) -> None:
     app = Foreman(
         args.host,
@@ -4004,6 +4089,16 @@ async def run_service(args: argparse.Namespace) -> None:
         claude_factory=ClaudeCode,
         claude_node=args.node,
         claude_bridge=args.claude_bridge,
+        provider_prerequisites={
+            "codex": executable_available(args.codex),
+            "claude-code": claude_prerequisites_available(args),
+        },
+        provider_installed={
+            "codex": executable_available(args.codex),
+            "claude-code": executable_available(
+                os.environ.get("FOREMAN_CLAUDE_EXECUTABLE", "claude")
+            ),
+        },
     )
     await app.start()
     sockets = ", ".join(str(sock.getsockname()) for sock in app.server.sockets or [])

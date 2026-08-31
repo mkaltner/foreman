@@ -2,10 +2,12 @@
 
 ## Linux host
 
-Install Codex, authenticate it, and confirm `codex --version` works. Foreman
-needs Python 3.10+, Git, and a user systemd session. Its pinned `websockets`
+Install and authenticate at least one supported provider CLI: Codex or Claude
+Code. Confirm `codex --version` or `claude --version` works; installing both is
+also supported. Foreman never installs or authenticates either CLI. It needs
+Python 3.10+, Git, OpenSSL, and a user systemd session. Its pinned `websockets`
 dependency is included in the install payload, so installation doesn't require
-pip, venv support, root, or network access.
+pip, venv support, or root access.
 
 ```sh
 git clone https://github.com/mkaltner/foreman.git
@@ -38,11 +40,13 @@ python3 scripts/verify_release.py --tag v1.0.0
 The tagged Linux archive from a GitHub release contains the same install
 payload and is an alternative to cloning the repository.
 
-Optional Claude Code web and Android support requires an authenticated native Claude Code
+Claude Code web and Android support requires an authenticated native Claude Code
 CLI, Node.js 20 or newer, and the exact SDK lock under `linux/claude_bridge`.
 Tagged Linux archives include the production SDK dependency and notices, so
-installation remains offline and never runs npm. When installing from a source
-checkout, prepare that optional payload first:
+installation remains offline and never runs npm. From a source checkout,
+`install.sh` prepares the lockfile-exact production dependency inside its
+disposable staging directory when needed. That step requires npm and may access
+the package registry. To prepare the checkout ahead of time instead, run:
 
 ```sh
 cd linux/claude_bridge
@@ -51,11 +55,12 @@ cd ../..
 ./install.sh
 ```
 
-Without that prepared payload Claude is reported unavailable and Codex continues
-normally. Node is therefore an optional host dependency required only when
-Claude support is enabled. Authenticate Claude locally with its native CLI;
-Foreman pairing does not authenticate either provider. Check adapter detection
-with `foreman claude-status`.
+If Claude is the only installed provider, a missing Node runtime or failed SDK
+preparation aborts before Foreman replaces an installation. When Codex is also
+usable, Claude can remain unavailable without blocking Codex. Node is therefore
+required only for Claude. Authenticate each provider locally with its native
+CLI; Foreman pairing does not authenticate either provider. Check Claude adapter
+detection with `foreman claude-status`.
 
 The rootless installer copies Foreman to `~/.local/share/foreman`, installs the
 CLI in `~/.local/bin`, installs and starts `foreman.service`, enables the
@@ -91,8 +96,11 @@ FOREMAN_WEB_HOST=0.0.0.0
 FOREMAN_WEB_PORT=8766
 FOREMAN_REMOTE_RESTART=0
 FOREMAN_REPOSITORY_ROOT=/home/you/projects
+# Present only when Codex was detected:
 FOREMAN_CODEX_EXECUTABLE=/absolute/path/to/codex
 # Optional:
+FOREMAN_CLAUDE_EXECUTABLE=/absolute/path/to/claude
+FOREMAN_NODE_EXECUTABLE=/absolute/path/to/node
 FOREMAN_CODEX_SOCKET=/absolute/path/to/app-server-control.sock
 FOREMAN_CODEX_FALLBACK_SOCKET=/absolute/path/to/foreman-codex-app-server.sock
 # Comma-separated origins only when a reverse proxy uses a different origin:
@@ -256,7 +264,9 @@ npm test
 
 Release and CI packaging repeat a production-only install and exclude bridge
 test fixtures from the archive. The production entry point remains
-`bridge.mjs`; the installer never downloads dependencies at runtime.
+`bridge.mjs`; release-archive installation never downloads dependencies. A
+source checkout can let `install.sh` perform the same production-only `npm ci`
+inside its staging payload.
 
 After ordinary automated tests, maintainers with authenticated Claude access can
 run the explicit disposable adapter and WebSocket proofs documented in

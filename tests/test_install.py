@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,9 +66,14 @@ class DesktopServer:
 
 class InstallerTests(unittest.IsolatedAsyncioTestCase):
     def prepare_home(
-        self, directory: str, active: bool = True
+        self,
+        directory: str,
+        active: bool = True,
+        providers: tuple[str, ...] = ("codex",),
+        create_config: bool = True,
     ) -> tuple[Path, dict[str, str], Path, Path]:
         home = Path(directory)
+        home.mkdir(parents=True, exist_ok=True)
         fake_bin = home / "fake-bin"
         fake_bin.mkdir()
         python_log = home / "python.log"
@@ -113,18 +119,46 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
         )
         systemctl.chmod(0o755)
         codex = fake_bin / "codex"
-        codex.write_text(
-            "#!/bin/sh\n"
-            "if [ \"${2:-}\" = generate-json-schema ]; then\n"
-            "  for output; do :; done\n"
-            "  mkdir -p \"$output\"\n"
-            "  printf '%s\\n' '{\"oneOf\":[]}' > \"$output/ClientRequest.json\"\n"
-            "  exit 0\n"
-            "fi\n"
-            "exit 1\n",
-            encoding="utf-8",
-        )
-        codex.chmod(0o755)
+        if "codex" in providers:
+            codex.write_text(
+                "#!/bin/sh\n"
+                "if [ \"${2:-}\" = generate-json-schema ]; then\n"
+                "  for output; do :; done\n"
+                "  mkdir -p \"$output\"\n"
+                "  printf '%s\\n' '{\"oneOf\":[]}' > \"$output/ClientRequest.json\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            codex.chmod(0o755)
+        claude = fake_bin / "claude"
+        if "claude-code" in providers:
+            claude.write_text(
+                "#!/bin/sh\n"
+                "[ \"${1:-}\" = --version ] && printf '%s\\n' '2.1.220'\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            claude.chmod(0o755)
+            node = fake_bin / "node"
+            node.write_text(
+                "#!/bin/sh\n"
+                "[ \"${1:-}\" = --version ] && printf '%s\\n' 'v20.19.0'\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            node.chmod(0o755)
+            npm = fake_bin / "npm"
+            npm.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$FOREMAN_NPM_LOG\"\n"
+                "mkdir -p node_modules/@anthropic-ai/claude-agent-sdk\n"
+                "printf '%s\\n' '{\"name\":\"@anthropic-ai/claude-agent-sdk\",\"version\":\"0.3.220\"}' > node_modules/@anthropic-ai/claude-agent-sdk/package.json\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            npm.chmod(0o755)
         environment = {
             **{key: value for key, value in os.environ.items() if not key.startswith("FOREMAN_")},
             "HOME": str(home),
@@ -133,22 +167,53 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             "FOREMAN_SYSTEMCTL_LOG": str(systemctl_log),
             "FOREMAN_SYSTEMCTL_ACTIVE": "1" if active else "0",
             "FOREMAN_FORBIDDEN_TOOL_LOG": str(forbidden_tool_log),
+            "FOREMAN_NPM_LOG": str(home / "npm.log"),
             "CODEX_HOME": str(home / ".codex"),
         }
         config = home / ".config" / "foreman" / "foreman.env"
-        config.parent.mkdir(parents=True)
         repository = home / "projects" / "example"
         repository.mkdir(parents=True)
-        config.write_text(
-            "FOREMAN_HOST=127.0.0.1\n"
-            "FOREMAN_PORT=0\n"
-            "FOREMAN_WEB_HOST=127.0.0.1\n"
-            "FOREMAN_WEB_PORT=0\n"
-            f"FOREMAN_REPOSITORY_ROOT={home / 'projects'}\n"
-            f"FOREMAN_CODEX_EXECUTABLE={codex}\n",
-            encoding="utf-8",
-        )
+        if create_config:
+            config.parent.mkdir(parents=True)
+            provider_config = ""
+            if "codex" in providers:
+                provider_config += f"FOREMAN_CODEX_EXECUTABLE={codex}\n"
+            if "claude-code" in providers:
+                provider_config += f"FOREMAN_CLAUDE_EXECUTABLE={claude}\n"
+                provider_config += f"FOREMAN_NODE_EXECUTABLE={fake_bin / 'node'}\n"
+            config.write_text(
+                "FOREMAN_HOST=127.0.0.1\n"
+                "FOREMAN_PORT=0\n"
+                "FOREMAN_WEB_HOST=127.0.0.1\n"
+                "FOREMAN_WEB_PORT=0\n"
+                f"FOREMAN_REPOSITORY_ROOT={home / 'projects'}\n"
+                + provider_config,
+                encoding="utf-8",
+            )
         return home, environment, python_log, systemctl_log
+
+    def copy_install_payload(self, destination: Path, packaged_sdk: bool = False) -> Path:
+        destination.mkdir()
+        shutil.copy2(ROOT / "install.sh", destination / "install.sh")
+        shutil.copy2(ROOT / "requirements.txt", destination / "requirements.txt")
+        shutil.copy2(ROOT / "release.properties", destination / "release.properties")
+        shutil.copytree(
+            ROOT / "linux",
+            destination / "linux",
+            ignore=shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc"),
+        )
+        shutil.copytree(ROOT / "web/dist", destination / "web/dist")
+        if packaged_sdk:
+            sdk = (
+                destination
+                / "linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+            )
+            sdk.parent.mkdir(parents=True)
+            sdk.write_text(
+                '{"name":"@anthropic-ai/claude-agent-sdk","version":"0.3.220"}\n',
+                encoding="utf-8",
+            )
+        return destination / "install.sh"
 
     async def run_command(
         self, command: list[str], environment: dict[str, str]
@@ -162,6 +227,171 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             capture_output=True,
             text=True,
         )
+
+    async def test_fresh_install_supports_each_provider_matrix(self) -> None:
+        for providers in (("codex",), ("claude-code",), ("codex", "claude-code")):
+            with self.subTest(providers=providers), tempfile.TemporaryDirectory() as directory:
+                script = ROOT / "install.sh"
+                if "claude-code" in providers:
+                    script = self.copy_install_payload(Path(directory) / "source-payload")
+                home, environment, _, _ = self.prepare_home(
+                    directory,
+                    providers=providers,
+                    create_config=False,
+                )
+
+                installed = await self.run_command([str(script)], environment)
+
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                config = (
+                    home / ".config/foreman/foreman.env"
+                ).read_text(encoding="utf-8")
+                codex = home / "fake-bin/codex"
+                claude = home / "fake-bin/claude"
+                self.assertEqual(
+                    f"FOREMAN_CODEX_EXECUTABLE={codex}" in config,
+                    "codex" in providers,
+                )
+                self.assertEqual(
+                    f"FOREMAN_CLAUDE_EXECUTABLE={claude}" in config,
+                    "claude-code" in providers,
+                )
+                self.assertNotIn("FOREMAN_CODEX_EXECUTABLE=\n", config)
+                if "claude-code" in providers:
+                    self.assertIn(
+                        "ci --omit=dev --ignore-scripts",
+                        (home / "npm.log").read_text(encoding="utf-8"),
+                    )
+                    self.assertTrue(
+                        (
+                            home
+                            / ".local/share/foreman/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+                        ).is_file()
+                    )
+                else:
+                    self.assertFalse((home / "npm.log").exists())
+
+    async def test_neither_provider_fails_before_installation_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home, environment, _, _ = self.prepare_home(
+                directory,
+                providers=(),
+                create_config=False,
+            )
+
+            installed = await self.run_command([str(ROOT / "install.sh")], environment)
+
+            self.assertNotEqual(installed.returncode, 0)
+            self.assertIn("Codex (codex) or Claude Code (claude)", installed.stderr)
+            self.assertFalse((home / ".config/foreman").exists())
+            self.assertFalse((home / ".local").exists())
+            self.assertFalse((home / "systemctl.log").exists())
+
+    async def test_claude_only_missing_runtime_fails_actionably(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.copy_install_payload(Path(directory) / "source-payload")
+            home, environment, _, _ = self.prepare_home(
+                directory,
+                providers=("claude-code",),
+                create_config=False,
+            )
+            (home / "fake-bin/node").unlink()
+
+            missing_node = await self.run_command([str(script)], environment)
+
+            self.assertNotEqual(missing_node.returncode, 0)
+            self.assertIn("Install Node.js 20 or newer", missing_node.stderr)
+            self.assertFalse((home / ".config/foreman").exists())
+            self.assertFalse((home / ".local").exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.copy_install_payload(Path(directory) / "source-payload")
+            home, environment, _, _ = self.prepare_home(
+                directory,
+                providers=("claude-code",),
+                create_config=False,
+            )
+            npm = home / "fake-bin/npm"
+            npm.write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+            npm.chmod(0o755)
+
+            missing_sdk = await self.run_command([str(script)], environment)
+
+            self.assertNotEqual(missing_sdk.returncode, 0)
+            self.assertIn("pinned Claude Agent SDK could not be prepared", missing_sdk.stderr)
+            self.assertIn("npm ci --omit=dev --ignore-scripts", missing_sdk.stderr)
+            self.assertFalse((home / ".config/foreman/foreman.env").exists())
+            self.assertFalse((home / ".local/share/foreman").exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.copy_install_payload(Path(directory) / "source-payload")
+            home, environment, _, _ = self.prepare_home(
+                directory,
+                providers=("codex", "claude-code"),
+                create_config=False,
+            )
+            npm = home / "fake-bin/npm"
+            npm.write_text(
+                "#!/bin/sh\n"
+                "mkdir -p node_modules/@anthropic-ai/claude-agent-sdk\n"
+                "printf '%s\\n' '{\"version\":\"0.3.220\"}' > node_modules/@anthropic-ai/claude-agent-sdk/package.json\n"
+                "exit 73\n",
+                encoding="utf-8",
+            )
+            npm.chmod(0o755)
+
+            codex_fallback = await self.run_command([str(script)], environment)
+
+            self.assertEqual(codex_fallback.returncode, 0, codex_fallback.stderr)
+            self.assertIn("Codex installation will continue", codex_fallback.stderr)
+            self.assertFalse(
+                (
+                    home
+                    / ".local/share/foreman/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+                ).exists()
+            )
+
+    async def test_release_payload_uses_packaged_claude_sdk_without_npm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / "release-payload"
+            script = self.copy_install_payload(payload, packaged_sdk=True)
+            home, environment, _, _ = self.prepare_home(
+                str(root / "home"),
+                providers=("claude-code",),
+                create_config=False,
+            )
+
+            installed = await self.run_command([str(script)], environment)
+
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            self.assertFalse((home / "npm.log").exists())
+            self.assertTrue(
+                (
+                    home
+                    / ".local/share/foreman/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+                ).is_file()
+            )
+
+    async def test_reinstall_uses_valid_configured_executable_outside_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home, environment, _, _ = self.prepare_home(directory)
+            configured = home / "provider-bin/codex-custom"
+            configured.parent.mkdir()
+            (home / "fake-bin/codex").replace(configured)
+            config = home / ".config/foreman/foreman.env"
+            config.write_text(
+                config.read_text(encoding="utf-8").replace(
+                    str(home / "fake-bin/codex"), str(configured)
+                ),
+                encoding="utf-8",
+            )
+            expected = config.read_bytes()
+
+            installed = await self.run_command([str(ROOT / "install.sh")], environment)
+
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            self.assertEqual(config.read_bytes(), expected)
 
     async def test_offline_install_pair_and_shared_socket_use_system_python(
         self,
@@ -343,6 +573,41 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(
                 "small authenticated TCP bridge",
                 (install_dir / "foreman_service.py").read_text(encoding="utf-8"),
+            )
+
+    async def test_claude_only_reinstall_preserves_paths_and_provider_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.copy_install_payload(Path(directory) / "source-payload")
+            home, environment, _, _ = self.prepare_home(
+                directory,
+                providers=("claude-code",),
+            )
+            config = home / ".config/foreman/foreman.env"
+            state = home / ".local/state/foreman/state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(
+                '{"pairings":[],"devices":[],"providerEnabled":'
+                '{"codex":false,"claude-code":true}}\n',
+                encoding="utf-8",
+            )
+            expected_config = config.read_bytes()
+            expected_state = state.read_bytes()
+
+            first = await self.run_command([str(script)], environment)
+            npm = home / "fake-bin/npm"
+            npm.write_text("#!/bin/sh\nexit 74\n", encoding="utf-8")
+            npm.chmod(0o755)
+            second = await self.run_command([str(script)], environment)
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(config.read_bytes(), expected_config)
+            self.assertEqual(state.read_bytes(), expected_state)
+            self.assertEqual(
+                (home / "npm.log").read_text(encoding="utf-8").count(
+                    "ci --omit=dev --ignore-scripts"
+                ),
+                1,
             )
 
     async def test_failed_activation_rolls_back_the_existing_install(self) -> None:

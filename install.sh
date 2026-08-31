@@ -22,6 +22,66 @@ had_launcher=0
 had_unit=0
 had_recovery_unit=0
 had_helper=0
+claude_runtime_ready=0
+claude_needs_sdk_install=0
+claude_sdk_source=""
+required_claude_sdk_version=""
+
+configured_value() {
+  local key="$1"
+  local value=""
+  if [[ -f "$config_file" ]]; then
+    value="$(awk -v key="$key" '
+      index($0, "=") {
+        name = substr($0, 1, index($0, "=") - 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+        if (name == key) {
+          value = substr($0, index($0, "=") + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        }
+      }
+      END { print value }
+    ' "$config_file")"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+  printf '%s' "$value"
+}
+
+resolve_executable() {
+  local name="$1"
+  local configured="${2:-}"
+  local candidate=""
+  if [[ -n "$configured" ]]; then
+    if [[ "$configured" == */* ]]; then
+      candidate="$configured"
+    else
+      candidate="$(command -v -- "$configured" 2>/dev/null || true)"
+    fi
+  else
+    candidate="$(command -v -- "$name" 2>/dev/null || true)"
+  fi
+  if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
+    readlink -f -- "$candidate"
+  fi
+}
+
+package_version() {
+  python3 - "$1" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    value = json.loads(path.read_text(encoding="utf-8")).get("version", "")
+except (OSError, json.JSONDecodeError):
+    value = ""
+print(value if isinstance(value, str) else "")
+PY
+}
 
 cleanup() {
   status=$?
@@ -96,13 +156,70 @@ compgen -G "$project_dir/web/dist/assets/*" >/dev/null || {
   echo "requirements.txt must pin websockets with ==" >&2
   exit 1
 }
-codex_executable="$(command -v codex || true)"
-if [[ -z "$codex_executable" ]]; then
-  echo "codex is required and must be on PATH" >&2
+codex_executable="$(resolve_executable codex "$(configured_value FOREMAN_CODEX_EXECUTABLE)")"
+claude_executable="$(resolve_executable claude "$(configured_value FOREMAN_CLAUDE_EXECUTABLE)")"
+if [[ -z "$codex_executable" && -z "$claude_executable" ]]; then
+  echo "Foreman requires at least one supported provider CLI: Codex (codex) or Claude Code (claude)." >&2
+  echo "Install either CLI and ensure its executable is on PATH, then rerun ./install.sh." >&2
   exit 1
 fi
-codex_executable="$(readlink -f "$codex_executable")"
-claude_executable="$(command -v claude || true)"
+
+node_executable=""
+npm_executable=""
+if [[ -n "$claude_executable" ]]; then
+  required_claude_sdk_version="$(python3 - "$project_dir/linux/claude_bridge/package.json" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    package = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    version = package.get("dependencies", {}).get("@anthropic-ai/claude-agent-sdk", "")
+except (OSError, json.JSONDecodeError):
+    version = ""
+print(version if isinstance(version, str) else "")
+PY
+)"
+  [[ -n "$required_claude_sdk_version" ]] || {
+    echo "Claude bridge package.json must pin @anthropic-ai/claude-agent-sdk" >&2
+    exit 1
+  }
+  node_executable="$(resolve_executable node "$(configured_value FOREMAN_NODE_EXECUTABLE)")"
+  if [[ -n "$node_executable" ]]; then
+    node_major="$($node_executable --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9][0-9]*\).*/\1/p')"
+    if [[ -z "$node_major" || "$node_major" -lt 20 ]]; then
+      node_executable=""
+    fi
+  fi
+  project_sdk="$project_dir/linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+  installed_sdk="$install_dir/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+  if [[ -n "$node_executable" ]] \
+    && [[ "$(package_version "$project_sdk")" == "$required_claude_sdk_version" ]]; then
+    claude_runtime_ready=1
+    claude_sdk_source="project"
+  elif [[ -n "$node_executable" ]] \
+    && [[ "$(package_version "$installed_sdk")" == "$required_claude_sdk_version" ]]; then
+    claude_runtime_ready=1
+    claude_sdk_source="installed"
+  elif [[ -n "$node_executable" ]]; then
+    npm_executable="$(resolve_executable npm)"
+    if [[ -n "$npm_executable" ]]; then
+      claude_needs_sdk_install=1
+    fi
+  fi
+  if [[ "$claude_runtime_ready" == 0 && "$claude_needs_sdk_install" == 0 ]]; then
+    if [[ -z "$codex_executable" ]]; then
+      echo "Claude Code is the only detected provider, but its Foreman runtime is incomplete." >&2
+      if [[ -z "$node_executable" ]]; then
+        echo "Install Node.js 20 or newer and ensure node is on PATH." >&2
+      else
+        echo "The pinned Claude Agent SDK is missing. Install npm, or run 'npm ci --omit=dev --ignore-scripts' in linux/claude_bridge, then rerun ./install.sh." >&2
+      fi
+      exit 1
+    fi
+    echo "Claude Code support will be unavailable: Node.js 20+ and the pinned Claude Agent SDK are required." >&2
+  fi
+fi
 
 install -d -m 700 "$config_dir" "$state_dir"
 install -d -m 755 "$install_parent" "$bin_dir" "$libexec_dir" "$unit_dir"
@@ -127,9 +244,50 @@ rm -f -- \
 if [[ -L "$staging_dir/claude_bridge/node_modules" ]]; then
   rm -f -- "$staging_dir/claude_bridge/node_modules"
 fi
-if [[ -n "$claude_executable" ]] \
-  && [[ ! -f "$staging_dir/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]]; then
-  echo "Claude Code support is unavailable: the install payload does not include the pinned Agent SDK" >&2
+if [[ "$claude_sdk_source" == "installed" ]]; then
+  rm -rf -- "$staging_dir/claude_bridge/node_modules"
+  cp -a "$install_dir/claude_bridge/node_modules" \
+    "$staging_dir/claude_bridge/node_modules"
+fi
+if [[ "$claude_needs_sdk_install" == 1 ]]; then
+  echo "Preparing the pinned Claude Agent SDK in the staged install payload..."
+  if (
+    cd -- "$staging_dir/claude_bridge"
+    "$npm_executable" ci --omit=dev --ignore-scripts
+  ); then
+    claude_runtime_ready=1
+  elif [[ -z "$codex_executable" ]]; then
+    echo "Claude Code is the only detected provider, and the pinned Claude Agent SDK could not be prepared." >&2
+    echo "Check npm/network access or prepare linux/claude_bridge with 'npm ci --omit=dev --ignore-scripts', then rerun ./install.sh." >&2
+    exit 1
+  else
+    echo "Claude Code support is unavailable because the pinned Agent SDK could not be prepared; Codex installation will continue." >&2
+    rm -rf -- "$staging_dir/claude_bridge/node_modules"
+  fi
+fi
+staged_sdk="$staging_dir/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+if [[ "$claude_runtime_ready" == 1 ]] \
+  && [[ "$(package_version "$staged_sdk")" != "$required_claude_sdk_version" ]]; then
+  echo "Claude Code runtime validation failed: the exact pinned Agent SDK is missing from the staged payload." >&2
+  exit 1
+fi
+if [[ "$claude_runtime_ready" == 1 ]] && ! (
+  cd -- "$staging_dir/claude_bridge"
+  "$node_executable" --check bridge.mjs >/dev/null
+  "$node_executable" --input-type=module -e \
+    "await import('@anthropic-ai/claude-agent-sdk')" >/dev/null
+); then
+  if [[ -z "$codex_executable" ]]; then
+    echo "Claude Code is the only detected provider, but the staged bridge or pinned Agent SDK cannot be loaded." >&2
+    echo "Re-run 'npm ci --omit=dev --ignore-scripts' in linux/claude_bridge and retry installation." >&2
+    exit 1
+  fi
+  echo "Claude Code support is unavailable because its staged bridge runtime could not be loaded; Codex installation will continue." >&2
+  rm -rf -- "$staging_dir/claude_bridge/node_modules"
+  claude_runtime_ready=0
+fi
+if [[ -n "$claude_executable" && "$claude_runtime_ready" == 0 ]]; then
+  rm -rf -- "$staging_dir/claude_bridge/node_modules"
 fi
 install -m 644 "$project_dir/release.properties" "$staging_dir/release.properties"
 cp -a "$project_dir/linux/vendor" "$staging_dir/vendor"
@@ -175,9 +333,14 @@ if [[ ! -e "$config_file" ]]; then
     printf 'FOREMAN_WEB_PORT=8766\n'
     printf 'FOREMAN_REMOTE_RESTART=0\n'
     printf 'FOREMAN_REPOSITORY_ROOT=%s\n' "$HOME/projects"
-    printf 'FOREMAN_CODEX_EXECUTABLE=%s\n' "$codex_executable"
+    if [[ -n "$codex_executable" ]]; then
+      printf 'FOREMAN_CODEX_EXECUTABLE=%s\n' "$codex_executable"
+    fi
     if [[ -n "$claude_executable" ]]; then
-      printf 'FOREMAN_CLAUDE_EXECUTABLE=%s\n' "$(readlink -f "$claude_executable")"
+      printf 'FOREMAN_CLAUDE_EXECUTABLE=%s\n' "$claude_executable"
+    fi
+    if [[ -n "$node_executable" ]]; then
+      printf 'FOREMAN_NODE_EXECUTABLE=%s\n' "$node_executable"
     fi
   } >"$config_file"
   chmod 600 "$config_file"
