@@ -54,11 +54,8 @@ curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/insta
 The bootstrapper resolves the newest complete stable GitHub release, verifies
 its pinned signing identity, signed checksum manifest, Linux archive checksum,
 and safe archive layout, then delegates installation to that release's bundled
-`install.sh`. It never uses `sudo`. Install a specific stable release with:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh -s -- --version v1.0.4
-```
+`install.sh`. It never uses `sudo`; the default command always selects the
+latest complete stable release.
 
 To inspect the bootstrapper instead of piping it directly to a shell, download
 it into a private temporary directory first:
@@ -497,7 +494,9 @@ Version 1.0.4 is the updater-enabled baseline: after its one-time manual
 installation, Linux and Android can verify and install later compatible
 releases through their respective confirmation and recovery flows. Android
 remains distributed by sideloading and always delegates final APK approval to
-the system installer. The
+the system installer. Version 1.1.0 adds Claude-only host installation, the
+verified one-command Linux bootstrapper, and consistent task-provider
+availability across the service, web, and Android. The
 [v1.0 acceptance record](docs/acceptance-v1.0.0.md) tracks release evidence.
 Issues and feedback are welcome in the
 [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).

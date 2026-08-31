@@ -14,7 +14,8 @@ intentional wire-compatibility change. The Linux status version, web package
 version, Android build defaults, and all three protocol constants are checked by:
 
 ```sh
-python3 scripts/verify_release.py --tag v1.0.4
+release_tag="v$(sed -n 's/^foremanVersion=//p' release.properties)"
+python3 scripts/verify_release.py --tag "$release_tag"
 ```
 
 The web and Android builds embed `foremanVersion` directly from this manifest
@@ -112,9 +113,10 @@ exact `main` commit. A maintainer may then create and push the annotated tag:
 ```sh
 git switch main
 git pull --ff-only
-python3 scripts/verify_release.py --tag v1.0.4
-git tag -a v1.0.4 -m "Foreman v1.0.4"
-git push origin v1.0.4
+release_tag="v$(sed -n 's/^foremanVersion=//p' release.properties)"
+python3 scripts/verify_release.py --tag "$release_tag"
+git tag -a "$release_tag" -m "Foreman $release_tag"
+git push origin "$release_tag"
 ```
 
 Use `git tag -s` instead when the project has an established signing key and
