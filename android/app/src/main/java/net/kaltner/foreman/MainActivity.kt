@@ -6868,8 +6868,6 @@ private fun SessionDetailScreen(
 @Composable
 private fun CollapsedActivityGroup(items: List<ConversationItem>) {
     var expanded by remember(items.map { it.id }) { mutableStateOf(false) }
-    val commandCount = items.count { it.kind == "command" }
-    val toolCount = items.size - commandCount
     Card(Modifier.fillMaxWidth()) {
         Column {
             Row(
@@ -6880,15 +6878,12 @@ private fun CollapsedActivityGroup(items: List<ConversationItem>) {
                 Text("◇", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "${items.size} completed activity item${if (items.size == 1) "" else "s"}",
+                        "Completed activity",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        buildList {
-                            if (commandCount > 0) add("$commandCount command${if (commandCount == 1) "" else "s"}")
-                            if (toolCount > 0) add("$toolCount tool${if (toolCount == 1) "" else "s"}")
-                        }.joinToString(" · "),
+                        formatActivitySummary(items),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -6998,28 +6993,41 @@ private fun ConversationRow(
                 onOpenWorkspaceFile = onOpenWorkspaceFile,
             )
         }
-        "command", "tool" -> Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    if (item.kind == "command") "Command" else "Tool",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    item.description,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    buildString {
-                        append(item.status)
-                        item.exitCode?.let { append(" · exit $it") }
+        "command", "tool" -> {
+            val tone = activityStatusTone(item)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                border =
+                    when (tone) {
+                        ActivityStatusTone.Active -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                        ActivityStatusTone.Attention -> BorderStroke(1.dp, MaterialTheme.colorScheme.error)
+                        ActivityStatusTone.Neutral -> null
                     },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        if (item.kind == "command") "Command" else "Tool",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        item.description,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        formatActivityOutcome(item),
+                        style = MaterialTheme.typography.labelSmall,
+                        color =
+                            when (tone) {
+                                ActivityStatusTone.Active -> MaterialTheme.colorScheme.primary
+                                ActivityStatusTone.Attention -> MaterialTheme.colorScheme.error
+                                ActivityStatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                    )
+                }
             }
         }
         "compaction" -> Surface(
@@ -7876,7 +7884,7 @@ private fun UiSettingsMenu(
                                 Text(detail.name)
                                 Text(
                                     if (detail == ActivityDetail.Focused) {
-                                        "Group routine completed commands and tools"
+                                        "Group completed commands and tools, including non-zero exits"
                                     } else {
                                         "Show every command and tool item"
                                     },

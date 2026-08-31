@@ -75,7 +75,7 @@ describe("CopyFeedbackButton", () => {
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
-  it("suppresses overlapping clipboard attempts and exposes Copying", async () => {
+  it("stays enabled while suppressing overlapping clipboard attempts and exposes Copying", async () => {
     let finishCopy: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => { finishCopy = resolve; });
     const writeText = vi.fn().mockReturnValue(pending);
@@ -84,7 +84,7 @@ describe("CopyFeedbackButton", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     const copying = screen.getByRole("button", { name: "Copying" });
-    expect(copying).toBeDisabled();
+    expect(copying).toBeEnabled();
     expect(copying).toHaveAttribute("aria-busy", "true");
     fireEvent.click(copying);
     expect(writeText).toHaveBeenCalledTimes(1);

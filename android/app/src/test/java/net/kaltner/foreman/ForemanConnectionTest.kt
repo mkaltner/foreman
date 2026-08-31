@@ -183,51 +183,108 @@ class ForemanConnectionTest {
     }
 
     @Test
-    fun focusedActivityGroupsOnlyRoutineSuccessfulWork() {
-        val messages =
+    fun focusedActivityCollapsesMixedOutcomesAndPreservesOrderStatusAndExitCodes() {
+        val activity =
             listOf(
-                ConversationItem("user", "user", text = "Please test"),
                 ConversationItem("command", "command", description = "git status", status = "completed", exitCode = 0),
+                ConversationItem("search", "command", description = "rg needle", status = "failed", exitCode = 1),
                 ConversationItem("tool", "tool", description = "Read file", status = "completed"),
-                ConversationItem("failed", "command", description = "run tests", status = "completed", exitCode = 1),
-                ConversationItem("assistant", "assistant", text = "I found the issue"),
-                ConversationItem("approval-item", "tool", description = "Protected", status = "completed"),
+                ConversationItem("build", "command", description = "gradle test", status = "failed", exitCode = 7),
             )
 
-        val focused =
-            conversationBlocks(
-                messages,
-                ActivityDetail.Focused,
-                protectedItemIds = setOf("approval-item"),
-            )
-        assertEquals(5, focused.size)
-        assertEquals(listOf("command", "tool"), focused[1].items.map { it.id })
-        assertTrue(focused[1].collapsedActivity)
-        assertEquals("failed", focused[2].items.single().id)
-        assertFalse(focused[2].collapsedActivity)
-        assertEquals("approval-item", focused.last().items.single().id)
+        val focused = conversationBlocks(activity, ActivityDetail.Focused)
 
-        val full = conversationBlocks(messages, ActivityDetail.Full)
-        assertEquals(messages.map { it.id }, full.map { it.items.single().id })
-        assertTrue(full.none { it.collapsedActivity })
+        assertEquals(1, focused.size)
+        assertTrue(focused.single().collapsedActivity)
+        assertEquals(activity, focused.single().items)
+        assertEquals(listOf(0, 1, null, 7), focused.single().items.map { it.exitCode })
+        assertEquals(listOf("completed", "failed", "completed", "failed"), focused.single().items.map { it.status })
+        assertEquals("3 commands · 1 tool · 2 non-zero", formatActivitySummary(activity))
+        assertEquals("Failed · Exited 1", formatActivityOutcome(activity[1]))
+        assertEquals("Failed · Exited 7", formatActivityOutcome(activity[3]))
     }
 
     @Test
-    fun focusedActivityProgressivelyGroupsCompletedItemsFromActiveTurn() {
-        val messages =
+    fun focusedActivityCollapsesAllNonzeroWithoutInferringCommandIntent() {
+        val activity =
             listOf(
-                ConversationItem("read", "tool", status = "completed", turnId = "turn-current"),
-                ConversationItem("bash", "command", status = "completed", exitCode = 0, turnId = "turn-current"),
-                ConversationItem("failed", "command", status = "failed", exitCode = 1, turnId = "turn-current"),
+                ConversationItem("build", "command", description = "build production", status = "failed", exitCode = 2),
+                ConversationItem("search", "command", description = "rg optional", status = "failed", exitCode = 1),
             )
 
-        val blocks = conversationBlocks(messages, ActivityDetail.Focused)
+        val blocks = conversationBlocks(activity, ActivityDetail.Focused)
 
-        assertEquals(2, blocks.size)
-        assertTrue(blocks.first().collapsedActivity)
-        assertEquals(listOf("read", "bash"), blocks.first().items.map { it.id })
-        assertFalse(blocks.last().collapsedActivity)
-        assertEquals("failed", blocks.last().items.single().id)
+        assertEquals(activity, blocks.single().items)
+        assertTrue(blocks.single().collapsedActivity)
+        assertEquals("2 commands · 2 non-zero", formatActivitySummary(activity))
+    }
+
+    @Test
+    fun focusedActivityKeepsActiveErrorsInterruptedAndBlockedDistinct() {
+        val activity =
+            listOf(
+                ConversationItem("done", "tool", status = "completed", exitCode = 1),
+                ConversationItem("running", "command", status = "inProgress"),
+                ConversationItem("error", "command", status = "executionError", exitCode = 127),
+                ConversationItem("unresolved", "command", status = "failed"),
+                ConversationItem("interrupted", "tool", status = "interrupted"),
+                ConversationItem("blocked", "tool", status = "denied"),
+            )
+
+        val blocks = conversationBlocks(activity, ActivityDetail.Focused)
+
+        assertEquals(
+            listOf(
+                listOf("done"),
+                listOf("running"),
+                listOf("error"),
+                listOf("unresolved"),
+                listOf("interrupted"),
+                listOf("blocked"),
+            ),
+            blocks.map { block -> block.items.map { it.id } },
+        )
+        assertEquals(listOf(true, false, false, false, false, false), blocks.map { it.collapsedActivity })
+        assertEquals(ActivityStatusTone.Active, activityStatusTone(activity[1]))
+        assertEquals(
+            List(4) { ActivityStatusTone.Attention },
+            activity.drop(2).map(::activityStatusTone),
+        )
+        assertEquals("Execution error · Exited 127", formatActivityOutcome(activity[2]))
+    }
+
+    @Test
+    fun focusedActivityKeepsProtectedAndSearchHighlightedItemsReachable() {
+        val activity =
+            listOf(
+                ConversationItem("before", "command", status = "completed", exitCode = 1),
+                ConversationItem("protected", "tool", status = "completed"),
+                ConversationItem("after", "command", status = "completed", exitCode = 0),
+            )
+
+        val blocks = conversationBlocks(activity, ActivityDetail.Focused, setOf("protected"))
+
+        assertEquals(
+            listOf(listOf("before"), listOf("protected"), listOf("after")),
+            blocks.map { block -> block.items.map { it.id } },
+        )
+        assertEquals(listOf(true, false, true), blocks.map { it.collapsedActivity })
+    }
+
+    @Test
+    fun fullActivityRemainsCompleteAndChronological() {
+        val messages =
+            listOf(
+                ConversationItem("user", "user", text = "Please test"),
+                ConversationItem("nonzero", "command", status = "completed", exitCode = 1),
+                ConversationItem("running", "tool", status = "running"),
+                ConversationItem("assistant", "assistant", text = "Done"),
+            )
+
+        val blocks = conversationBlocks(messages, ActivityDetail.Full, setOf("nonzero"))
+
+        assertEquals(messages, blocks.map { it.items.single() })
+        assertTrue(blocks.none { it.collapsedActivity })
     }
 
     @Test
@@ -1669,8 +1726,10 @@ class ForemanConnectionTest {
         assertEquals(listOf("user", "read", "failed", "assistant"), synchronized.selected?.messages?.map { it.id })
         assertEquals("Done", synchronized.selected?.messages?.last()?.text)
         val blocks = conversationBlocks(requireNotNull(synchronized.selected).messages, ActivityDetail.Focused)
-        assertTrue(blocks.any { it.collapsedActivity && it.items.single().id == "read" })
-        assertTrue(blocks.any { !it.collapsedActivity && it.items.single().id == "failed" })
+        val activity = blocks.single { it.collapsedActivity }.items
+        assertEquals(listOf("read", "failed"), activity.map { it.id })
+        assertEquals(listOf("completed", "failed"), activity.map { it.status })
+        assertEquals(listOf(null, 1), activity.map { it.exitCode })
     }
 
     @Test

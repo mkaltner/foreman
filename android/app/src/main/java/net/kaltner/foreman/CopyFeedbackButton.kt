@@ -112,7 +112,7 @@ internal fun CopyFeedbackButton(
     val state = controller.state
     FilledTonalButton(
         onClick = { controller.copy(onCopy) },
-        enabled = enabled && state != CopyFeedbackState.Copying,
+        enabled = enabled,
         modifier =
             modifier.semantics {
                 contentDescription = state.accessibilityLabel

@@ -37,6 +37,12 @@
 - Building `web/dist` does not deploy it. Copy the built assets into the installed Foreman web payload and verify the served bundle when the user asks to stand up or deploy a branch locally.
 - Avoid unnecessary service restarts, but confirm the service is running after deployment so the user is not left to run `foreman start` manually.
 
+## Command and diagnostic hygiene
+
+- Identify the repository's configured toolchains, wrappers, and version files before running builds or checks; use those configured entry points instead of guessing from a globally installed tool.
+- Keep unrelated diagnostics in separate command invocations so each recorded status and exit code remains attributable to the operation that produced it.
+- When a search may legitimately find no matches, handle only the search tool's documented no-match exit explicitly and allow unexpected execution errors to propagate. Do not use a blanket success fallback that masks every nonzero outcome.
+
 ## Repository hygiene
 
 - Preserve unrelated user changes and untracked files. Stage only files belonging to the requested change.

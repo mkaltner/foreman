@@ -94,7 +94,7 @@ export function CopyFeedbackButton({
         aria-busy={state === "copying"}
         aria-label={label}
         title={label}
-        disabled={disabled || state === "copying"}
+        disabled={disabled}
         onClick={() => void copy()}
       >
         <span className="copy-feedback-visual" aria-hidden="true">
