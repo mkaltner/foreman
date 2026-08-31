@@ -69,9 +69,9 @@ Android support requires one nonempty `foreman-v<version>.apk` plus the checksum
 file. Duplicate, zero-byte, absent, or over-limit assets do not qualify, and
 GitHub's automatic source archives are never component artifacts. Web and
 Android retain a small validated host-scoped projection for offline About views;
-forgetting the host removes it. Issue #57 only discovers and presents releases.
-The shared server updater and APK installer remain the separate architecture
-gates in #58 and #59.
+forgetting the host removes it. Release discovery remains read-only. Server
+replacement and Android APK replacement are separate mutation boundaries with
+independent confirmation and recovery state.
 
 Linux files:
 
@@ -227,3 +227,16 @@ a durable state machine, a cross-process lock, an immediate pre-activation
 session-safety check, external restart ownership, versioned health checking,
 and automatic rollback. Configuration, paired-client data, session metadata,
 and provider state remain outside the replacement set.
+
+Android APK self-update uses the same official stable-channel target, exact
+five-asset release set, pinned certificate, detached checksum signature, and
+release-key continuity as server update verification. The app downloads into
+one bounded app-private operation, verifies checksum, package identity, APK
+signer, `versionName`, and a strictly higher `versionCode`, then grants Android's
+system installer read access to only that verified file. Per-app unknown-source
+permission is explained and requested only at installer handoff. Android owns
+explicit installation confirmation; Foreman has no silent-install path. The
+durable operation survives activity recreation and package replacement while
+saved hosts and preferences remain outside the APK. The normative trust,
+storage, permission, cleanup, and lifecycle decision is in
+[`android-apk-updates.md`](android-apk-updates.md).

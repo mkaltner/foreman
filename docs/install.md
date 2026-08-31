@@ -198,6 +198,15 @@ commit embedded at build time. The connected server version is labeled
 separately and can be unavailable while offline; client build information does
 not depend on a live connection.
 
+The sideloaded Android app can download and verify its own newer stable APK from
+**Settings → About**. This is separate from **Review server update**. Foreman
+uses the official signed release contract, verifies the current APK signing
+identity and strictly newer version code, explains Android's per-app **Install
+unknown apps** permission only when needed, and then opens Android's system
+installer for explicit confirmation. Canceling installation retains the
+verified APK for retry; interrupted downloads resume from app-private bounded
+storage. See [`android-apk-updates.md`](android-apk-updates.md).
+
 Browser turn notifications can be enabled under **Settings → Notifications**.
 Browsers require HTTPS or localhost for system notifications; plain LAN HTTP
 addresses cannot request notification permission. Notifications cover turns

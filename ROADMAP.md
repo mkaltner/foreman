@@ -21,10 +21,9 @@ unless a correctness or security issue requires reprioritization.
 
 ## Next — updates and releases
 
-- [ ] **Architecture gate:** [#58 Add a shared recoverable Foreman server update
-  mechanism](https://github.com/mkaltner/foreman/issues/58).
-- [ ] **Architecture gate:** [#59 Support Android APK self-update outside the
-  Play Store](https://github.com/mkaltner/foreman/issues/59).
+The current update-and-release architecture gates are complete. New work enters
+the ordered foundations list below unless a correctness or security issue
+requires reprioritization.
 
 ## Later — product foundations
 
@@ -62,6 +61,10 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Support signed Android APK self-update through Android's system installer
+  ([Issue #59](https://github.com/mkaltner/foreman/issues/59)).
+- [x] Add a shared recoverable Foreman server update mechanism
+  ([PR #85](https://github.com/mkaltner/foreman/pull/85)).
 - [x] Show when a supported Foreman release is available without installing it
   ([PR #81](https://github.com/mkaltner/foreman/pull/81)).
 - [x] Replace accent selection with coherent themes

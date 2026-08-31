@@ -94,8 +94,9 @@ Web and Android show release discovery and authorized server update controls in 
 Linux service performs one cached lookup against the official
 `mkaltner/foreman` GitHub releases endpoint and both clients compare their own
 component versions with complete stable artifacts. Cached results remain useful
-offline and never install, download, restart, or replace anything. Server update
-installation is tracked in #58 and Android APK installation is tracked in #59.
+offline; discovery itself never installs, downloads, restarts, or replaces
+anything. Explicit server and Android app update actions consume the same signed
+release contract through separate confirmation and recovery flows.
 
 Claude Code is optional. Enabling it requires Node.js 20+, local Claude CLI
 authentication, and the packaged pinned Agent SDK. A missing or failed Claude
@@ -157,7 +158,8 @@ one paired client can use every provider available on that host.
 - Choose System, Light, or Dark color mode independently from curated Foreman, Harbor, Grove, Ember, Dune, Slate, and High Contrast themes.
 - Use dedicated Android and responsive web clients.
 - Distinguish server, bundled web, and installed Android APK release status in
-  About without triggering update notifications or installation.
+  About without triggering update notifications, and let Android download,
+  verify, and hand a newer official APK to the system installer.
 - Install as a rootless user-level systemd service without pip or a Python venv.
 
 ## Android
@@ -175,6 +177,18 @@ terminal turns. Dashboard cards open the existing conversation and focus a
 pending approval or input when present. Android Back from the dashboard returns
 to the unified saved-host overview; **Home** and **Sessions** provide the same
 explicit in-app navigation.
+
+For later releases, **Settings → About** shows the installed and available
+Android app versions separately from the connected server and offers
+**Download Android app update**. Foreman selects the exact official APK,
+verifies the pinned release certificate, detached signed checksum, APK signer,
+package, version name, and increasing version code, then opens Android's system
+installer. Android always requires explicit confirmation. If Android 8 or later
+needs **Install unknown apps** permission, Foreman explains it before opening
+the per-app settings screen and resumes the same verified update afterward.
+Canceled installation reuses the verified APK; interrupted downloads are
+recoverable from bounded app-private storage. See the
+[Android APK update trust and recovery model](docs/android-apk-updates.md).
 
 Android loads the host provider catalog after ordinary authentication. The new
 session dialog selects an enabled Codex or Claude Code provider, then shows only
@@ -395,6 +409,12 @@ and compatible protocol before the external helper can activate it. Active or
 waiting work and pending approval/input fail closed. See the complete
 [server-update trust and recovery model](docs/server-updates.md).
 
+Android app updates use the same official release certificate and signed
+checksum contract but never invoke the server updater. The app also requires
+the downloaded package signer to match installed Foreman and requires both a
+newer version name and version code before Android's installer can see the APK.
+See the [Android APK update security model](docs/android-apk-updates.md).
+
 ## Codex Desktop runtime
 
 Codex Desktop's default control socket is attach-only. Foreman never removes or
@@ -432,7 +452,8 @@ state-preserving upgrade behavior are the compatibility contract for the 1.x
 series; incompatible wire or configuration changes will not be made silently.
 Current main adds compatible multi-provider functionality intended for v1.1.0;
 it does not change protocol version 1. Android remains distributed by
-sideloading. The
+sideloading and can now verify and open official newer APKs through Android's
+system installer. The
 [v1.0 acceptance record](docs/acceptance-v1.0.0.md) tracks release evidence.
 Issues and feedback are welcome in the
 [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).
@@ -447,6 +468,8 @@ Issues and feedback are welcome in the
 - [Codex integration](docs/codex-integration.md)
 - [Compatibility policy](docs/compatibility.md)
 - [Release guide](docs/releasing.md)
+- [Android APK update security model](docs/android-apk-updates.md)
+- [Server update security model](docs/server-updates.md)
 - [v1.0 acceptance record](docs/acceptance-v1.0.0.md)
 - [License](LICENSE)
 - [Third-party notice inventory](THIRD_PARTY_NOTICES.md)

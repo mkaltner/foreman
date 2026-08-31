@@ -17,6 +17,10 @@ val foremanVersionName =
     providers.gradleProperty("foremanVersionName").orNull
         ?: releaseProperties.getProperty("foremanVersion")
 val foremanProtocolVersion = releaseProperties.getProperty("protocolVersion").toInt()
+val foremanAndroidSigningCertificateSha256 =
+    releaseProperties.getProperty("androidSigningCertificateSha256")
+        ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        ?: error("release.properties: invalid androidSigningCertificateSha256")
 val foremanReleaseBuild =
     releaseProperties.getProperty("releaseBuild")?.toBooleanStrictOrNull()
         ?: error("release.properties: releaseBuild must be true or false")
@@ -43,6 +47,11 @@ android {
         buildConfigField("int", "FOREMAN_PROTOCOL_VERSION", foremanProtocolVersion.toString())
         buildConfigField("String", "FOREMAN_BUILD_COMMIT", "\"$foremanBuildCommit\"")
         buildConfigField("boolean", "FOREMAN_RELEASE_BUILD", foremanReleaseBuild.toString())
+        buildConfigField(
+            "String",
+            "FOREMAN_ANDROID_SIGNING_CERTIFICATE_SHA256",
+            "\"$foremanAndroidSigningCertificateSha256\"",
+        )
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

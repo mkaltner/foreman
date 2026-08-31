@@ -20,7 +20,12 @@ localhost and a certificate trusted by the client.
 The Android app supports Android 6.0 (API 23) and later. Published APK upgrades
 retain the application ID and signing key so Android can preserve encrypted
 saved-host tokens. Android does not support installing an APK with a lower
-version code over a newer one.
+version code over a newer one. Foreman's sideload updater also requires a
+strictly newer stable SemVer and version code, exact package identity, the
+current trusted signer, and the signed five-asset release contract. Signing-key
+rotation requires an explicit intermediate compatibility release; automatic
+same-version installation, downgrade, or unannounced signer migration is not
+supported. See [`android-apk-updates.md`](android-apk-updates.md).
 
 ## Linux upgrades and state
 

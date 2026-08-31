@@ -12,6 +12,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -21,6 +22,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -106,12 +108,14 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -177,10 +181,19 @@ internal val composerKeyboardOptions =
 
 class MainActivity : ComponentActivity() {
     private val foremanViewModel: ForemanViewModel by viewModels()
+    private val androidAppUpdateViewModel: AndroidAppUpdateViewModel by viewModels()
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             foremanViewModel.setMonitorActiveTurns(granted)
             if (!granted) foremanViewModel.notificationPermissionDenied()
+        }
+    private val unknownAppsPermission =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            androidAppUpdateViewModel.permissionResult(canInstallUnknownApps(), ::launchInstaller)
+        }
+    private val packageInstaller =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            androidAppUpdateViewModel.installerResult(result.resultCode == Activity.RESULT_OK)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -188,7 +201,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
-            ForemanApp(foremanViewModel, ::requestTurnMonitoring)
+            ForemanApp(
+                foremanViewModel,
+                ::requestTurnMonitoring,
+                androidAppUpdateViewModel,
+                ::requestAndroidAppInstall,
+                ::requestUnknownAppsPermission,
+            )
         }
         openNotificationSession(intent)
     }
@@ -198,6 +217,7 @@ class MainActivity : ComponentActivity() {
         TurnMonitorService.acknowledgeAttention(applicationContext)
         foremanViewModel.onNotificationPermissionState(notificationPermissionGranted())
         foremanViewModel.onForeground()
+        androidAppUpdateViewModel.onForeground()
     }
 
     override fun onStop() {
@@ -230,6 +250,51 @@ class MainActivity : ComponentActivity() {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
+
+    private fun canInstallUnknownApps(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    private fun requestAndroidAppInstall() {
+        androidAppUpdateViewModel.requestInstall(!canInstallUnknownApps(), ::launchInstaller)
+    }
+
+    private fun requestUnknownAppsPermission() {
+        if (canInstallUnknownApps()) {
+            androidAppUpdateViewModel.permissionResult(true, ::launchInstaller)
+            return
+        }
+        androidAppUpdateViewModel.beginPermissionRequest()
+        val intent =
+            Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName"),
+            )
+        try {
+            unknownAppsPermission.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            androidAppUpdateViewModel.permissionResult(false, ::launchInstaller)
+        }
+    }
+
+    private fun launchInstaller(request: InstallerRequest?) {
+        request ?: return
+        val uri =
+            FileProvider.getUriForFile(
+                this,
+                "$packageName.update-files",
+                request.apk,
+            )
+        val intent =
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(Intent.EXTRA_RETURN_RESULT, true)
+        try {
+            packageInstaller.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            androidAppUpdateViewModel.installerLaunchFailed()
+        }
+    }
 
     private fun openNotificationSession(intent: Intent?) {
         val sessionId = intent?.getStringExtra(TurnMonitorService.EXTRA_SESSION_ID)
@@ -4649,12 +4714,30 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 }
 
+private data class AndroidAppUpdateActions(
+    val state: ApkUpdateUiState,
+    val start: (ForemanRelease) -> Unit,
+    val retry: () -> Unit,
+    val cancel: () -> Unit,
+    val install: () -> Unit,
+    val requestPermission: () -> Unit,
+    val dismissPermission: () -> Unit,
+)
+
+private val LocalAndroidAppUpdate = staticCompositionLocalOf<AndroidAppUpdateActions> {
+    error("Android app update actions were not provided")
+}
+
 @Composable
 private fun ForemanApp(
     viewModel: ForemanViewModel = viewModel(),
     requestTurnMonitoring: (Boolean) -> Unit = viewModel::setMonitorActiveTurns,
+    androidAppUpdateViewModel: AndroidAppUpdateViewModel = viewModel(),
+    requestAndroidAppInstall: () -> Unit = {},
+    requestUnknownAppsPermission: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
+    val androidAppUpdateState by androidAppUpdateViewModel.state.collectAsState()
     LaunchedEffect(
         state.screen,
         state.selected?.id,
@@ -4679,6 +4762,20 @@ private fun ForemanApp(
             }
         }
     }
+    CompositionLocalProvider(
+        LocalAndroidAppUpdate provides
+            AndroidAppUpdateActions(
+                state = androidAppUpdateState,
+                start = androidAppUpdateViewModel::start,
+                retry = androidAppUpdateViewModel::retry,
+                cancel = androidAppUpdateViewModel::cancel,
+                install = requestAndroidAppInstall,
+                requestPermission = requestUnknownAppsPermission,
+                dismissPermission = {
+                    androidAppUpdateViewModel.permissionResult(false) {}
+                },
+            ),
+    ) {
     ForemanTheme(themeId = state.themeId, darkTheme = darkTheme) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -4711,6 +4808,7 @@ private fun ForemanApp(
                 )
             }
         }
+    }
     }
 }
 
@@ -8305,6 +8403,7 @@ private fun AboutDialog(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val androidAppUpdate = LocalAndroidAppUpdate.current
     val versions =
         aboutVersionInformation(
             serverVersion = serverVersion,
@@ -8429,8 +8528,36 @@ private fun AboutDialog(
                                     Text(if (serverUpdateLoading) "Reviewing…" else "Review server update")
                                 }
                             }
+                            if (
+                                androidStatus.kind == UpdateStatusKind.UpdateAvailable &&
+                                androidStatus.release != null &&
+                                (
+                                    androidAppUpdate.state.phase in setOf(
+                                        ApkUpdatePhase.Idle,
+                                        ApkUpdatePhase.Completed,
+                                    ) ||
+                                        androidAppUpdate.state.targetVersion != androidStatus.release.version
+                                )
+                            ) {
+                                Button(
+                                    onClick = { androidAppUpdate.start(androidStatus.release) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Download Android app update")
+                                }
+                            }
                             Text(
-                                "Server updates install only signed official stable releases. Android APK installation remains a separate platform action.",
+                                when {
+                                    serverStatus.kind == UpdateStatusKind.UpdateAvailable &&
+                                        androidStatus.kind == UpdateStatusKind.UpdateAvailable ->
+                                        "Updates are available for both the connected server and this Android app. They are separate actions."
+                                    serverStatus.kind == UpdateStatusKind.UpdateAvailable ->
+                                        "The available update applies to the connected Foreman server."
+                                    androidStatus.kind == UpdateStatusKind.UpdateAvailable ->
+                                        "The available update applies to this Android app. It does not update the connected server."
+                                    else ->
+                                        "Server and Android app versions are checked separately."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -8452,6 +8579,94 @@ private fun AboutDialog(
                                     operation.recoveryCommand?.let {
                                         Text("From the server, run $it.", color = MaterialTheme.colorScheme.error)
                                     }
+                                }
+                            }
+                        }
+                    }
+                    if (androidAppUpdate.state.phase != ApkUpdatePhase.Idle) {
+                        item {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Android app update",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    AboutVersionRow(
+                                        "Installed",
+                                        "${androidAppUpdate.state.installedVersionName} " +
+                                            "(version code ${androidAppUpdate.state.installedVersionCode})",
+                                    )
+                                    androidAppUpdate.state.targetVersion?.let { AboutVersionRow("Available", it) }
+                                    Text(
+                                        androidAppUpdatePhaseLabel(androidAppUpdate.state.phase),
+                                        color = if (androidAppUpdate.state.phase == ApkUpdatePhase.Failed) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        },
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        OFFICIAL_APK_RELEASE_SOURCE_LABEL,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (
+                                        androidAppUpdate.state.phase in setOf(
+                                            ApkUpdatePhase.Discovering,
+                                            ApkUpdatePhase.Downloading,
+                                            ApkUpdatePhase.Verifying,
+                                        )
+                                    ) {
+                                        LinearProgressIndicator(
+                                            progress = { androidAppUpdate.state.progress / 100f },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                    androidAppUpdate.state.message?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    when (androidAppUpdate.state.phase) {
+                                        ApkUpdatePhase.Discovering,
+                                        ApkUpdatePhase.Downloading,
+                                        ApkUpdatePhase.Verifying,
+                                        -> FilledTonalButton(
+                                            onClick = androidAppUpdate.cancel,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) { Text("Cancel download") }
+
+                                        ApkUpdatePhase.Interrupted,
+                                        ApkUpdatePhase.Failed,
+                                        ApkUpdatePhase.Canceled,
+                                        -> if (androidAppUpdate.state.targetVersion != null) {
+                                            Button(
+                                                onClick = androidAppUpdate.retry,
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) { Text("Retry download") }
+                                        }
+
+                                        ApkUpdatePhase.Ready -> Button(
+                                            onClick = androidAppUpdate.install,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) { Text("Open Android installer") }
+
+                                        ApkUpdatePhase.AwaitingInstaller -> FilledTonalButton(
+                                            onClick = androidAppUpdate.install,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) { Text("Reopen Android installer") }
+
+                                        else -> Unit
+                                    }
+                                    Text(
+                                        "Foreman verifies the signed release and APK first. Android’s system installer always asks you to confirm installation.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
                         }
@@ -8528,7 +8743,43 @@ private fun AboutDialog(
             }
         }
     }
+    if (androidAppUpdate.state.phase == ApkUpdatePhase.ExplainingPermission) {
+        AlertDialog(
+            onDismissRequest = androidAppUpdate.dismissPermission,
+            icon = { Icon(Icons.Default.Security, contentDescription = null) },
+            title = { Text("Allow Foreman to open the installer?") },
+            text = {
+                Text(
+                    "Android blocks apps from opening package installers until you allow “Install unknown apps” for that app. " +
+                        "This permission only lets Foreman hand the already verified APK to Android. " +
+                        "Android will still show the package installer and require your confirmation.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = androidAppUpdate.dismissPermission) { Text("Not now") }
+            },
+            confirmButton = {
+                Button(onClick = androidAppUpdate.requestPermission) { Text("Continue to settings") }
+            },
+        )
+    }
 }
+
+private fun androidAppUpdatePhaseLabel(phase: ApkUpdatePhase): String =
+    when (phase) {
+        ApkUpdatePhase.Idle -> "No app update in progress"
+        ApkUpdatePhase.Discovering -> "Checking official release assets"
+        ApkUpdatePhase.Downloading -> "Downloading over HTTPS"
+        ApkUpdatePhase.Verifying -> "Verifying release and APK"
+        ApkUpdatePhase.Ready -> "Verified and ready to install"
+        ApkUpdatePhase.ExplainingPermission -> "Install permission explanation"
+        ApkUpdatePhase.AwaitingPermission -> "Waiting for Install unknown apps permission"
+        ApkUpdatePhase.AwaitingInstaller -> "Waiting for Android’s system installer"
+        ApkUpdatePhase.Interrupted -> "Download interrupted"
+        ApkUpdatePhase.Failed -> "Update rejected"
+        ApkUpdatePhase.Canceled -> "Download canceled"
+        ApkUpdatePhase.Completed -> "Update completed"
+    }
 
 @Composable
 private fun AboutUpdateStatus(status: ComponentUpdateStatus) {
