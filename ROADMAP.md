@@ -21,8 +21,6 @@ unless a correctness or security issue requires reprioritization.
 
 ## Next — updates and releases
 
-- [ ] [#57 Show when a newer Foreman release is
-  available](https://github.com/mkaltner/foreman/issues/57).
 - [ ] **Architecture gate:** [#58 Add a shared recoverable Foreman server update
   mechanism](https://github.com/mkaltner/foreman/issues/58).
 - [ ] **Architecture gate:** [#59 Support Android APK self-update outside the
@@ -64,6 +62,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Show when a supported Foreman release is available without installing it
+  ([PR #81](https://github.com/mkaltner/foreman/pull/81)).
 - [x] Replace accent selection with coherent themes
   ([PR #79](https://github.com/mkaltner/foreman/pull/79)).
 - [x] View and restore archived Codex sessions from filters
