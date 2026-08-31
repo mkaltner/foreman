@@ -1555,7 +1555,7 @@ describe("assistant code blocks", () => {
 
       fireEvent.click(copy);
       const copying = screen.getByRole("button", { name: "Copying" });
-      expect(copying).toBeDisabled();
+      expect(copying).toBeEnabled();
       expect(copying.textContent).toBe("");
       fireEvent.click(copy);
       expect(writeText).toHaveBeenCalledTimes(1);
@@ -1997,17 +1997,49 @@ describe("conversation activity detail", () => {
     onError: vi.fn(),
   };
 
-  it("defaults to a collapsed routine group while leaving failures visible", () => {
+  it("groups completed non-zero outcomes with a neutral count and precise expanded wording", () => {
     const { container } = render(<ConversationView {...props} />);
-    expect(screen.getByText("2 completed activity items")).toBeInTheDocument();
-    expect(container.querySelector("details.collapsed-activity")).not.toHaveAttribute("open");
-    expect(container.querySelector(".transcript > .tool-card p")).toHaveTextContent("run tests");
+    const group = container.querySelector("details.collapsed-activity");
+    expect(screen.getByText("Completed activity")).toBeInTheDocument();
+    expect(screen.getByText("2 commands · 1 tool · 1 non-zero")).toBeInTheDocument();
+    expect(group).not.toHaveAttribute("open");
+    expect(container.querySelector(".transcript > .tool-card")).toBeNull();
+    fireEvent.click(screen.getByText("Details"));
+    expect(group).toHaveAttribute("open");
+    expect(screen.getByText("Completed · Exited 1")).toBeInTheDocument();
   });
 
   it("renders every activity item directly in full mode", () => {
     const { container } = render(<ConversationView {...props} activityDetail="full" />);
     expect(container.querySelector("details.collapsed-activity")).toBeNull();
     expect(container.querySelectorAll(".transcript > .tool-card")).toHaveLength(3);
+  });
+
+  it("keeps structured attention states and a highlighted completed item directly reachable", () => {
+    const attentionSession: SessionSummary = {
+      ...session,
+      messages: [
+        { id: "nonzero", kind: "command", description: "probe", status: "completed", exitCode: 1 },
+        { id: "running", kind: "command", description: "live", status: "running" },
+        { id: "error", kind: "command", description: "could not execute", status: "executionError", exitCode: 127 },
+        { id: "failed", kind: "command", description: "unresolved", status: "failed", exitCode: 2 },
+        { id: "interrupted", kind: "tool", description: "stopped", status: "interrupted" },
+        { id: "blocked", kind: "tool", description: "permission", status: "denied" },
+        { id: "highlighted", kind: "tool", description: "search target", status: "completed" },
+      ],
+    };
+
+    const { container } = render(<ConversationView {...props} session={attentionSession} highlightItemId="highlighted" />);
+
+    expect(screen.getByText("1 command · 1 non-zero")).toBeInTheDocument();
+    expect(container.querySelectorAll(".transcript > .tool-card")).toHaveLength(6);
+    expect(container.querySelector("#message-running")).toHaveClass("activity-active");
+    expect(container.querySelectorAll(".transcript > .activity-attention")).toHaveLength(4);
+    expect(screen.getByText("Execution error · Exited 127")).toBeInTheDocument();
+    expect(screen.getByText("Failed · Exited 2")).toBeInTheDocument();
+    expect(screen.getByText("Interrupted")).toBeInTheDocument();
+    expect(screen.getByText("Denied")).toBeInTheDocument();
+    expect(container.querySelector("#message-highlighted")).toHaveClass("search-highlight");
   });
 });
 

@@ -164,6 +164,14 @@ internal data class ConversationBlock(
     val collapsedActivity: Boolean,
 )
 
+internal data class ActivitySummary(
+    val commands: Int,
+    val tools: Int,
+    val nonZero: Int,
+)
+
+internal enum class ActivityStatusTone { Active, Attention, Neutral }
+
 internal fun conversationBlocks(
     messages: List<ConversationItem>,
     activityDetail: ActivityDetail,
@@ -193,8 +201,51 @@ internal fun conversationBlocks(
 
 private fun ConversationItem.isRoutineCompletedActivity(): Boolean =
     kind in setOf("command", "tool") &&
-        status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done") &&
-        (exitCode == null || exitCode == 0)
+        status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done")
+
+internal fun activitySummary(items: List<ConversationItem>): ActivitySummary =
+    ActivitySummary(
+        commands = items.count { it.kind == "command" },
+        tools = items.count { it.kind == "tool" },
+        nonZero = items.count { it.exitCode != null && it.exitCode != 0 },
+    )
+
+internal fun formatActivitySummary(items: List<ConversationItem>): String {
+    val summary = activitySummary(items)
+    return buildList {
+        if (summary.commands > 0) {
+            add("${summary.commands} command${if (summary.commands == 1) "" else "s"}")
+        }
+        if (summary.tools > 0) {
+            add("${summary.tools} tool${if (summary.tools == 1) "" else "s"}")
+        }
+        if (summary.nonZero > 0) add("${summary.nonZero} non-zero")
+    }.joinToString(" · ")
+}
+
+internal fun formatActivityOutcome(item: ConversationItem): String {
+    val rawStatus = item.status.trim()
+    val status =
+        when {
+            rawStatus.isEmpty() -> "In progress"
+            rawStatus == "inProgress" -> "In progress"
+            rawStatus == "executionError" -> "Execution error"
+            rawStatus == "permissionBlocked" -> "Permission blocked"
+            else -> rawStatus.replaceFirstChar { it.uppercase() }
+        }
+    return item.exitCode?.let { "$status · Exited $it" } ?: status
+}
+
+internal fun activityStatusTone(item: ConversationItem): ActivityStatusTone {
+    val status = item.status.lowercase().filter(Char::isLetterOrDigit)
+    return when (status) {
+        "inprogress", "running", "started", "pending" -> ActivityStatusTone.Active
+        "blocked", "denied", "permissionblocked", "executionerror", "error", "failed",
+        "interrupted", "cancelled", "canceled",
+        -> ActivityStatusTone.Attention
+        else -> ActivityStatusTone.Neutral
+    }
+}
 
 @Serializable
 data class SessionSummary(

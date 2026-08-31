@@ -7,6 +7,12 @@ export interface ConversationBlock {
   collapsedActivity: boolean;
 }
 
+export interface ActivitySummary {
+  commands: number;
+  tools: number;
+  nonZero: number;
+}
+
 export function conversationBlocks(
   messages: ConversationItem[],
   activityDetail: ActivityDetail,
@@ -34,9 +40,49 @@ export function conversationBlocks(
   return result;
 }
 
+export function activitySummary(items: ConversationItem[]): ActivitySummary {
+  return {
+    commands: items.filter(({ kind }) => kind === "command").length,
+    tools: items.filter(({ kind }) => kind === "tool").length,
+    nonZero: items.filter(({ exitCode }) => exitCode != null && exitCode !== 0).length,
+  };
+}
+
+export function formatActivitySummary(items: ConversationItem[]): string {
+  const { commands, tools, nonZero } = activitySummary(items);
+  return [
+    commands ? `${commands} command${commands === 1 ? "" : "s"}` : "",
+    tools ? `${tools} tool${tools === 1 ? "" : "s"}` : "",
+    nonZero ? `${nonZero} non-zero` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+export function formatActivityOutcome(item: ConversationItem): string {
+  const rawStatus = item.status?.trim();
+  const status = rawStatus === "inProgress"
+    ? "In progress"
+    : rawStatus === "executionError"
+      ? "Execution error"
+      : rawStatus === "permissionBlocked"
+        ? "Permission blocked"
+        : rawStatus
+          ? `${rawStatus[0].toUpperCase()}${rawStatus.slice(1)}`
+          : "In progress";
+  return item.exitCode == null ? status : `${status} · Exited ${item.exitCode}`;
+}
+
+export function activityStatusTone(item: ConversationItem): "active" | "attention" | "neutral" {
+  const status = (item.status ?? "").toLowerCase().replaceAll(/[_\s-]/g, "");
+  if (["inprogress", "running", "started", "pending"].includes(status)) return "active";
+  if ([
+    "blocked", "denied", "permissionblocked", "executionerror", "error", "failed",
+    "interrupted", "cancelled", "canceled",
+  ].includes(status)) return "attention";
+  return "neutral";
+}
+
 function isRoutineCompletedActivity(item: ConversationItem): boolean {
   const completed = ["completed", "complete", "succeeded", "success", "done"];
   return (item.kind === "command" || item.kind === "tool") &&
-    completed.includes((item.status ?? "").toLowerCase()) &&
-    (item.exitCode == null || item.exitCode === 0);
+    completed.includes((item.status ?? "").toLowerCase());
 }
