@@ -43,6 +43,9 @@ export function AboutSection({
 }: AboutSectionProps) {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
+  const browserMatchesServer = connected
+    && serverVersion === WEB_CLIENT_VERSION
+    && serverReleaseBuild === WEB_RELEASE_BUILD;
   const serverStatus = componentUpdateStatus(
     serverVersion,
     serverReleaseBuild,
@@ -72,18 +75,24 @@ export function AboutSection({
       </div>
       <div className="about-component-list">
         <section aria-labelledby="server-version-heading">
-          <h3 id="server-version-heading">Foreman server and bundled web</h3>
+          <h3 id="server-version-heading">
+            {browserMatchesServer ? "Connected Foreman installation" : "Connected Foreman server"}
+          </h3>
           <p className="about-installed">
-            <span>{connected ? "Installed server" : "Last connected server"}</span>
+            <span>{connected ? "Server" : "Last connected server"}</span>
             <strong>{serverVersion ?? "Unavailable"}</strong>
           </p>
+          {browserMatchesServer && <p className="about-installed about-matching-build">
+            <span>Bundled web client</span>
+            <strong>{clientBuildDescription(WEB_CLIENT_VERSION, WEB_CLIENT_COMMIT, WEB_RELEASE_BUILD)} · matches server</strong>
+          </p>}
           <UpdateStatus status={serverStatus} />
         </section>
-        <section aria-labelledby="web-version-heading">
-          <h3 id="web-version-heading">This web client build</h3>
+        {!browserMatchesServer && <section aria-labelledby="web-version-heading">
+          <h3 id="web-version-heading">This browser’s Foreman web client</h3>
           <p className="about-installed"><span>Build</span><strong>{clientBuildDescription(WEB_CLIENT_VERSION, WEB_CLIENT_COMMIT, WEB_RELEASE_BUILD)}</strong></p>
           <UpdateStatus status={webStatus} />
-        </section>
+        </section>}
       </div>
       <div className="about-refresh">
         <p className="muted">

@@ -7,6 +7,7 @@ import {
   FOREMAN_REPOSITORY_URL,
   FOREMAN_THIRD_PARTY_NOTICES_URL,
   WEB_CLIENT_VERSION,
+  WEB_RELEASE_BUILD,
   clientBuildDescription,
 } from "./about";
 
@@ -45,8 +46,25 @@ describe("AboutSection", () => {
   it("clearly labels differing server and web client versions", () => {
     render(<AboutSection serverVersion="0.9.0" connected />);
 
-    expect(screen.getByText("Installed server").nextElementSibling).toHaveTextContent("0.9.0");
+    expect(screen.getByText("Server").nextElementSibling).toHaveTextContent("0.9.0");
     expect(screen.getByText("Build").nextElementSibling).toHaveTextContent(WEB_CLIENT_VERSION);
+    expect(screen.getByText("Connected Foreman server")).toBeInTheDocument();
+    expect(screen.getByText("This browser’s Foreman web client")).toBeInTheDocument();
+  });
+
+  it("presents matching server and bundled web versions as one installation", () => {
+    render(
+      <AboutSection
+        serverVersion={WEB_CLIENT_VERSION}
+        serverReleaseBuild={WEB_RELEASE_BUILD}
+        connected
+      />,
+    );
+
+    expect(screen.getByText("Connected Foreman installation")).toBeInTheDocument();
+    expect(screen.getByText("Bundled web client").nextElementSibling).toHaveTextContent("matches server");
+    expect(screen.queryByText("This browser’s Foreman web client")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Development or source-checkout build")).toHaveLength(1);
   });
 
   it("distinguishes development builds from official release builds", () => {
@@ -92,7 +110,7 @@ describe("AboutSection", () => {
 
     expect(screen.getByText(/Cached release information from/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Check again" })).toBeDisabled();
-    expect(screen.getByText("Foreman server and bundled web")).toBeInTheDocument();
+    expect(screen.getByText("Connected Foreman server")).toBeInTheDocument();
   });
 
   it.each([
