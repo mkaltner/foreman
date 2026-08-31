@@ -33,7 +33,7 @@ import tempfile
 from server_update import safe_extract
 
 with tempfile.TemporaryDirectory() as destination:
-    safe_extract(Path(sys.argv[1]), Path(destination))
+    safe_extract(Path(sys.argv[1]), Path(destination) / "payload")
 PY
 sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 [[ -n "$sdk_root" ]] || fail "Android SDK root is unavailable"

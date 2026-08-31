@@ -95,7 +95,7 @@ jobs:
           from server_update import safe_extract
 
           with tempfile.TemporaryDirectory() as destination:
-              safe_extract(Path(sys.argv[1]), Path(destination))
+              safe_extract(Path(sys.argv[1]), Path(destination) / "payload")
           PY
           if grep -Eq 'linux/claude_bridge/(bridge\.test|test_fake_sdk)\.mjs' <<<"$archive_listing"; then
             echo "Linux archive contains Claude bridge test fixtures" >&2
