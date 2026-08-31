@@ -41,6 +41,7 @@ import {
   type ConnectionState,
 } from "./client";
 import { clipboardImageFiles, processImages, type ProcessedImage } from "./images";
+import { CopyFeedbackButton } from "./CopyFeedbackButton";
 import {
   browserNotificationState,
   clearTurnNotification,
@@ -3328,71 +3329,13 @@ function WorkspaceFileDialog({ file, onOpenWorkspaceFile, onClose }: { file: Wor
 }
 
 function CopyableCodeBlock({ children }: { children?: ReactNode }) {
-  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-  const copyInFlight = useRef(false);
-  const mounted = useRef(true);
-  const resetTimer = useRef<number | null>(null);
   const code = reactNodeText(children).replace(/\n$/, "");
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-    };
-  }, []);
-
-  const copy = async () => {
-    if (copyInFlight.current) return;
-    copyInFlight.current = true;
-    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-    setCopyState("copying");
-    let result: "copied" | "failed";
-    try {
-      await copyText(code);
-      result = "copied";
-    } catch {
-      result = "failed";
-    }
-    copyInFlight.current = false;
-    if (!mounted.current) return;
-    setCopyState(result);
-    resetTimer.current = window.setTimeout(() => setCopyState("idle"), 2_000);
-  };
-
-  const label = copyState === "copying" ? "Copying code" : copyState === "copied" ? "Code copied" : copyState === "failed" ? "Copy failed. Try again" : "Copy code";
   return (
     <div className="code-block">
-      <button type="button" className={`copy-code ${copyState}`} aria-label={label} title={label} disabled={copyState === "copying"} onClick={() => void copy()}>
-        <span className="copy-icon" aria-hidden="true" />
-      </button>
+      <CopyFeedbackButton text={code} variant="icon" className="copy-code" />
       <pre>{children}</pre>
     </div>
   );
-}
-
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Local Foreman hosts may not have a secure context; fall back to a selected textarea.
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    if (!document.execCommand?.("copy")) throw new Error("Clipboard unavailable");
-  } finally {
-    textarea.remove();
-  }
 }
 
 function reactNodeText(node: ReactNode): string {

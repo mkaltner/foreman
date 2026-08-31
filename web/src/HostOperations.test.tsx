@@ -26,6 +26,7 @@ describe("sanitized host operations", () => {
     await waitFor(() => expect(screen.getByText("request.failed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticsText(events)));
+    expect(screen.getByRole("button", { name: "Copied" })).toHaveTextContent("✓");
     expect(screen.getByText("Remote restart is disabled on this host.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restart Foreman" })).toBeDisabled();
   });
