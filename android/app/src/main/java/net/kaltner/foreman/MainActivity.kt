@@ -1056,6 +1056,14 @@ internal fun UiState.withForgottenConnection(): UiState =
         restartPhase = RestartPhase.Idle,
     )
 
+internal fun releaseCheckStillApplies(
+    initiatingHostId: String,
+    activeHostId: String?,
+    requestGeneration: Long,
+    currentGeneration: Long,
+): Boolean =
+    initiatingHostId == activeHostId && requestGeneration == currentGeneration
+
 internal class ForemanViewModel(application: Application) : AndroidViewModel(application) {
     private val hosts = HostStore(application)
     private val overviewStore = HostOverviewStore(application)
@@ -1137,6 +1145,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var restorationSessionId: String? = initiallyRememberedSession?.sessionId
     private var nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
     private var sessionOpenGeneration = 0L
+    private var releaseCheckGeneration = 0L
     private var providerCatalogRevision = 0L
     private var sessionSyncGeneration = 0L
     private var searchJob: Job? = null
@@ -2427,6 +2436,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private fun stopActiveHost() {
+        releaseCheckGeneration += 1
         reconnectJob?.cancel()
         reconnectJob = null
         restartReconnectJob?.cancel()
@@ -2878,12 +2888,17 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     fun checkForUpdates() {
         val current = state.value
         if (!current.connected || current.releaseCheckLoading) return
+        val hostId = current.activeHostId ?: return
+        val generation = ++releaseCheckGeneration
         viewModelScope.launch {
             state.update { it.copy(releaseCheckLoading = true) }
             runCatching {
                 decodeReleaseUpdates(json, client.request("release.check").payload)
                     ?: error("Foreman returned invalid release information")
             }.onSuccess { snapshot ->
+                if (!releaseCheckStillApplies(hostId, state.value.activeHostId, generation, releaseCheckGeneration)) {
+                    return@onSuccess
+                }
                 val latest = state.value
                 val info = CachedReleaseUpdateInfo(
                     latest.foremanVersion,
@@ -2893,7 +2908,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 preferences.setReleaseUpdateInfo(info)
                 state.update { it.copy(releaseUpdates = snapshot, releaseCheckLoading = false) }
             }.onFailure {
-                state.update { it.copy(releaseCheckLoading = false) }
+                if (releaseCheckStillApplies(hostId, state.value.activeHostId, generation, releaseCheckGeneration)) {
+                    state.update { it.copy(releaseCheckLoading = false) }
+                }
             }
         }
     }

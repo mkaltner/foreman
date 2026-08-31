@@ -116,4 +116,11 @@ class ReleaseUpdatesTest {
         assertEquals("1.1.0", info.snapshot.components.server.supportedRelease?.version)
         assertEquals("1.2.0", info.snapshot.components.android.supportedRelease?.version)
     }
+
+    @Test
+    fun releaseCheckResultIsDiscardedAfterHostSwitch() {
+        assertTrue(releaseCheckStillApplies("host-a", "host-a", 4L, 4L))
+        assertEquals(false, releaseCheckStillApplies("host-a", "host-b", 4L, 4L))
+        assertEquals(false, releaseCheckStillApplies("host-a", "host-a", 4L, 5L))
+    }
 }
