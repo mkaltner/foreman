@@ -1503,15 +1503,15 @@ describe("assistant code blocks", () => {
     try {
       render(<Markdown text={"Run `npm ci`, then:\n\n```sh\nnpm ci\nnpm test\n```"} />);
 
-      const copy = screen.getByRole("button", { name: "Copy code" });
-      expect(screen.getAllByRole("button", { name: /Copy code/ })).toHaveLength(1);
+      const copy = screen.getByRole("button", { name: "Copy" });
+      expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
       expect(copy.textContent).toBe("");
       fireEvent.click(copy);
 
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm ci\nnpm test"));
-      const copied = await screen.findByRole("button", { name: "Code copied" });
+      const copied = await screen.findByRole("button", { name: "Copied" });
       expect(copied).toHaveClass("copied");
-      expect(copied.textContent).toBe("");
+      expect(copied).toHaveTextContent("✓");
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");
@@ -1527,10 +1527,10 @@ describe("assistant code blocks", () => {
 
     try {
       render(<Markdown text={"```\nforeman status\n```"} />);
-      fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
 
       await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"));
-      expect(await screen.findByRole("button", { name: "Code copied" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");
@@ -1551,17 +1551,17 @@ describe("assistant code blocks", () => {
 
     try {
       render(<Markdown text={"```\nnpm test\n```"} />);
-      const copy = screen.getByRole("button", { name: "Copy code" });
+      const copy = screen.getByRole("button", { name: "Copy" });
 
       fireEvent.click(copy);
-      const copying = screen.getByRole("button", { name: "Copying code" });
+      const copying = screen.getByRole("button", { name: "Copying" });
       expect(copying).toBeDisabled();
       expect(copying.textContent).toBe("");
       fireEvent.click(copy);
       expect(writeText).toHaveBeenCalledTimes(1);
 
       await act(async () => finishCopy());
-      expect(screen.getByRole("button", { name: "Code copied" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled();
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");

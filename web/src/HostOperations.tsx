@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ConnectionState } from "./client";
 import type { DiagnosticEvent } from "./protocol";
+import { CopyFeedbackButton } from "./CopyFeedbackButton";
 
 export type RestartPhase =
   | "idle"
@@ -58,7 +59,6 @@ export function HostOperations({
   const [events, setEvents] = useState<DiagnosticEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
   const [restartPhase, setRestartPhase] = useState<RestartPhase>("idle");
   const [restartDeadline, setRestartDeadline] = useState<number | null>(null);
 
@@ -108,16 +108,7 @@ export function HostOperations({
     <summary>Diagnostics <span>{events.length ? `${events.length} entries` : "sanitized"}</span></summary>
     <div className="diagnostic-actions">
       <button onClick={() => void refresh()} disabled={disabled || loading}>{loading ? "Refreshing…" : "Refresh"}</button>
-      <button onClick={() => {
-        if (!navigator.clipboard) {
-          setError("Clipboard access is unavailable");
-          return;
-        }
-        void navigator.clipboard.writeText(diagnosticsText(events)).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
-        }).catch(() => setError("Diagnostics could not be copied"));
-      }} disabled={!events.length}>{copied ? "Copied" : "Copy"}</button>
+      <CopyFeedbackButton text={diagnosticsText(events)} disabled={!events.length} className="diagnostic-copy" />
       <button className="restart-service" onClick={() => void restart()} disabled={disabled || !remoteRestartEnabled || restartBlocked || restartPhase === "scheduling" || restartPhase === "scheduled" || restartPhase === "reconnecting"}>Restart Foreman</button>
     </div>
     {!remoteRestartEnabled && <p className="diagnostic-note">Remote restart is disabled on this host.</p>}

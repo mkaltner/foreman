@@ -4965,10 +4965,12 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FilledTonalButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(ClipboardManager::class.java)
-                            clipboard?.setPrimaryClip(
+                    CopyFeedbackButton(
+                        onCopy = {
+                            val clipboard =
+                                context.getSystemService(ClipboardManager::class.java)
+                                    ?: error("Clipboard access is unavailable")
+                            clipboard.setPrimaryClip(
                                 ClipData.newPlainText(
                                     "Foreman diagnostics",
                                     diagnosticsText(state.diagnostics),
@@ -4977,7 +4979,7 @@ private fun DiagnosticsScreen(state: UiState, viewModel: ForemanViewModel) {
                         },
                         enabled = state.diagnostics.isNotEmpty(),
                         modifier = Modifier.weight(1f),
-                    ) { Text("Copy") }
+                    )
                     FilledTonalButton(
                         onClick = { confirmRestart = true },
                         enabled =
