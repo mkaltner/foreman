@@ -20,6 +20,8 @@ def release_assets():
         {"name": f"foreman-{TAG}.apk", "size": 10},
         {"name": f"foreman-linux-{TAG}.tar.gz", "size": 20},
         {"name": "SHA256SUMS", "size": 30},
+        {"name": "SHA256SUMS.sig", "size": 31},
+        {"name": "foreman-release-cert.pem", "size": 32},
     ]
 
 
@@ -56,6 +58,8 @@ class FakeGitHub:
                 "\n".join(checksums) + "\n",
                 encoding="utf-8",
             )
+            destination.joinpath("SHA256SUMS.sig").write_bytes(b"detached signature")
+            destination.joinpath("foreman-release-cert.pem").write_text("public certificate\n", encoding="utf-8")
             if self.tamper:
                 destination.joinpath(f"foreman-{TAG}.apk").write_bytes(b"tampered")
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
@@ -63,6 +67,16 @@ class FakeGitHub:
 
 
 class PublishedReleaseGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.signature = mock.patch(
+            "scripts.guard_published_release.verify_release_signature",
+            return_value=[],
+        )
+        self.signature.start()
+
+    def tearDown(self):
+        self.signature.stop()
+
     def test_complete_release_remains_published(self):
         github = FakeGitHub()
         self.assertEqual(guard_release(REPOSITORY, RELEASE_ID, TAG, github), [])

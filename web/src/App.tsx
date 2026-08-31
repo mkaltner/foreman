@@ -18,6 +18,12 @@ import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { InputCard, inputAttentionLabel } from "./InputCard";
 import { AboutSection } from "./about";
 import { normalizeReleaseUpdates } from "./update-status";
+import {
+  loadServerUpdateOperationId,
+  normalizeServerUpdateCheck,
+  normalizeServerUpdateOperation,
+  saveServerUpdateOperationId,
+} from "./server-update";
 import { Dashboard } from "./Dashboard";
 import { conversationBlocks, type ActivityDetail } from "./activity-detail";
 import { messageDraft, updateMessageDraft } from "./drafts";
@@ -88,6 +94,8 @@ import {
   type PairedClient,
   type RepositoryInfo,
   type ServiceStatus,
+  type ServerUpdateCheck,
+  type ServerUpdateOperation,
   type DiagnosticEvent,
   type SessionEvent,
   type SessionEventPayload,
@@ -269,6 +277,7 @@ function App() {
   const [releaseUpdateInfo, setReleaseUpdateInfo] = useState<CachedReleaseUpdateInfo | null>(() =>
     loadReleaseUpdateInfo(initialHostId)
   );
+  const [serverUpdateOperation, setServerUpdateOperation] = useState<ServerUpdateOperation | null>(null);
   const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -652,6 +661,12 @@ function App() {
     if (message.type === "service.event") {
       const status = message.payload as unknown as ServiceStatus;
       setServiceStatus({ ...status, receivedAt: Date.now() });
+      const operation = normalizeServerUpdateOperation(status.serverUpdateOperation);
+      if (operation) {
+        setServerUpdateOperation(operation);
+        const hostId = activeHostIdRef.current;
+        if (hostId) saveServerUpdateOperationId(hostId, operation.id);
+      }
       const snapshot = normalizeReleaseUpdates(status.releaseUpdates);
       const hostId = activeHostIdRef.current;
       if (snapshot && hostId) {
@@ -666,6 +681,15 @@ function App() {
       void clientRef.current?.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list")
         .then((result) => setPairedClients(result.clients))
         .catch(() => undefined);
+      return;
+    }
+    if (message.type === "update.event") {
+      const operation = normalizeServerUpdateOperation((message.payload as Record<string, unknown>).operation);
+      if (operation) {
+        setServerUpdateOperation(operation);
+        const hostId = activeHostIdRef.current;
+        if (hostId) saveServerUpdateOperationId(hostId, operation.id);
+      }
       return;
     }
     if (["approval.requested", "approval.updated", "approval.resolved"].includes(message.type)) {
@@ -1285,6 +1309,22 @@ function App() {
       })));
       setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
+      let restoredOperation = normalizeServerUpdateOperation(statusResult.serverUpdateOperation);
+      const rememberedOperationId = loadServerUpdateOperationId(hostId);
+      if (rememberedOperationId) {
+        const status = await client.request<Record<string, unknown>>("update.status", { operationId: rememberedOperationId }).catch(() => null);
+        restoredOperation = normalizeServerUpdateOperation(status?.operation) ?? restoredOperation;
+      }
+      if (
+        !providerCatalogResponseIsCurrent(
+          hostId,
+          activeHostIdRef.current,
+          providerCatalogRevision,
+          providerCatalogRevisionRef.current,
+        ) || refreshGeneration !== refreshGenerationRef.current
+      ) return;
+      setServerUpdateOperation(restoredOperation);
+      if (restoredOperation) saveServerUpdateOperationId(hostId, restoredOperation.id);
       const validatedReleaseUpdates = normalizeReleaseUpdates(statusResult.releaseUpdates);
       if (validatedReleaseUpdates) {
         const info: CachedReleaseUpdateInfo = {
@@ -1561,6 +1601,7 @@ function App() {
       setHostNotificationOverride(loadHostNotificationOverride(hostId) !== null);
       setOrganization(nextOrganization);
       setReleaseUpdateInfo(loadReleaseUpdateInfo(hostId));
+      setServerUpdateOperation(null);
       setCollapsedRepositoriesByHost((previous) => {
         const collapsed = new Map(previous);
         collapsed.set(hostId, loadCollapsedRepositories(hostId));
@@ -1702,11 +1743,13 @@ function App() {
         setHostNotificationOverride(loadHostNotificationOverride(nextId) !== null);
         setOrganization(loadSessionOrganization(nextId));
         setReleaseUpdateInfo(loadReleaseUpdateInfo(nextId));
+        setServerUpdateOperation(null);
         const filters = parseSessionFilters(loadSessionSearch(nextId));
         searchFiltersRef.current = filters;
         setSearchFilters(filters);
       } else {
         setReleaseUpdateInfo(null);
+        setServerUpdateOperation(null);
         setAppearance(loadAppearance(null));
       }
     }
@@ -1735,6 +1778,7 @@ function App() {
       clearHostProjections();
       persistRegistry(next);
       setReleaseUpdateInfo(null);
+      setServerUpdateOperation(null);
       setAppearance(loadAppearance(saved.id));
       const savedNotifications = loadNotificationPreferences(saved.id);
       setNotificationPreferences(savedNotifications);
@@ -1966,6 +2010,7 @@ function App() {
           serverVersion={serviceStatus?.foremanVersion ?? releaseUpdateInfo?.serverVersion ?? null}
           serverReleaseBuild={serviceStatus?.foremanReleaseBuild ?? releaseUpdateInfo?.serverReleaseBuild ?? null}
           releaseUpdates={normalizeReleaseUpdates(serviceStatus?.releaseUpdates) ?? releaseUpdateInfo?.snapshot ?? null}
+          updateOperation={serverUpdateOperation}
           connected={connected}
           providers={providers}
           onAppearance={updateAppearance}
@@ -2007,6 +2052,29 @@ function App() {
             saveReleaseUpdateInfo(activeHost.id, info);
             setReleaseUpdateInfo(info);
           }}
+          onReviewUpdate={hello?.capabilities.serverUpdate ? async () => {
+            const requestHostId = activeHost.id;
+            const check = normalizeServerUpdateCheck(await client.request<Record<string, unknown>>("update.check"));
+            if (activeHostIdRef.current !== requestHostId) throw new Error("The active host changed; review the update again.");
+            if (!check) throw new Error("Foreman returned invalid server update information");
+            if (check.operation) {
+              setServerUpdateOperation(check.operation);
+              saveServerUpdateOperationId(requestHostId, check.operation.id);
+            }
+            return check;
+          } : undefined}
+          onStartUpdate={hello?.capabilities.serverUpdate ? async () => {
+            const requestHostId = activeHost.id;
+            const response = await client.request<Record<string, unknown>>("update.start", {
+              requestId: `web_${crypto.randomUUID().replaceAll("-", "")}`,
+            });
+            if (activeHostIdRef.current !== requestHostId) throw new Error("The active host changed; read update status on the initiating host.");
+            const operation = normalizeServerUpdateOperation(response.operation);
+            if (!operation) throw new Error("Foreman returned an invalid update operation");
+            saveServerUpdateOperationId(requestHostId, operation.id);
+            setServerUpdateOperation(operation);
+            return operation;
+          } : undefined}
           onAdd={() => setHostSetupOpen(true)}
           onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
           onRename={(hostId, displayName) => mutateHost(hostId, { displayName })}
@@ -3446,6 +3514,7 @@ function SettingsView({
   serverVersion,
   serverReleaseBuild,
   releaseUpdates,
+  updateOperation,
   connected,
   providers,
   notificationPreferences,
@@ -3459,6 +3528,8 @@ function SettingsView({
   onNotificationTest,
   onProviderEnabled,
   onCheckAgain,
+  onReviewUpdate,
+  onStartUpdate,
   onAdd,
   onSelect,
   onRename,
@@ -3471,6 +3542,7 @@ function SettingsView({
   serverVersion: string | null;
   serverReleaseBuild: boolean | null;
   releaseUpdates: import("./protocol").ReleaseUpdateSnapshot | null;
+  updateOperation: ServerUpdateOperation | null;
   connected: boolean;
   providers: ProviderInfo[];
   notificationPreferences: NotificationPreferences;
@@ -3484,6 +3556,8 @@ function SettingsView({
   onNotificationTest: () => Promise<NotificationDeliveryMethod>;
   onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
   onCheckAgain: () => Promise<void>;
+  onReviewUpdate?: () => Promise<ServerUpdateCheck>;
+  onStartUpdate?: () => Promise<ServerUpdateOperation>;
   onAdd: () => void;
   onSelect: (hostId: string) => void;
   onRename: (hostId: string, displayName: string) => void;
@@ -3526,11 +3600,15 @@ function SettingsView({
     </section>
     <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? "Available" : "Unavailable"}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Foreman-managed runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
     <AboutSection
+      key={host.id}
       serverVersion={serverVersion}
       serverReleaseBuild={serverReleaseBuild}
       connected={connected}
       releaseUpdates={releaseUpdates}
       onCheckAgain={onCheckAgain}
+      updateOperation={updateOperation}
+      onReviewUpdate={onReviewUpdate}
+      onStartUpdate={onStartUpdate}
     />
   </main>;
 }

@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 try:
-    from .verify_release_assets import verify_directory, verify_manifest
+    from .verify_release_assets import verify_directory, verify_manifest, verify_release_signature
 except ImportError:  # Executed directly from scripts/ in GitHub Actions.
-    from verify_release_assets import verify_directory, verify_manifest
+    from verify_release_assets import verify_directory, verify_manifest, verify_release_signature
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -77,6 +77,17 @@ def guard_release(
                     ],
                 )
                 errors.extend(verify_directory(directory, tag))
+                metadata = {}
+                for line in (Path(__file__).parents[1] / "release.properties").read_text(encoding="utf-8").splitlines():
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        metadata[key] = value
+                errors.extend(
+                    verify_release_signature(
+                        directory,
+                        metadata.get("androidSigningCertificateSha256", ""),
+                    )
+                )
     except (json.JSONDecodeError, OSError, subprocess.CalledProcessError, ValueError) as error:
         errors.append(f"release asset validation failed: {error}")
 

@@ -41,7 +41,7 @@ Implemented types:
 - `repository.list`;
 - `model.list`;
 - `access.list`;
-- `service.status`, `release.check`;
+- `service.status`, `release.check`, `update.check`, `update.start`, `update.status`;
 - `usage.status`;
 - `diagnostics.list`, `service.restart`;
 - `client.list`, `client.revoke`;
@@ -88,6 +88,26 @@ projection as stale; clients with no cache receive an honest unavailable state.
 The operation is additive within protocol v1 and does not block other requests.
 `service.status.foremanReleaseBuild` lets clients distinguish an installed
 source/development checkout from an official release build.
+
+`update.check` returns the installed version, selected strictly newer compatible
+server release, fixed source identity, release-notes link, safe active-work
+blocker categories/counts, and the latest durable operation. `update.status`
+returns the latest operation or the operation named by a bounded opaque ID.
+Both follow the existing authenticated read convention.
+
+`update.start` is restricted to authenticated `full` clients and the private
+local control socket. Its payload is empty except for an optional bounded
+idempotency key; clients cannot choose an artifact or execution input. It
+returns a generated durable operation and publishes bounded `update.event`
+progress. Immediate structured failures include `updateBlocked`,
+`updateConcurrent`, `alreadyCurrent`, `developmentBuild`, `updateUnavailable`,
+and `insufficientAccess`. Full paired-device authorization is checked again
+after staging; revocation ends the operation with `authorizationRevoked`
+without activating. Asynchronous verification, activation, and rollback
+failures use fixed `operation.resultCode` values while the terminal phase
+distinguishes `failed`, `rolledBack`, and `recoveryRequired`. Neither channel
+contains paths, logs, session content, or credentials. The complete state and
+security contract is in `docs/server-updates.md`.
 
 `provider.list` reports the adapters actually available on the authenticated
 host. Each bounded entry contains an ID, display name, separate `enabled` and

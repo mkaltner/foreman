@@ -133,10 +133,30 @@ The CLI controls one unified service:
 | `foreman start` | Start the Android TCP and browser HTTP/WebSocket listeners. |
 | `foreman stop` | Stop both listeners. |
 | `foreman restart` | Restart both listeners after an update or configuration change. |
+| `foreman update --check` | Check the official stable channel without changing the installation. |
+| `foreman update` | Review and start a signed, session-safe, recoverable server update. |
+| `foreman update --status` | Show the latest durable update operation after reconnect or restart. |
+| `foreman update --recover` | Retry restoration of the latest retained backup. |
 | `foreman status` | Show the systemd user-service status. |
 | `foreman logs` | Follow the service journal. |
 | `foreman web` | Print the browser URL; it does not start a second web process. |
 | `foreman pair` | Create a single-use pairing code valid for ten minutes. |
+
+`foreman update --check` exits `0` when current, `10` when an update is
+available, and `20` when active work blocks activation. `foreman update` shows
+the installed/target versions, official source, release-notes link, blockers,
+restart scope, and rollback expectation before prompting. Use `--yes` only for
+local automation that already supplied equivalent confirmation. Other update
+exit codes are `21` verification failure, `22` concurrent update, `23`
+activation failure, `24` update failure with successful rollback, `25` recovery
+required, and `69` service unavailable. Progress and results remain available
+through `foreman update --status` after the expected disconnect.
+
+Automatic updates require OpenSSL and the user systemd manager. They never run
+the downloaded `install.sh`; the installed external helper owns bounded
+activation, restart, health checking, and rollback. See
+[`server-updates.md`](server-updates.md) for the trust model and manual recovery
+procedure.
 
 To install specifically for browser use, no additional build or package is
 needed. Run `./install.sh`, verify `foreman status`, open the URL from

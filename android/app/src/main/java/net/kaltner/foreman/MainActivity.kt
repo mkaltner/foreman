@@ -146,6 +146,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.isSystemInDarkTheme
 import java.text.DateFormat
 import java.util.Date
+import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -863,6 +864,10 @@ internal data class UiState(
     val foremanReleaseBuild: Boolean? = null,
     val releaseUpdates: ReleaseUpdateSnapshot? = null,
     val releaseCheckLoading: Boolean = false,
+    val serverUpdateCheck: ServerUpdateCheck? = null,
+    val serverUpdateOperation: ServerUpdateOperation? = null,
+    val serverUpdateLoading: Boolean = false,
+    val serverUpdateError: String? = null,
     val codexVersion: String? = null,
     val runtimeMode: String? = null,
     val runtimeConnected: Boolean = false,
@@ -977,6 +982,7 @@ private data class SyncSnapshot(
     val foremanVersion: String?,
     val foremanReleaseBuild: Boolean?,
     val releaseUpdates: ReleaseUpdateSnapshot?,
+    val serverUpdateOperation: ServerUpdateOperation?,
     val codexVersion: String?,
     val runtimeMode: String?,
     val runtimeConnected: Boolean,
@@ -1047,6 +1053,10 @@ internal fun UiState.withForgottenConnection(): UiState =
         foremanReleaseBuild = null,
         releaseUpdates = null,
         releaseCheckLoading = false,
+        serverUpdateCheck = null,
+        serverUpdateOperation = null,
+        serverUpdateLoading = false,
+        serverUpdateError = null,
         codexVersion = null,
         runtimeMode = null,
         runtimeConnected = false,
@@ -1162,6 +1172,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var restartReconnectJob: Job? = null
     private var restartTimeoutJob: Job? = null
     private var restartRequested = false
+    private var updateRequested = false
     private var diagnosticsReturnScreen = Screen.Sessions
     private val sessionDiscoveryLock = Any()
     private val sessionDiscoveryQueue = SessionDiscoveryQueue()
@@ -1171,6 +1182,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var nonAuthoritativeSessionProviders = setOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE)
     private var sessionOpenGeneration = 0L
     private var releaseCheckGeneration = 0L
+    private var serverUpdateGeneration = 0L
     private var providerCatalogRevision = 0L
     private var sessionSyncGeneration = 0L
     private var searchJob: Job? = null
@@ -1226,7 +1238,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     overviewSnapshots = snapshots,
                 )
             }
-            if (restartRequested) launchRestartReconnect()
+            if (restartRequested || updateRequested) launchRestartReconnect()
             updateActiveOverview()
         },
     )
@@ -2291,7 +2303,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     private fun launchRestartReconnect() {
-        if (!restartRequested || restartReconnectJob?.isActive == true) return
+        if ((!restartRequested && !updateRequested) || restartReconnectJob?.isActive == true) return
         reconnectJob?.cancel()
         reconnectJob = null
         state.update {
@@ -2303,9 +2315,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
         restartReconnectJob =
             viewModelScope.launch {
-                val deadline = System.currentTimeMillis() + 45_000
+                val deadline = System.currentTimeMillis() + if (updateRequested) 150_000 else 45_000
                 val saved = state.value.activeHostId?.let(hosts::load)
-                while (saved != null && restartRequested && System.currentTimeMillis() < deadline) {
+                while (saved != null && (restartRequested || updateRequested) && System.currentTimeMillis() < deadline) {
                     val connected =
                         runCatching {
                             withTimeout(5_000) {
@@ -2336,12 +2348,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         restartRequested = false
                         restartTimeoutJob?.cancel()
                         state.update { it.copy(restartPhase = RestartPhase.Succeeded) }
+                        if (updateRequested) refreshServerUpdateStatus(waitForTerminal = true)
                         refreshDiagnostics()
                         return@launch
                     }
                     delay(750)
                 }
                 restartRequested = false
+                updateRequested = false
                 state.update { it.copy(restartPhase = RestartPhase.TimedOut, connectionStatus = "disconnected") }
             }
     }
@@ -2462,6 +2476,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     private fun stopActiveHost() {
         releaseCheckGeneration += 1
+        serverUpdateGeneration += 1
         reconnectJob?.cancel()
         reconnectJob = null
         restartReconnectJob?.cancel()
@@ -2469,6 +2484,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         restartTimeoutJob?.cancel()
         restartTimeoutJob = null
         restartRequested = false
+        updateRequested = false
         searchJob?.cancel()
         searchJob = null
         archivedDiscoveryJob?.cancel()
@@ -2568,6 +2584,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 foremanReleaseBuild = restoredReleaseUpdateInfo?.serverReleaseBuild,
                 releaseUpdates = restoredReleaseUpdateInfo?.snapshot,
                 releaseCheckLoading = false,
+                serverUpdateCheck = null,
+                serverUpdateOperation = null,
+                serverUpdateLoading = false,
+                serverUpdateError = null,
                 codexVersion = null,
                 runtimeMode = null,
                 runtimeConnected = false,
@@ -2940,6 +2960,138 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun reviewServerUpdate() {
+        val current = state.value
+        if (!current.connected || "serverUpdate" !in current.capabilities || current.serverUpdateLoading) return
+        val hostId = current.activeHostId ?: return
+        val generation = ++serverUpdateGeneration
+        viewModelScope.launch {
+            state.update { it.copy(serverUpdateLoading = true, serverUpdateError = null) }
+            runCatching {
+                decodeServerUpdateCheck(json, client.request("update.check").payload)
+                    ?: error("Foreman returned invalid server update information")
+            }.onSuccess { check ->
+                if (!releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    return@onSuccess
+                }
+                check.operation?.let {
+                    preferences.setServerUpdateOperationId(it.id)
+                }
+                state.update {
+                    it.copy(
+                        serverUpdateCheck = check,
+                        serverUpdateOperation = check.operation ?: it.serverUpdateOperation,
+                        serverUpdateLoading = false,
+                    )
+                }
+            }.onFailure { error ->
+                if (releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    state.update {
+                        it.copy(
+                            serverUpdateLoading = false,
+                            serverUpdateError = error.message ?: "The update could not be reviewed.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissServerUpdateReview() {
+        state.update { it.copy(serverUpdateCheck = null, serverUpdateError = null) }
+    }
+
+    fun startServerUpdate() {
+        val current = state.value
+        val check = current.serverUpdateCheck ?: return
+        if (
+            !current.connected || "serverUpdate" !in current.capabilities || current.serverUpdateLoading ||
+            !check.updateAvailable || check.blockers.isNotEmpty()
+        ) return
+        val hostId = current.activeHostId ?: return
+        val generation = ++serverUpdateGeneration
+        viewModelScope.launch {
+            state.update { it.copy(serverUpdateLoading = true, serverUpdateError = null) }
+            runCatching {
+                val response = client.request(
+                    "update.start",
+                    buildJsonObject {
+                        put("requestId", "android_${UUID.randomUUID().toString().replace("-", "")}")
+                    },
+                )
+                decodeServerUpdateOperation(json, response.payload["operation"])
+                    ?: error("Foreman returned an invalid update operation")
+            }.onSuccess { operation ->
+                if (!releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    return@onSuccess
+                }
+                preferences.setServerUpdateOperationId(operation.id)
+                updateRequested = true
+                state.update {
+                    it.copy(
+                        serverUpdateOperation = operation,
+                        serverUpdateCheck = null,
+                        serverUpdateLoading = false,
+                    )
+                }
+                refreshServerUpdateStatus(waitForTerminal = true, generation = generation)
+            }.onFailure { error ->
+                if (releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    updateRequested = false
+                    state.update {
+                        it.copy(
+                            serverUpdateLoading = false,
+                            serverUpdateError = error.message ?: "The update could not be started.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshServerUpdateStatus(
+        waitForTerminal: Boolean = false,
+        generation: Long = serverUpdateGeneration,
+    ) {
+        val hostId = state.value.activeHostId ?: return
+        val operationId = preferences.loadServerUpdateOperationId() ?: return
+        viewModelScope.launch {
+            val attempts = if (waitForTerminal) 80 else 1
+            repeat(attempts) {
+                if (!releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    return@launch
+                }
+                val operation = runCatching {
+                    decodeServerUpdateOperation(
+                        json,
+                        client.request(
+                            "update.status",
+                            buildJsonObject { put("operationId", operationId) },
+                        ).payload["operation"],
+                    )
+                }.getOrNull()
+                if (!releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                    return@launch
+                }
+                if (operation != null) {
+                    state.update { current -> current.copy(serverUpdateOperation = operation, serverUpdateLoading = false) }
+                    if (operation.phase in terminalServerUpdatePhases) {
+                        updateRequested = false
+                        return@launch
+                    }
+                }
+                if (!waitForTerminal) return@launch
+                delay(1_500)
+            }
+            if (releaseCheckStillApplies(hostId, state.value.activeHostId, generation, serverUpdateGeneration)) {
+                updateRequested = false
+                state.update {
+                    it.copy(serverUpdateError = "Update status timed out. Reopen About to read the durable result.")
+                }
+            }
+        }
+    }
+
     fun openSession(
         id: String,
         highlightedItemId: String? = null,
@@ -3190,6 +3342,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     foremanVersion = serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
                     foremanReleaseBuild = serviceStatus["foremanReleaseBuild"]?.jsonPrimitive?.content?.toBooleanStrictOrNull(),
                     releaseUpdates = decodeReleaseUpdates(json, serviceStatus["releaseUpdates"]),
+                    serverUpdateOperation = decodeServerUpdateOperation(json, serviceStatus["serverUpdateOperation"]),
                     codexVersion = codexStatus?.get("version")?.jsonPrimitive?.content,
                     runtimeMode = codexStatus?.get("mode")?.jsonPrimitive?.content,
                     runtimeConnected = codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
@@ -3248,6 +3401,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             CachedReleaseUpdateInfo(snapshot.foremanVersion, snapshot.foremanReleaseBuild, it)
         }
         if (releaseUpdateInfo != null) preferences.setReleaseUpdateInfo(releaseUpdateInfo)
+        snapshot.serverUpdateOperation?.let { preferences.setServerUpdateOperationId(it.id) }
         val applySelection = !archivedSelection &&
             (expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation))
         state.update {
@@ -3275,6 +3429,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     foremanVersion = snapshot.foremanVersion,
                     foremanReleaseBuild = snapshot.foremanReleaseBuild,
                     releaseUpdates = snapshot.releaseUpdates ?: it.releaseUpdates,
+                    serverUpdateOperation = snapshot.serverUpdateOperation ?: it.serverUpdateOperation,
                     releaseCheckLoading = false,
                     codexVersion = snapshot.codexVersion,
                     runtimeMode = snapshot.runtimeMode,
@@ -3977,19 +4132,31 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             val serverVersion = message.payload["foremanVersion"]?.jsonPrimitive?.content
             val releaseBuild = message.payload["foremanReleaseBuild"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
             val releaseUpdates = decodeReleaseUpdates(json, message.payload["releaseUpdates"])
+            val updateOperation = decodeServerUpdateOperation(json, message.payload["serverUpdateOperation"])
             if (releaseUpdates != null) {
                 preferences.setReleaseUpdateInfo(
                     CachedReleaseUpdateInfo(serverVersion, releaseBuild, releaseUpdates),
                 )
             }
+            updateOperation?.let { preferences.setServerUpdateOperationId(it.id) }
             state.update {
                 it.copy(
                     foremanVersion = serverVersion ?: it.foremanVersion,
                     foremanReleaseBuild = releaseBuild ?: it.foremanReleaseBuild,
                     releaseUpdates = releaseUpdates ?: it.releaseUpdates,
+                    serverUpdateOperation = updateOperation ?: it.serverUpdateOperation,
                     releaseCheckLoading = false,
                 )
             }
+            return
+        }
+        if (message.type == "update.event") {
+            val operation = decodeServerUpdateOperation(json, message.payload["operation"]) ?: return
+            preferences.setServerUpdateOperationId(operation.id)
+            state.update {
+                it.copy(serverUpdateOperation = operation, serverUpdateLoading = false, serverUpdateError = null)
+            }
+            if (operation.phase in terminalServerUpdatePhases) updateRequested = false
             return
         }
         if (message.type == "usage.event") {
@@ -8102,9 +8269,17 @@ private fun UiSettingsMenu(
             serverVersion = state.foremanVersion,
             serverReleaseBuild = state.foremanReleaseBuild,
             connected = state.connected,
+            serverUpdateSupported = "serverUpdate" in state.capabilities,
             releaseUpdates = state.releaseUpdates,
             checking = state.releaseCheckLoading,
+            serverUpdateCheck = state.serverUpdateCheck,
+            serverUpdateOperation = state.serverUpdateOperation,
+            serverUpdateLoading = state.serverUpdateLoading,
+            serverUpdateError = state.serverUpdateError,
             onCheckAgain = viewModel::checkForUpdates,
+            onReviewServerUpdate = viewModel::reviewServerUpdate,
+            onStartServerUpdate = viewModel::startServerUpdate,
+            onDismissServerUpdateReview = viewModel::dismissServerUpdateReview,
             onDismiss = { showingAbout = false },
         )
     }
@@ -8116,9 +8291,17 @@ private fun AboutDialog(
     serverVersion: String?,
     serverReleaseBuild: Boolean?,
     connected: Boolean,
+    serverUpdateSupported: Boolean,
     releaseUpdates: ReleaseUpdateSnapshot?,
     checking: Boolean,
+    serverUpdateCheck: ServerUpdateCheck?,
+    serverUpdateOperation: ServerUpdateOperation?,
+    serverUpdateLoading: Boolean,
+    serverUpdateError: String?,
     onCheckAgain: () -> Unit,
+    onReviewServerUpdate: () -> Unit,
+    onStartServerUpdate: () -> Unit,
+    onDismissServerUpdateReview: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -8228,12 +8411,103 @@ private fun AboutDialog(
                             ) {
                                 Text(if (checking || releaseUpdates?.refreshStatus == "checking") "Checking…" else "Check again")
                             }
+                            if (
+                                serverStatus.kind == UpdateStatusKind.UpdateAvailable &&
+                                    serverUpdateSupported &&
+                                    (
+                                        serverUpdateOperation == null ||
+                                            serverUpdateOperation.phase in terminalServerUpdatePhases &&
+                                            serverUpdateOperation.phase != "recoveryRequired"
+                                    ) &&
+                                    serverUpdateCheck == null
+                            ) {
+                                Button(
+                                    onClick = onReviewServerUpdate,
+                                    enabled = connected && !serverUpdateLoading,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(if (serverUpdateLoading) "Reviewing…" else "Review server update")
+                                }
+                            }
                             Text(
-                                "Foreman only detects updates. Server installation is tracked in #58; Android APK installation is tracked in #59.",
+                                "Server updates install only signed official stable releases. Android APK installation remains a separate platform action.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                    }
+                    serverUpdateOperation?.let { operation ->
+                        item {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(serverUpdatePhaseLabel(operation.phase), fontWeight = FontWeight.Bold)
+                                        Text("${operation.progress}%")
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { operation.progress / 100f },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    operation.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                    operation.recoveryCommand?.let {
+                                        Text("From the server, run $it.", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    serverUpdateCheck?.let { check ->
+                        item {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("Review server update", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    AboutVersionRow("Installed", check.currentVersion)
+                                    AboutVersionRow("Target", check.target?.version ?: "Unavailable")
+                                    Text(check.source, color = MaterialTheme.colorScheme.primary)
+                                    check.target?.let { target ->
+                                        TextButton(onClick = {
+                                            try {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.releaseNotesUrl)))
+                                            } catch (_: ActivityNotFoundException) {
+                                                Toast.makeText(context, "No app can open release notes", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }) { Text("Read release notes for ${target.tag}") }
+                                    }
+                                    if (check.blockers.isNotEmpty()) {
+                                        Text("Update blocked", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            check.blockers.joinToString { blocker ->
+                                                val label = when (blocker.category) {
+                                                    "workingSession" -> "working session"
+                                                    "waitingSession" -> "waiting session"
+                                                    "pendingApproval" -> "pending approval"
+                                                    else -> "pending input"
+                                                }
+                                                "${blocker.count} $label${if (blocker.count == 1) "" else "s"}"
+                                            } + " must finish first. No transcript content is shown.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    } else {
+                                        Text("No working, waiting, approval, or input state currently blocks activation.")
+                                    }
+                                    Text(
+                                        "Foreman will verify and stage the release, recheck session safety, restart only foreman.service, reconnect this app, and restore the previous payload if health checking fails.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(onClick = onDismissServerUpdateReview, enabled = !serverUpdateLoading) { Text("Cancel") }
+                                        Button(
+                                            onClick = onStartServerUpdate,
+                                            enabled = !serverUpdateLoading && check.updateAvailable && check.blockers.isEmpty(),
+                                            modifier = Modifier.weight(1f),
+                                        ) { Text(if (serverUpdateLoading) "Starting…" else "Install and restart") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    serverUpdateError?.let { message ->
+                        item { Text(message, color = MaterialTheme.colorScheme.error) }
                     }
                     items(foremanAboutLinks) { (label, url) ->
                         FilledTonalButton(

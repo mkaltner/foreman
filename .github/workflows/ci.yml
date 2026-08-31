@@ -70,6 +70,7 @@ jobs:
           tar --exclude='__pycache__' --exclude='*.py[co]' \
             --exclude='linux/claude_bridge/bridge.test.mjs' \
             --exclude='linux/claude_bridge/test_fake_sdk.mjs' \
+            --exclude='linux/claude_bridge/node_modules/.bin' \
             -czf foreman-linux.tar.gz \
             install.sh release.properties requirements.txt linux web/dist \
             scripts/vendor_python_dependencies.sh docs README.md LICENSE THIRD_PARTY_NOTICES.md
@@ -87,6 +88,15 @@ jobs:
           grep -Fxq 'linux/claude_bridge/bridge.mjs' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/package-lock.json' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json' <<<"$archive_listing"
+          PYTHONPATH=linux python - "$PWD/foreman-linux.tar.gz" <<'PY'
+          from pathlib import Path
+          import sys
+          import tempfile
+          from server_update import safe_extract
+
+          with tempfile.TemporaryDirectory() as destination:
+              safe_extract(Path(sys.argv[1]), Path(destination))
+          PY
           if grep -Eq 'linux/claude_bridge/(bridge\.test|test_fake_sdk)\.mjs' <<<"$archive_listing"; then
             echo "Linux archive contains Claude bridge test fixtures" >&2
             exit 1

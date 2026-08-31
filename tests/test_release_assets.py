@@ -55,6 +55,8 @@ class ReleaseDirectoryTests(unittest.TestCase):
             (directory / name).write_bytes(content)
             checksum_lines.append(f"{hashlib.sha256(content).hexdigest()}  {name}")
         (directory / "SHA256SUMS").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+        (directory / "SHA256SUMS.sig").write_bytes(b"detached signature")
+        (directory / "foreman-release-cert.pem").write_text("public certificate\n", encoding="utf-8")
 
     def test_accepts_downloaded_release(self):
         with tempfile.TemporaryDirectory() as temporary:

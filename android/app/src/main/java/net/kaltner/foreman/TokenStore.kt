@@ -444,6 +444,15 @@ class PreferenceStore(context: Context, hostId: String?) {
             .putString("releaseUpdates.v1", json.encodeToString(info.copy(snapshot = snapshot)))
             .commit()
     }
+    internal fun loadServerUpdateOperationId(): String? =
+        preferences.getString("serverUpdateOperation.v1", null)
+            ?.takeIf { it.matches(Regex("^fmu_[A-Za-z0-9_-]{16,80}$")) }
+
+    internal fun setServerUpdateOperationId(operationId: String) {
+        if (operationId.matches(Regex("^fmu_[A-Za-z0-9_-]{16,80}$"))) {
+            preferences.edit().putString("serverUpdateOperation.v1", operationId).commit()
+        }
+    }
     fun loadDrafts(): Map<String, String> =
         preferences.all.mapNotNull { (key, value) ->
             if (!key.startsWith("draft.")) return@mapNotNull null

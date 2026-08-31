@@ -615,6 +615,7 @@ class State:
                     "digest": _digest(device_token),
                     "name": device_name[:80],
                     "type": device_type if device_type in ("browser", "android") else "unknown",
+                    "access": "full",
                     "createdAt": now,
                 }
             )
@@ -675,5 +676,6 @@ class State:
             "id": item["id"],
             "name": item.get("name") if isinstance(item.get("name"), str) else "Foreman client",
             "type": item.get("type") if item.get("type") in ("browser", "android") else "unknown",
+            "access": item.get("access") if item.get("access") in ("full", "read") else "full",
             "createdAt": item.get("createdAt") if isinstance(item.get("createdAt"), int) else None,
         }

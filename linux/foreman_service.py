@@ -51,6 +51,7 @@ from protocol import (
     response,
 )
 from release_updates import ReleaseUpdateCache
+from server_update import ServerUpdateManager, UpdateFailure, properties, public_operation
 from state import State
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.datastructures import Headers
@@ -123,6 +124,10 @@ class CapabilityError(ValueError):
     pass
 
 
+class AccessError(PermissionError):
+    pass
+
+
 def load_env(path: Path) -> None:
     if not path.exists():
         return
@@ -141,6 +146,8 @@ class Client:
     websocket: ServerConnection | None = None
     authenticated: bool = False
     device_id: str | None = None
+    access: str = "read"
+    local_control: bool = False
     subscriptions: set[str] = field(default_factory=set)
     focused_session: str | None = None
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -218,6 +225,7 @@ class Foreman:
         claude_node: str = "node",
         claude_bridge: str | Path | None = None,
         release_updates: ReleaseUpdateCache | None = None,
+        update_manager: ServerUpdateManager | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -309,6 +317,29 @@ class Foreman:
         self.known_pairing_count = 0
         self.stopping = False
         self.release_updates = release_updates or ReleaseUpdateCache(self.state.directory)
+        install_directory = Path(__file__).resolve().parent
+        metadata_path = install_directory / "release.properties"
+        if not metadata_path.is_file():
+            metadata_path = install_directory.parent / "release.properties"
+        installed_metadata = properties(metadata_path) if metadata_path.is_file() else {}
+        self.control_path = self.state.directory / "control.sock"
+        self.control_server: asyncio.Server | None = None
+        self.update_manager = update_manager or ServerUpdateManager(
+            state_directory=self.state.directory,
+            install_directory=install_directory,
+            launcher_file=Path.home() / ".local/bin/foreman",
+            unit_file=Path.home() / ".config/systemd/user/foreman.service",
+            helper_file=Path.home() / ".local/libexec/foreman-updater",
+            current_version=FOREMAN_VERSION,
+            release_build=FOREMAN_RELEASE_BUILD,
+            protocol_version=VERSION,
+            trust_fingerprint=installed_metadata.get("androidSigningCertificateSha256", ""),
+            release_cache=self.release_updates,
+            safety_check=self.update_blockers,
+            authorization_check=self.update_authorized,
+            event_callback=self.broadcast_update,
+            health_port=self.web_port or 8766,
+        )
         self.claude = (
             claude_factory(
                 self.repository_root,
@@ -345,6 +376,15 @@ class Foreman:
             self.port,
             limit=MAX_FRAME_BYTES + 1,
         )
+        self.state.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self.control_path.exists():
+            if not self.control_path.is_socket():
+                raise RuntimeError("Foreman control socket path is not a socket")
+            self.control_path.unlink()
+        self.control_server = await asyncio.start_unix_server(
+            self.local_client_connected, str(self.control_path), limit=MAX_FRAME_BYTES + 1
+        )
+        os.chmod(self.control_path, 0o600)
         if self.web_port is not None:
             self.web_server = await serve(
                 self.websocket_connected,
@@ -355,6 +395,8 @@ class Foreman:
                 compression=None,
                 server_header="Foreman",
             )
+            if self.web_server.sockets:
+                self.update_manager.health_port = self.web_server.sockets[0].getsockname()[1]
         self.diagnostics.record("listeners.started")
         self.diagnostics.record("service.started")
         self.release_refresh_task = asyncio.create_task(
@@ -366,6 +408,7 @@ class Foreman:
         self.stopping = True
         shutdown: list[Awaitable[Any]] = [self.codex.stop()]
         shutdown.append(self.release_updates.stop())
+        shutdown.append(self.update_manager.stop())
         if self.release_refresh_task is not None:
             shutdown.append(self.release_refresh_task)
         if self.claude is not None:
@@ -373,6 +416,9 @@ class Foreman:
         if self.server:
             self.server.close()
             shutdown.append(self.server.wait_closed())
+        if self.control_server:
+            self.control_server.close()
+            shutdown.append(self.control_server.wait_closed())
         if self.web_server:
             self.web_server.close(close_connections=True)
             shutdown.append(self.web_server.wait_closed())
@@ -390,6 +436,10 @@ class Foreman:
         except TimeoutError:
             self.diagnostics.record("service.shutdown_timed_out")
         await self.flush_session_timestamp_persistence()
+        try:
+            self.control_path.unlink()
+        except OSError:
+            pass
 
     async def claude_event(self, message: dict[str, Any]) -> None:
         kind = message.get("kind")
@@ -2085,6 +2135,83 @@ class Foreman:
             return_exceptions=True,
         )
 
+    async def broadcast_update(self, operation: dict[str, Any]) -> None:
+        phase = operation.get("phase")
+        category = {
+            "verifying": None,
+            "activationScheduled": "update.activation_started",
+            "failed": "update.verification_failed"
+            if operation.get("resultCode") in {
+                "verificationFailed", "verificationUnavailable", "missingAsset",
+                "untrustedSource", "incompatibleRelease",
+            }
+            else None,
+            "rolledBack": "update.rolled_back",
+            "succeeded": "update.succeeded",
+            "recoveryRequired": "update.recovery_required",
+        }.get(phase)
+        operation_id = operation.get("id")
+        if category and isinstance(operation_id, str):
+            self.diagnostics.record(category, ids={"operationId": operation_id})
+        outgoing = {
+            "version": VERSION,
+            "type": "update.event",
+            "payload": {"operation": operation},
+        }
+        await asyncio.gather(
+            *(
+                client.send(outgoing)
+                for client in self.clients
+                if client.authenticated and not getattr(client, "local_control", False)
+            ),
+            return_exceptions=True,
+        )
+
+    async def update_blockers(self) -> list[dict[str, Any]]:
+        counts = {
+            "workingSession": 0,
+            "waitingSession": 0,
+            "pendingApproval": 0,
+            "pendingInput": 0,
+        }
+        if self.provider_enabled["codex"]:
+            counts["pendingApproval"] = len(self.codex.list_approvals())
+            counts["pendingInput"] = len(self.codex.list_inputs())
+            try:
+                threads = await self.codex.list_threads()
+            except Exception as error:
+                raise UpdateFailure(
+                    "activeStateUnavailable",
+                    "Foreman could not prove that every session is inactive.",
+                ) from error
+            for thread in threads:
+                status = self.projected_session(thread).get("status")
+                if status in {"working", "stopping"}:
+                    counts["workingSession"] += 1
+                elif status == "waiting":
+                    counts["waitingSession"] += 1
+        if self.provider_enabled["claude-code"]:
+            for overlay in self.claude_session_overlays.values():
+                status = overlay.get("status") or overlay.get("state")
+                if status in {"working", "stopping"}:
+                    counts["workingSession"] += 1
+                elif status == "waiting":
+                    counts["waitingSession"] += 1
+        return [
+            {"category": category, "count": count}
+            for category, count in counts.items()
+            if count
+        ]
+
+    async def update_authorized(self, principal: str) -> bool:
+        if not principal.startswith("device:"):
+            return False
+        device_id = principal.removeprefix("device:")
+        return any(
+            device.get("id") == device_id and device.get("access") == "full"
+            for device in self.state.list_devices()
+        )
+
     def account_usage_projection(self) -> dict[str, Any]:
         return {
             "providers": {
@@ -2143,6 +2270,38 @@ class Foreman:
                 if client.writer is not None:
                     client.writer.close()
                     await client.writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
+
+    async def local_client_connected(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        client = Client(
+            writer,
+            "local-control",
+            authenticated=True,
+            access="full",
+            local_control=True,
+        )
+        self.clients.add(client)
+        request: dict[str, Any] | None = None
+        try:
+            while request := await read(reader):
+                task = asyncio.create_task(self.handle_request(client, request))
+                client.track(task)
+        except (ProtocolError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
+            pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            for task in list(client.requests):
+                task.cancel()
+            if client.requests:
+                await asyncio.gather(*client.requests, return_exceptions=True)
+            await self.remove_client(client)
+            try:
+                writer.close()
+                await writer.wait_closed()
             except (ConnectionError, OSError):
                 pass
 
@@ -2205,9 +2364,15 @@ class Foreman:
                 await self.broadcast_service_status()
             elif request["type"] == "client.revoke":
                 await self.disconnect_device(result["clientId"])
+        except AccessError as exc:
+            self.record_request_failure(request)
+            await client.send(error(request, "insufficientAccess", str(exc)))
         except PermissionError as exc:
             self.record_request_failure(request)
             await client.send(error(request, "unauthorized", str(exc)))
+        except UpdateFailure as exc:
+            self.record_request_failure(request)
+            await client.send(error(request, exc.code, exc.message))
         except CapabilityError as exc:
             self.record_request_failure(request)
             await client.send(error(request, "capabilityUnavailable", str(exc)))
@@ -2361,6 +2526,8 @@ class Foreman:
         available = runtime == "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
         return {
             "status": "ok",
+            "foremanVersion": FOREMAN_VERSION,
+            "protocolVersion": VERSION,
             "foremanConnected": True,
             "codexConnected": getattr(self.codex, "is_connected", True),
             "sharedDesktopRuntimeAttached": available,
@@ -2401,6 +2568,7 @@ class Foreman:
             "foremanVersion": FOREMAN_VERSION,
             "foremanReleaseBuild": FOREMAN_RELEASE_BUILD,
             "releaseUpdates": self.release_updates.snapshot(),
+            "serverUpdateOperation": public_operation(self.update_manager.store.read()),
             "connected": True,
             "remoteRestartEnabled": self.remote_restart_enabled,
             "uptimeSeconds": max(0, int(time.monotonic() - self.started_monotonic)),
@@ -2515,6 +2683,10 @@ class Foreman:
         payload = request.get("payload") or {}
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+        if getattr(client, "local_control", False) and message_type not in {
+            "hello", "ping", "update.check", "update.start", "update.status"
+        }:
+            raise AccessError("The local control socket only permits update operations.")
 
         if message_type == "hello":
             codex_enabled = self.provider_enabled["codex"]
@@ -2548,6 +2720,7 @@ class Foreman:
                     "providerConfiguration": True,
                     "remoteRestart": self.remote_restart_enabled,
                     "releaseDiscovery": True,
+                    "serverUpdate": True,
                 },
             }
         if message_type == "pair":
@@ -2562,7 +2735,10 @@ class Foreman:
                 raise PermissionError("pairing key is invalid or expired")
             self.pairing_limiter.succeeded(client.peer)
             client.authenticated = True
-            client.device_id = self.state.authenticate_device(token)["id"]
+            device = self.state.authenticate_device(token)
+            assert device is not None
+            client.device_id = device["id"]
+            client.access = device["access"]
             self.diagnostics.record(
                 "pairing.consumed", ids={"clientId": client.device_id}
             )
@@ -2578,6 +2754,7 @@ class Foreman:
             client.device_id = device["id"] if device else None
             if device is None:
                 raise PermissionError("device token is invalid")
+            client.access = device["access"]
             self.diagnostics.record(
                 "client.connected", ids={"clientId": client.device_id}
             )
@@ -2586,6 +2763,24 @@ class Foreman:
             return {"time": int(time.time())}
         if not client.authenticated:
             raise PermissionError("authenticate first")
+
+        if message_type == "update.check":
+            return await self.update_manager.check(refresh=True)
+        if message_type == "update.status":
+            operation_id = optional_text(payload, "operationId", 100)
+            return self.update_manager.status(operation_id)
+        if message_type == "update.start":
+            if getattr(client, "access", "full") != "full":
+                raise AccessError("Full-access client authorization is required to start an update.")
+            request_id = optional_text(payload, "requestId", 80)
+            principal = (
+                "local"
+                if getattr(client, "local_control", False)
+                else f"device:{client.device_id}"
+            )
+            operation = await self.update_manager.start(request_id, principal)
+            self.diagnostics.record("update.started", ids={"operationId": operation["id"]})
+            return {"operation": operation}
 
         if message_type == "session.presence":
             return await self.set_session_presence(client, payload)

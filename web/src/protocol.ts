@@ -190,6 +190,7 @@ export interface ServiceStatus {
   foremanVersion: string;
   foremanReleaseBuild?: boolean;
   releaseUpdates?: ReleaseUpdateSnapshot;
+  serverUpdateOperation?: ServerUpdateOperation | null;
   connected: boolean;
   remoteRestartEnabled?: boolean;
   uptimeSeconds: number;
@@ -215,6 +216,45 @@ export interface ServiceStatus {
   repositoryRoot: string;
   activeBrowserConnections?: number;
   activeTcpConnections?: number;
+}
+
+export type ServerUpdatePhase =
+  | "downloading" | "verifying" | "staging"
+  | "activationScheduled" | "activating" | "restarting" | "healthChecking"
+  | "rollingBack" | "succeeded" | "rolledBack" | "recoveryRequired"
+  | "blocked" | "failed" | "interrupted";
+
+export interface ServerUpdateOperation {
+  id: string;
+  phase: ServerUpdatePhase;
+  currentVersion: string;
+  targetVersion: string;
+  source: string;
+  sourceUrl: string;
+  releaseNotesUrl: string;
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  resultCode?: string;
+  message?: string;
+  recoveryCommand?: "foreman update --recover";
+}
+
+export interface ServerUpdateBlocker {
+  category: "workingSession" | "waitingSession" | "pendingApproval" | "pendingInput";
+  count: number;
+}
+
+export interface ServerUpdateCheck {
+  currentVersion: string;
+  releaseBuild: boolean;
+  source: string;
+  sourceUrl: string;
+  updateAvailable: boolean;
+  target: ForemanRelease | null;
+  blockers: ServerUpdateBlocker[];
+  operation: ServerUpdateOperation | null;
 }
 
 export interface ForemanRelease {

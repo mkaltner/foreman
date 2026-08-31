@@ -123,4 +123,62 @@ class ReleaseUpdatesTest {
         assertEquals(false, releaseCheckStillApplies("host-a", "host-b", 4L, 4L))
         assertEquals(false, releaseCheckStillApplies("host-a", "host-a", 4L, 5L))
     }
+
+    @Test
+    fun serverUpdateProgressIsBoundedAndRejectsUntrustedFields() {
+        val operation = ServerUpdateOperation(
+            id = "fmu_1234567890abcdef",
+            phase = "healthChecking",
+            currentVersion = "1.0.2",
+            targetVersion = "1.0.3",
+            source = "Official Foreman GitHub releases",
+            sourceUrl = "https://github.com/mkaltner/foreman/releases",
+            releaseNotesUrl = "https://github.com/mkaltner/foreman/releases/tag/v1.0.3",
+            progress = 92,
+            createdAt = "2026-08-31T00:00:00Z",
+            updatedAt = "2026-08-31T00:01:00Z",
+        )
+        assertEquals(operation, validatedServerUpdateOperation(operation))
+        assertNull(validatedServerUpdateOperation(operation.copy(phase = "runShell")))
+        assertNull(validatedServerUpdateOperation(operation.copy(sourceUrl = "https://evil.invalid")))
+        assertNull(validatedServerUpdateOperation(operation.copy(recoveryCommand = "rm -rf /")))
+        assertEquals("Health checking", serverUpdatePhaseLabel(operation.phase))
+    }
+
+    @Test
+    fun serverUpdateCheckExposesOnlySafeBlockerCategories() {
+        val operation = ServerUpdateOperation(
+            id = "fmu_1234567890abcdef",
+            phase = "staging",
+            currentVersion = "1.0.2",
+            targetVersion = "1.0.3",
+            source = "Official Foreman GitHub releases",
+            sourceUrl = "https://github.com/mkaltner/foreman/releases",
+            releaseNotesUrl = "https://github.com/mkaltner/foreman/releases/tag/v1.0.3",
+            progress = 65,
+            createdAt = "2026-08-31T00:00:00Z",
+            updatedAt = "2026-08-31T00:01:00Z",
+        )
+        val check = ServerUpdateCheck(
+            currentVersion = "1.0.2",
+            releaseBuild = true,
+            source = operation.source,
+            sourceUrl = operation.sourceUrl,
+            updateAvailable = true,
+            target = release("1.0.3"),
+            blockers = listOf(ServerUpdateBlocker("pendingInput", 1)),
+            operation = operation,
+        )
+        assertEquals(check, validatedServerUpdateCheck(check))
+        assertNull(validatedServerUpdateCheck(check.copy(blockers = listOf(ServerUpdateBlocker("transcript", 1)))))
+        assertNull(validatedServerUpdateCheck(check.copy(target = null)))
+        assertTrue(terminalServerUpdatePhases.containsAll(listOf("succeeded", "rolledBack", "recoveryRequired")))
+    }
+
+    @Test
+    fun serverUpdatePreferenceFilesRemainHostScoped() {
+        assertEquals("foreman_preferences.host-a", HostStore.preferenceFile("host-a"))
+        assertEquals("foreman_preferences.host-b", HostStore.preferenceFile("host-b"))
+        assertEquals(false, HostStore.preferenceFile("host-a") == HostStore.preferenceFile("host-b"))
+    }
 }
