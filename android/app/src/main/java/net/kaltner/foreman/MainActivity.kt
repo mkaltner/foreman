@@ -1056,6 +1056,31 @@ internal fun UiState.withForgottenConnection(): UiState =
         restartPhase = RestartPhase.Idle,
     )
 
+internal fun UiState.afterSessionArchived(provider: String, sessionId: String): UiState {
+    val wasSelected = selected?.matches(provider, sessionId) == true
+    val matchingArchiveSubmission = pendingSessionAction?.let {
+        it.provider == provider && it.sessionId == sessionId && it.action == SessionAction.Archive
+    } == true
+    return copy(
+        sessions = sessions.filterNot { it.matches(provider, sessionId) },
+        searchResults = searchResults.filterNot { it.session.matches(provider, sessionId) },
+        selected = if (wasSelected) null else selected,
+        screen = if (wasSelected) Screen.Sessions else screen,
+        loading = if (wasSelected) false else loading,
+        highlightedItemId = if (wasSelected) null else highlightedItemId,
+        focusedApprovalId = if (wasSelected) null else focusedApprovalId,
+        submitting = if (matchingArchiveSubmission) false else submitting,
+        pendingSessionAction = if (matchingArchiveSubmission) null else pendingSessionAction,
+    )
+}
+
+internal fun archivedSessionMatchesRemembered(
+    provider: String,
+    sessionId: String,
+    rememberedProvider: String,
+    rememberedSessionId: String?,
+): Boolean = rememberedProvider == provider && rememberedSessionId == sessionId
+
 internal fun releaseCheckStillApplies(
     initiatingHostId: String,
     activeHostId: String?,
@@ -3511,6 +3536,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             selected = if (wasSelected) restored else current.selected,
                             searchFilters = filters,
                         )
+                    } else if (pending.action == SessionAction.Archive) {
+                        current.afterSessionArchived(pending.provider, pending.sessionId).copy(
+                            submitting = false,
+                            pendingSessionAction = null,
+                        )
                     } else {
                         val pinned = if (pending.action == SessionAction.Delete) current.pinnedSessionIds - key else current.pinnedSessionIds
                         val hidden = if (pending.action == SessionAction.Delete) current.hiddenSessionIds - key else current.hiddenSessionIds
@@ -4031,20 +4061,19 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         if (kind == "lifecycle") {
             val action = event["action"]?.jsonPrimitive?.content
             if (action == "archived") {
+                val wasRemembered = archivedSessionMatchesRemembered(
+                    provider,
+                    sessionId,
+                    restorationProvider,
+                    restorationSessionId,
+                )
+                if (wasRemembered) clearRememberedSession()
                 val wasSelected = state.value.selected?.matches(provider, sessionId) == true
+                if (wasSelected) sessionOpenGeneration += 1
                 state.update { current ->
-                    val filters = if (wasSelected) {
-                        current.searchFilters.copy(scope = SessionDiscoveryScope.Archived)
-                    } else current.searchFilters
-                    if (wasSelected) preferences.setSessionSearch(filters)
-                    current.copy(
-                        sessions = current.sessions.filterNot { it.matches(provider, sessionId) },
-                        searchResults = current.searchResults.filterNot { it.session.matches(provider, sessionId) },
-                        selected = if (wasSelected) null else current.selected,
-                        searchFilters = filters,
-                        loading = wasSelected,
-                    )
+                    current.afterSessionArchived(provider, sessionId)
                 }
+                if (wasSelected) synchronizeSessionPresence()
                 refreshArchivedSessions()
                 updateActiveOverview()
                 return

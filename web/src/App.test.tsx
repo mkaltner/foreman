@@ -4,7 +4,7 @@ import App, { AccountUsageDock, appShellClassName, ConversationView, LinkedUserT
 import type { ApprovalRequest, SessionSummary } from "./protocol";
 import { inferPagePort } from "./client";
 import { DEFAULT_SESSION_FILTERS } from "./session-search";
-import { loadHostRegistry, loadRememberedSession, saveHostRegistry, saveRememberedSession, type StoredHost } from "./storage";
+import { loadHostRegistry, loadRememberedSession, loadSessionSearch, saveHostRegistry, saveRememberedSession, type StoredHost } from "./storage";
 
 const clientMock = vi.hoisted(() => ({
   pair: vi.fn(),
@@ -328,6 +328,161 @@ describe("host navigation history", () => {
     expect(loadRememberedSession(home.id)).toEqual({ hostId: home.id, provider: "codex", sessionId: archived.id });
   });
 
+  it("keeps normal discovery filters while a selected archive event precedes its response", async () => {
+    const session: SessionSummary = {
+      provider: "codex",
+      id: "archive-selected",
+      repository: "/projects/foreman",
+      title: "Archive selected",
+      status: "idle",
+      capabilities: ["session.read", "session.archive", "session.delete"],
+      messages: [],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockConnectedState([session], [{
+      id: "codex",
+      displayName: "Codex",
+      enabled: true,
+      available: true,
+      capabilities: ["session.archived.list", "session.restore"],
+    }]);
+    const request = clientMock.request.getMockImplementation()!;
+    let finishArchive: (() => void) | undefined;
+    clientMock.request.mockImplementation((type: string, payload?: Record<string, unknown>) => {
+      if (type !== "session.archive") return request(type, payload);
+      session.archived = true;
+      session.readOnly = true;
+      clientMock.onEvent?.({
+        version: 1,
+        type: "session.event",
+        payload: {
+          provider: "codex",
+          sessionId: session.id,
+          event: { kind: "lifecycle", action: "archived" },
+        },
+      });
+      return new Promise((resolve) => {
+        finishArchive = () => resolve({ archived: true });
+      });
+    });
+
+    const mounted = render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    const persistedFilters = loadSessionSearch(home.id);
+
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/sessions"));
+    expect(window.location.search).not.toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toBe(persistedFilters);
+    expect(loadRememberedSession(home.id)).toBeNull();
+    expect(screen.getByText("Select a session")).toBeInTheDocument();
+    expect(screen.queryByText("Loading session…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: session.title })).not.toBeInTheDocument();
+    expect(finishArchive).toBeTypeOf("function");
+
+    await act(async () => finishArchive?.());
+    expect(window.location.search).not.toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toBe(persistedFilters);
+
+    mounted.unmount();
+    render(<App />);
+    await screen.findByText("Select a session");
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).not.toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toBe(persistedFilters);
+    expect(screen.queryByRole("heading", { name: session.title })).not.toBeInTheDocument();
+  });
+
+  it("preserves the open session and filters when another session is archived", async () => {
+    const selected: SessionSummary = {
+      provider: "codex",
+      id: "still-selected",
+      repository: "/projects/foreman",
+      title: "Still selected",
+      status: "idle",
+      messages: [],
+    };
+    const archived: SessionSummary = {
+      provider: "codex",
+      id: "archive-other",
+      repository: "/projects/foreman",
+      title: "Archive other",
+      status: "idle",
+      capabilities: ["session.archive"],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/sessions/codex/${selected.id}?host=${home.id}&provider=codex`);
+    mockConnectedState([selected, archived]);
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(selected.title));
+    await waitFor(() => expect(loadSessionSearch(home.id)).toContain("provider=codex"));
+    const persistedFilters = loadSessionSearch(home.id);
+
+    archived.archived = true;
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: {
+        provider: "codex",
+        sessionId: archived.id,
+        event: { kind: "lifecycle", action: "archived" },
+      },
+    }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: archived.title })).not.toBeInTheDocument());
+    expect(document.querySelector(".conversation-header h1")).toHaveTextContent(selected.title);
+    expect(window.location.pathname).toBe(`/sessions/codex/${selected.id}`);
+    expect(window.location.search).not.toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toBe(persistedFilters);
+    expect(loadRememberedSession(home.id)?.sessionId).toBe(selected.id);
+  });
+
+  it("closes a selected session archived by another client without changing filters", async () => {
+    const session: SessionSummary = {
+      provider: "codex",
+      id: "externally-archived-selected",
+      repository: "/projects/foreman",
+      title: "Externally archived selected",
+      status: "completed",
+      lastActivity: Date.now() / 1000,
+      messages: [],
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(
+      null,
+      "",
+      `/sessions/codex/${session.id}?host=${home.id}&provider=codex&repo=%2Fprojects%2Fforeman&status=completed&date=30d&sort=oldest`,
+    );
+    mockConnectedState([session]);
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".conversation-header h1")).toHaveTextContent(session.title));
+    await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    await waitFor(() => expect(loadSessionSearch(home.id)).toContain("provider=codex"));
+    const persistedFilters = loadSessionSearch(home.id);
+
+    session.archived = true;
+    act(() => clientMock.onEvent?.({
+      version: 1,
+      type: "session.event",
+      payload: {
+        provider: "codex",
+        sessionId: session.id,
+        event: { kind: "lifecycle", action: "archived" },
+      },
+    }));
+
+    await screen.findByText("Select a session");
+    expect(window.location.pathname).toBe("/sessions");
+    expect(window.location.search).not.toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toBe(persistedFilters);
+    expect(loadRememberedSession(home.id)).toBeNull();
+    expect(screen.queryByText("Loading session…")).not.toBeInTheDocument();
+  });
+
   it("reconciles external archive and restore events across provider scopes", async () => {
     const session: SessionSummary = {
       provider: "codex",
@@ -346,7 +501,7 @@ describe("host navigation history", () => {
       available: true,
       capabilities: ["session.archived.list", "session.restore"],
     }]);
-    render(<App />);
+    const mounted = render(<App />);
     await screen.findByRole("heading", { name: session.title });
 
     session.archived = true;
@@ -360,6 +515,13 @@ describe("host navigation history", () => {
     await waitFor(() => expect(screen.queryByRole("heading", { name: session.title })).not.toBeInTheDocument());
     fireEvent.click(screen.getByText("Filters"));
     fireEvent.change(screen.getByLabelText("Sessions"), { target: { value: "archived" } });
+    await waitFor(() => expect(screen.getByRole("heading", { name: session.title })).toBeInTheDocument());
+    expect(document.querySelector(".status-pill.archived")).toBeInTheDocument();
+    expect(window.location.search).toContain("scope=archived");
+    expect(loadSessionSearch(home.id)).toContain("scope=archived");
+
+    mounted.unmount();
+    render(<App />);
     await waitFor(() => expect(screen.getByRole("heading", { name: session.title })).toBeInTheDocument());
     expect(document.querySelector(".status-pill.archived")).toBeInTheDocument();
 

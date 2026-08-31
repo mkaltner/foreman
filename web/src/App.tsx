@@ -843,6 +843,11 @@ function App() {
     if (payload.event.kind === "lifecycle") {
       const action = payload.event.action;
       if (action === "archived") {
+        const hostId = activeHostIdRef.current;
+        const remembered = loadRememberedSession(hostId);
+        if (remembered?.provider === provider && remembered.sessionId === payload.sessionId) {
+          clearRememberedSession(hostId);
+        }
         setSessions((previous) => {
           const next = previous.filter((session) => providerSessionKey(sessionProvider(session), session.id) !== identityKey);
           sessionsRef.current = next;
@@ -851,12 +856,22 @@ function App() {
         setSearchResults((previous) => previous.filter(({ session }) => providerSessionKey(sessionProvider(session), session.id) !== identityKey));
         setArchivedRevision((value) => value + 1);
         if (selectedIdRef.current === payload.sessionId && selectedProviderRef.current === provider) {
-          const nextFilters = { ...searchFiltersRef.current, scope: "archived" as const };
-          searchFiltersRef.current = nextFilters;
-          setSearchFilters(nextFilters);
+          sessionOpenGenerationRef.current += 1;
+          dashboardSubscriptions.current.delete(identityKey);
+          void clientRef.current?.request("provider.session.unsubscribe", { provider, sessionId: payload.sessionId })
+            .catch(() => undefined);
+          selectedIdRef.current = null;
+          selectedProviderRef.current = "codex";
           currentRef.current = null;
+          viewRef.current = "sessions";
+          setSelectedId(null);
+          setSelectedProvider("codex");
           setCurrent(null);
-          setBusy(true);
+          setView("sessions");
+          setHighlightItemId(null);
+          setFocusedApprovalId(null);
+          setBusy(false);
+          updateRoute({ view: "sessions" }, true);
         }
       } else if (action === "restored") {
         archivedSessionsRef.current = archivedSessionsRef.current.filter(
