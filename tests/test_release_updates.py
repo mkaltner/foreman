@@ -47,6 +47,8 @@ def release(
             uploaded.append(asset(f"foreman-v{version}.apk"))
         if checksums:
             uploaded.append(asset("SHA256SUMS"))
+            uploaded.append(asset("SHA256SUMS.sig"))
+            uploaded.append(asset("foreman-release-cert.pem"))
     return {
         "tag_name": f"v{version}",
         "name": f"Foreman {version}",

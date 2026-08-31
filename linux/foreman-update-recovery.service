@@ -1,0 +1,11 @@
+[Unit]
+Description=Resume an interrupted Foreman update after boot
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/foreman-updater --resume-latest --state-directory %h/.local/state/foreman --install-directory %h/.local/share/foreman --launcher-file %h/.local/bin/foreman --unit-file %h/.config/systemd/user/foreman.service --helper-file %h/.local/libexec/foreman-updater --health-port 8766
+SuccessExitStatus=1 4
+
+[Install]
+WantedBy=default.target

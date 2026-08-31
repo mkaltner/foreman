@@ -7,16 +7,21 @@ state_dir="$HOME/.local/state/foreman"
 install_dir="$HOME/.local/share/foreman"
 install_parent="$HOME/.local/share"
 bin_dir="$HOME/.local/bin"
+libexec_dir="$HOME/.local/libexec"
 unit_dir="$HOME/.config/systemd/user"
 config_file="$config_dir/foreman.env"
 launcher_file="$bin_dir/foreman"
 unit_file="$unit_dir/foreman.service"
+recovery_unit_file="$unit_dir/foreman-update-recovery.service"
+helper_file="$libexec_dir/foreman-updater"
 pinned_version="$(sed -n 's/^websockets==//p' "$project_dir/requirements.txt")"
 staging_dir=""
 backup_dir=""
 rollback_required=0
 had_launcher=0
 had_unit=0
+had_recovery_unit=0
+had_helper=0
 
 cleanup() {
   status=$?
@@ -35,6 +40,17 @@ cleanup() {
     else
       rm -f -- "$unit_file"
     fi
+    if [[ "$had_recovery_unit" == 1 ]]; then
+      install -m 644 "$backup_dir/foreman-update-recovery.service" "$recovery_unit_file"
+    else
+      systemctl --user disable foreman-update-recovery.service >/dev/null 2>&1
+      rm -f -- "$recovery_unit_file"
+    fi
+    if [[ "$had_helper" == 1 ]]; then
+      install -m 755 "$backup_dir/foreman-updater" "$helper_file"
+    else
+      rm -f -- "$helper_file"
+    fi
     systemctl --user daemon-reload >/dev/null 2>&1
     systemctl --user restart foreman.service >/dev/null 2>&1
   fi
@@ -50,6 +66,14 @@ trap cleanup EXIT
 
 command -v python3 >/dev/null || {
   echo "python3 is required" >&2
+  exit 1
+}
+command -v openssl >/dev/null || {
+  echo "openssl is required for signed Foreman updates" >&2
+  exit 1
+}
+command -v systemd-run >/dev/null || {
+  echo "systemd-run is required for recoverable Foreman updates" >&2
   exit 1
 }
 python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || {
@@ -81,7 +105,7 @@ codex_executable="$(readlink -f "$codex_executable")"
 claude_executable="$(command -v claude || true)"
 
 install -d -m 700 "$config_dir" "$state_dir"
-install -d -m 755 "$install_parent" "$bin_dir" "$unit_dir"
+install -d -m 755 "$install_parent" "$bin_dir" "$libexec_dir" "$unit_dir"
 
 staging_dir="$(mktemp -d "$install_parent/.foreman-install.XXXXXX")"
 install -m 755 "$project_dir/linux/foreman_service.py" "$staging_dir/foreman_service.py"
@@ -94,6 +118,8 @@ install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
 install -m 644 "$project_dir/linux/claude_code.py" "$staging_dir/claude_code.py"
 install -m 644 "$project_dir/linux/session_identity.py" "$staging_dir/session_identity.py"
 install -m 644 "$project_dir/linux/release_updates.py" "$staging_dir/release_updates.py"
+install -m 644 "$project_dir/linux/server_update.py" "$staging_dir/server_update.py"
+install -m 644 "$project_dir/linux/update_cli.py" "$staging_dir/update_cli.py"
 cp -a "$project_dir/linux/claude_bridge" "$staging_dir/claude_bridge"
 rm -f -- \
   "$staging_dir/claude_bridge/bridge.test.mjs" \
@@ -123,6 +149,8 @@ python3 -m compileall -q \
   "$staging_dir/claude_code.py" \
   "$staging_dir/session_identity.py" \
   "$staging_dir/release_updates.py" \
+  "$staging_dir/server_update.py" \
+  "$staging_dir/update_cli.py" \
   "$staging_dir/vendor"
 FOREMAN_STAGING_DIR="$staging_dir" \
 FOREMAN_WEBSOCKETS_VERSION="$pinned_version" \
@@ -169,11 +197,21 @@ if [[ -e "$unit_file" ]]; then
   cp -a "$unit_file" "$backup_dir/foreman.service"
   had_unit=1
 fi
+if [[ -e "$recovery_unit_file" ]]; then
+  cp -a "$recovery_unit_file" "$backup_dir/foreman-update-recovery.service"
+  had_recovery_unit=1
+fi
+if [[ -e "$helper_file" ]]; then
+  cp -a "$helper_file" "$backup_dir/foreman-updater"
+  had_helper=1
+fi
 mv -- "$staging_dir" "$install_dir"
 staging_dir=""
 rollback_required=1
 install -m 755 "$project_dir/linux/foreman" "$launcher_file"
 install -m 644 "$project_dir/linux/foreman.service" "$unit_file"
+install -m 644 "$project_dir/linux/foreman-update-recovery.service" "$recovery_unit_file"
+install -m 755 "$project_dir/linux/foreman_updater.py" "$helper_file"
 
 python3 -m compileall -q \
   "$install_dir/foreman_service.py" \
@@ -184,10 +222,13 @@ python3 -m compileall -q \
   "$install_dir/state.py" \
   "$install_dir/claude_code.py" \
   "$install_dir/session_identity.py" \
+  "$install_dir/server_update.py" \
+  "$install_dir/update_cli.py" \
   "$install_dir/vendor"
 python3 "$install_dir/foreman_service.py" --help >/dev/null
 systemctl --user daemon-reload
 systemctl --user enable foreman.service
+systemctl --user enable foreman-update-recovery.service
 systemctl --user restart foreman.service
 sleep 2
 systemctl --user is-active --quiet foreman.service

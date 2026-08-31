@@ -26,6 +26,12 @@ DIAGNOSTIC_MESSAGES: dict[str, tuple[str, str]] = {
     "pairing.consumed": ("info", "Pairing consumed"),
     "token.revoked": ("warning", "Client token revoked"),
     "request.failed": ("warning", "Request category failed"),
+    "update.started": ("info", "Server update started"),
+    "update.verification_failed": ("warning", "Server update verification failed"),
+    "update.activation_started": ("info", "Server update activation started"),
+    "update.rolled_back": ("warning", "Server update rolled back"),
+    "update.succeeded": ("info", "Server update succeeded"),
+    "update.recovery_required": ("warning", "Server update requires recovery"),
     "protocol.incompatible": ("warning", "Protocol incompatibility detected"),
     "listeners.started": ("info", "Foreman listeners started"),
     "claude.available": ("info", "Optional Claude Code adapter available"),
@@ -51,10 +57,11 @@ REQUEST_CATEGORIES = {
     "service",
     "session",
     "turn",
+    "update",
     "unknown",
 }
 
-_SAFE_ID = re.compile(r"^(?:fmc|restart)_[A-Za-z0-9_-]{1,96}$")
+_SAFE_ID = re.compile(r"^(?:fmc|restart|fmu)_[A-Za-z0-9_-]{1,96}$")
 
 
 def request_category(message_type: Any) -> str:
@@ -90,7 +97,7 @@ class DiagnosticBuffer:
         severity, message = DIAGNOSTIC_MESSAGES[category]
         safe_ids: dict[str, str] = {}
         for key, value in (ids or {}).items():
-            if key != "clientId" or not isinstance(value, str) or not _SAFE_ID.fullmatch(value):
+            if key not in {"clientId", "operationId"} or not isinstance(value, str) or not _SAFE_ID.fullmatch(value):
                 raise ValueError("diagnostic identifier is not safe")
             safe_ids[key] = value
         observed = (

@@ -68,28 +68,29 @@ foreman status      # show service status and recent errors
 foreman logs        # follow the user-service journal
 ```
 
-To update:
+To check or install a signed stable server update:
 
 ```sh
-cd foreman
-git pull
-./install.sh
+foreman update --check
+foreman update
 ```
 
-The installer stages and validates a complete replacement, preserves the
-existing configuration and paired-client state, removes obsolete installed
-files, and restores the prior payload if service activation fails. For tagged
-upgrade and Linux rollback commands—and Android's no-in-place-downgrade
-constraint—see the [installation guide](docs/install.md).
+The same durable update engine backs the CLI and the web/Android About screens.
+It refuses to interrupt active or waiting sessions and pending approval/input,
+verifies the release's pinned signing certificate, signed manifest, checksum,
+archive, version, and protocol, then delegates restart, health checking, and
+rollback to an external user-systemd helper. A verified checkout plus
+`./install.sh` remains the manual installation and recovery path. For exact
+exit codes and recovery commands, see the [installation guide](docs/install.md).
 
-Foreman requires Linux with user systemd, Python 3.10+, Git, and an authenticated
+Foreman requires Linux with user systemd, Python 3.10+, Git, OpenSSL, and an authenticated
 `codex` CLI. Its pinned Python dependency and prebuilt web assets are included,
 so installation does not require pip, a Python virtual environment, Node, Java,
 root access, or network access. Tagged Linux archives and signed Android APKs
 are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
 as an alternative.
 
-Web and Android show a nonintrusive release check in **Settings → About**. The
+Web and Android show release discovery and authorized server update controls in **Settings → About**. The
 Linux service performs one cached lookup against the official
 `mkaltner/foreman` GitHub releases endpoint and both clients compare their own
 component versions with complete stable artifacts. Cached results remain useful
@@ -384,6 +385,15 @@ them; unsupported Claude permission requests must be resolved in Claude Code.
 Any authenticated Foreman client may revoke another paired token. Client lists
 contain only the saved label, client type, pairing time, and live connection
 state—never token values, token hashes, pairing codes, or source addresses.
+
+Server update checks are authenticated reads; activation requires a full-access
+paired client or the private local control socket. Remote clients cannot supply
+a repository, URL, version, path, command, or service name. GitHub metadata only
+discovers a candidate: Foreman also requires the pinned release certificate,
+detached manifest signature, signed checksum, safe archive, compatible version,
+and compatible protocol before the external helper can activate it. Active or
+waiting work and pending approval/input fail closed. See the complete
+[server-update trust and recovery model](docs/server-updates.md).
 
 ## Codex Desktop runtime
 

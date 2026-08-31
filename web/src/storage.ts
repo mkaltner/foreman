@@ -1,6 +1,7 @@
 import type { ActivityDetail } from "./activity-detail";
 import { isProviderId, type ProviderId, type ReleaseUpdateSnapshot } from "./protocol";
 import { normalizeReleaseUpdates } from "./update-status";
+import { forgetServerUpdateOperationId } from "./server-update";
 
 export type ColorMode = "system" | "light" | "dark";
 export type ThemeId = "foreman" | "harbor" | "grove" | "ember" | "dune" | "slate" | "high-contrast";
@@ -230,6 +231,7 @@ export function forgetStoredHost(
   storage: Storage = localStorage,
 ): HostRegistry {
   HOST_SCOPED_KEYS.forEach((key) => storage.removeItem(scopedKey(key, hostId)));
+  forgetServerUpdateOperationId(hostId, storage);
   const remaining = registry.hosts.filter(({ id }) => id !== hostId);
   const nextActive = registry.activeHostId === hostId
     ? remaining.find(({ isDefault }) => isDefault)?.id ?? remaining[0]?.id ?? null

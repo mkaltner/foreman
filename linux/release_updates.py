@@ -224,6 +224,8 @@ def parse_release_response(body: bytes) -> dict[str, dict[str, Any]]:
             complete = (
                 release["assets"].get(artifact) == 1
                 and release["assets"].get("SHA256SUMS") == 1
+                and release["assets"].get("SHA256SUMS.sig") == 1
+                and release["assets"].get("foreman-release-cert.pem") == 1
             )
             if newest is None:
                 newest = _release_projection(release, complete)

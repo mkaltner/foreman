@@ -27,8 +27,11 @@ version and `releaseBuild=true`; development resumes in a follow-up reviewed PR.
 
 Settings → About discovers only the stable channel: drafts, GitHub prereleases,
 and SemVer prerelease tags are excluded from ordinary update offers. A component
-release is supported only when its exact nonempty APK or Linux archive and one
-nonempty `SHA256SUMS` are uploaded without duplicate names. Automatic GitHub
+release is supported only when its exact nonempty APK or Linux archive,
+`SHA256SUMS`, `SHA256SUMS.sig`, and `foreman-release-cert.pem` are uploaded
+without duplicate names. The checksum manifest is signed by the established
+Android release key and consumers pin its certificate fingerprint; GitHub
+metadata alone is never artifact verification. Automatic GitHub
 source archives do not count. If the newest stable release is incomplete, About
 can point out the unavailable artifact while offering only the newest older
 complete component release. Development, prerelease, malformed, and
@@ -63,7 +66,8 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
    install that exact APK on the physical test device.
 6. Build the Linux archive with the workflow exclusions. Inspect its complete
    file list, dependency licenses, committed web assets, absence of Python cache
-   files, and extraction/install behavior. Verify every SHA-256 checksum.
+   files, extraction/install behavior, external updater, and enabled boot
+   recovery unit. Verify every SHA-256 checksum.
 7. Review the complete resolved web and Android dependency inventories and
    package every legally required license and notice. `THIRD_PARTY_NOTICES.md`
    is only a starting inventory; it is not a completed legal review.
@@ -80,18 +84,19 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
 points at the tested commit. It validates release metadata, signing-secret
 presence, Linux/web/Android tests, committed web assets, signed APK metadata and
 certificate, the Linux archive, dependency-license marker, and checksums. It
-then creates an unpublished draft, uploads the APK, Linux archive, and
-`SHA256SUMS`, queries GitHub for the exact nonempty asset set, downloads those
-assets into an empty directory, and repeats checksum, APK, and archive
-verification. Only a fully verified draft is published. A failure after draft
+then creates an unpublished draft, uploads the APK, Linux archive, signed
+checksum manifest, detached signature, and public signing certificate, queries
+GitHub for the exact nonempty asset set, downloads those assets into an empty
+directory, and repeats signature, checksum, APK, and archive verification. Only
+a fully verified draft is published. A failure after draft
 creation leaves the release unpublished for inspection; it must never be
 published or have assets replaced until the cause is resolved. Prerelease tags
 are marked prereleases and use `docs/releases/<version>.md` when present.
 
 `.github/workflows/release-asset-guard.yml` independently checks future
 `release.published` events, including releases published manually rather than by
-the tagged workflow. A release without the exact three custom assets or with
-invalid checksums is immediately returned to draft. The guard is event-driven
+the tagged workflow. A release without the exact five custom assets or with an
+invalid signature or checksum is immediately returned to draft. The guard is event-driven
 and is not applied retroactively to releases that existed before it was merged.
 GitHub's automatic source ZIP and TAR links are not custom release assets and do
 not satisfy this check.

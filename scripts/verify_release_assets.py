@@ -7,6 +7,9 @@ import argparse
 import hashlib
 import json
 import re
+import ssl
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +18,15 @@ TAG_PATTERN = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?$")
 CHECKSUM_PATTERN = re.compile(r"^([0-9A-Fa-f]{64}) [ *](.+)$")
 
 
-def expected_asset_names(tag: str) -> tuple[str, str, str]:
+def expected_asset_names(tag: str) -> tuple[str, str, str, str, str]:
     if not TAG_PATTERN.fullmatch(tag):
         raise ValueError(f"invalid release tag {tag!r}")
     return (
         f"foreman-{tag}.apk",
         f"foreman-linux-{tag}.tar.gz",
         "SHA256SUMS",
+        "SHA256SUMS.sig",
+        "foreman-release-cert.pem",
     )
 
 
@@ -105,7 +110,10 @@ def verify_directory(directory: Path, tag: str) -> list[str]:
             continue
         checksums[name] = digest.lower()
 
-    payload_names = expected_names - {"SHA256SUMS"}
+    payload_names = {
+        f"foreman-{tag}.apk",
+        f"foreman-linux-{tag}.tar.gz",
+    }
     missing_checksums = sorted(payload_names - set(checksums))
     unexpected_checksums = sorted(set(checksums) - payload_names)
     if missing_checksums:
@@ -120,6 +128,32 @@ def verify_directory(directory: Path, tag: str) -> list[str]:
             if actual_digest != checksums[name]:
                 errors.append(f"checksum mismatch for {name}")
     return errors
+
+
+def verify_release_signature(directory: Path, expected_fingerprint: str) -> list[str]:
+    certificate = directory / "foreman-release-cert.pem"
+    signature = directory / "SHA256SUMS.sig"
+    manifest = directory / "SHA256SUMS"
+    try:
+        der = ssl.PEM_cert_to_DER_cert(certificate.read_text(encoding="ascii"))
+        if hashlib.sha256(der).hexdigest() != expected_fingerprint:
+            return ["release signing certificate does not match the pinned fingerprint"]
+        extracted = subprocess.run(
+            ["openssl", "x509", "-in", str(certificate), "-pubkey", "-noout"],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if extracted.returncode != 0 or not extracted.stdout:
+            return ["release signing certificate is invalid"]
+        with tempfile.NamedTemporaryFile() as public_key:
+            public_key.write(extracted.stdout)
+            public_key.flush()
+            verified = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-verify", public_key.name, "-signature", str(signature), str(manifest)],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            )
+        return [] if verified.returncode == 0 else ["release manifest signature is invalid"]
+    except (OSError, UnicodeError, ValueError, subprocess.TimeoutExpired):
+        return ["release manifest signature could not be verified"]
 
 
 def _parser() -> argparse.ArgumentParser:

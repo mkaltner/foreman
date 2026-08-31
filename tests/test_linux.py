@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,7 @@ from approvals import (  # noqa: E402
     bounded_approval_params,
 )
 from foreman_service import (  # noqa: E402
+    AccessError,
     CapabilityError,
     Client,
     Foreman,
@@ -917,6 +919,43 @@ class SessionPresenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_activation_rejects_new_claude_turns(self) -> None:
+        class ActivatingUpdateManager:
+            def status(self, operation_id=None):
+                return {
+                    "operation": {
+                        "id": "fmu_1234567890abcdef",
+                        "phase": "activationScheduled",
+                    }
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FakeClaude.instances.clear()
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            app.update_manager = ActivatingUpdateManager()  # type: ignore[assignment]
+            with self.assertRaisesRegex(RuntimeError, "wait for reconnection"):
+                await app.dispatch(
+                    Client(None, "remote", authenticated=True),
+                    {
+                        "type": "provider.session.start",
+                        "payload": {
+                            "provider": "claude-code",
+                            "repositoryId": ".",
+                            "text": "must not start",
+                        },
+                    },
+                )
+            self.assertEqual(FakeClaude.instances[-1].starts, [])
+
     async def test_codex_provider_subscription_delivers_live_conversation_events(
         self,
     ) -> None:
@@ -1760,6 +1799,74 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(self.app.restart_scheduled)
         self.assertEqual(self.calls, [])
+
+    async def test_update_authorization_and_blockers_are_structured_and_private(self) -> None:
+        class FakeUpdateManager:
+            async def check(self, refresh=True):
+                return {"updateAvailable": True, "blockers": []}
+
+            def status(self, operation_id=None):
+                return {"operation": None}
+
+            async def start(self, request_id=None, authorization_principal="local"):
+                self.authorization_principal = authorization_principal
+                return {"id": "fmu_1234567890abcdef", "phase": "downloading"}
+
+        self.app.update_manager = FakeUpdateManager()  # type: ignore[assignment]
+        request = {"version": 1, "type": "update.start", "payload": {"requestId": "android_1"}}
+        with self.assertRaisesRegex(PermissionError, "authenticate"):
+            await self.app.dispatch(Client(None, "remote"), request)
+        with self.assertRaisesRegex(AccessError, "Full-access"):
+            await self.app.dispatch(Client(None, "remote", authenticated=True, access="read"), request)
+        full_client = Client(
+            None,
+            "remote",
+            authenticated=True,
+            device_id="fmc_authorized",
+            access="full",
+        )
+        result = await self.app.dispatch(full_client, request)
+        self.assertEqual(result["operation"]["id"], "fmu_1234567890abcdef")
+        self.assertEqual(self.app.update_manager.authorization_principal, "device:fmc_authorized")
+
+        self.app.codex.approvals = [{"id": "approval-secret", "command": "do not expose"}]
+        self.app.codex.inputs = [{"id": "input-secret", "prompt": "do not expose"}]
+        self.app.codex.normal_threads = [
+            {**THREAD, "id": "working", "status": {"type": "active", "activeFlags": []}},
+            {**THREAD, "id": "waiting", "status": {"type": "active", "activeFlags": ["waitingOnApproval"]}},
+        ]
+        blockers = await self.app.update_blockers()
+        self.assertEqual(
+            {item["category"] for item in blockers},
+            {"workingSession", "waitingSession", "pendingApproval", "pendingInput"},
+        )
+        serialized = json.dumps(blockers)
+        self.assertNotIn("approval-secret", serialized)
+        self.assertNotIn("input-secret", serialized)
+        self.assertNotIn("do not expose", serialized)
+
+    async def test_update_activation_rejects_new_turns(self) -> None:
+        class ActivatingUpdateManager:
+            def status(self, operation_id=None):
+                return {
+                    "operation": {
+                        "id": "fmu_1234567890abcdef",
+                        "phase": "activationScheduled",
+                    }
+                }
+
+        self.app.update_manager = ActivatingUpdateManager()  # type: ignore[assignment]
+        client = Client(None, "remote", authenticated=True)
+        with self.assertRaisesRegex(RuntimeError, "wait for reconnection"):
+            await self.app.dispatch(
+                client,
+                {
+                    "version": 1,
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-1", "text": "must not start"},
+                },
+            )
+        self.assertEqual(self.app.codex.prompts, [])
 
     async def test_reconnect_reconciliation_preserves_authoritative_recency(self) -> None:
         await self.app.codex_event(
@@ -4603,6 +4710,28 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
             for key, value in [line.split(":", 1)]
         }
         return lines[0], headers, body
+
+    async def test_private_control_socket_is_mode_bounded_and_update_only(self) -> None:
+        self.assertEqual(stat.S_IMODE(self.app.control_path.stat().st_mode), 0o600)
+        reader, writer = await asyncio.open_unix_connection(self.app.control_path)
+        try:
+            writer.write(protocol.encode({
+                "version": 1, "id": "local-hello", "type": "hello", "payload": {},
+            }))
+            await writer.drain()
+            hello = await protocol.read(reader)
+            self.assertTrue(hello["payload"]["capabilities"]["serverUpdate"])
+
+            writer.write(protocol.encode({
+                "version": 1, "id": "local-denied", "type": "service.status", "payload": {},
+            }))
+            await writer.drain()
+            denied = await protocol.read(reader)
+            self.assertEqual(denied["type"], "error")
+            self.assertEqual(denied["payload"]["code"], "insufficientAccess")
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def test_serves_static_assets_health_and_validates_origin(self) -> None:
         status, headers, body = await self.http_get("/")

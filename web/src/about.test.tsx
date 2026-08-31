@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   AboutSection,
@@ -95,6 +95,47 @@ describe("AboutSection", () => {
       "rel",
       "noreferrer noopener",
     );
+  });
+
+  it("reviews blockers and recovery behavior before allowing activation", async () => {
+    const onReviewUpdate = vi.fn(async () => ({
+      currentVersion: "0.9.0",
+      releaseBuild: true,
+      source: "Official Foreman GitHub releases",
+      sourceUrl: FOREMAN_RELEASES_URL,
+      updateAvailable: true,
+      target: completeRelease,
+      blockers: [{ category: "pendingApproval" as const, count: 1 }],
+      operation: null,
+    }));
+    const onStartUpdate = vi.fn();
+    render(<AboutSection serverVersion="0.9.0" serverReleaseBuild connected releaseUpdates={releaseUpdates} onReviewUpdate={onReviewUpdate} onStartUpdate={onStartUpdate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Review server update" }));
+    await screen.findByRole("heading", { name: "Review server update" });
+    expect(screen.getByText(/1 pending approval/)).toBeInTheDocument();
+    expect(screen.getByText(/restart only/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install and restart" })).toBeDisabled();
+    expect(onStartUpdate).not.toHaveBeenCalled();
+  });
+
+  it("shows durable progress and actionable rollback recovery", async () => {
+    render(<AboutSection serverVersion="1.0.2" serverReleaseBuild connected updateOperation={{
+      id: "fmu_1234567890abcdef",
+      phase: "recoveryRequired",
+      currentVersion: "1.0.2",
+      targetVersion: "1.0.3",
+      source: "Official Foreman GitHub releases",
+      sourceUrl: FOREMAN_RELEASES_URL,
+      releaseNotesUrl: "https://github.com/mkaltner/foreman/releases/tag/v1.0.3",
+      progress: 100,
+      createdAt: "2026-08-31T00:00:00Z",
+      updatedAt: "2026-08-31T00:01:00Z",
+      message: "Automatic rollback failed.",
+      recoveryCommand: "foreman update --recover",
+    }} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Recovery required");
+    expect(screen.getByText("foreman update --recover")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("progressbar")).toHaveValue(100));
   });
 
   it("marks cached offline release information stale without blocking About", () => {

@@ -222,3 +222,105 @@ internal fun decodeReleaseUpdates(json: Json, element: JsonElement?): ReleaseUpd
     runCatching { element?.let { json.decodeFromJsonElement<ReleaseUpdateSnapshot>(it) } }
         .getOrNull()
         .let(::validatedReleaseUpdates)
+
+@Serializable
+internal data class ServerUpdateBlocker(
+    val category: String,
+    val count: Int,
+)
+
+@Serializable
+internal data class ServerUpdateOperation(
+    val id: String,
+    val phase: String,
+    val currentVersion: String,
+    val targetVersion: String,
+    val source: String,
+    val sourceUrl: String,
+    val releaseNotesUrl: String,
+    val progress: Int,
+    val createdAt: String,
+    val updatedAt: String,
+    val completedAt: String? = null,
+    val resultCode: String? = null,
+    val message: String? = null,
+    val recoveryCommand: String? = null,
+)
+
+@Serializable
+internal data class ServerUpdateCheck(
+    val currentVersion: String,
+    val releaseBuild: Boolean,
+    val source: String,
+    val sourceUrl: String,
+    val updateAvailable: Boolean,
+    val target: ForemanRelease? = null,
+    val blockers: List<ServerUpdateBlocker> = emptyList(),
+    val operation: ServerUpdateOperation? = null,
+)
+
+internal val terminalServerUpdatePhases = setOf(
+    "succeeded", "rolledBack", "recoveryRequired", "blocked", "failed", "interrupted",
+)
+private val serverUpdatePhases = terminalServerUpdatePhases + setOf(
+    "downloading", "verifying", "staging", "activationScheduled",
+    "activating", "restarting", "healthChecking", "rollingBack",
+)
+private val blockerCategories = setOf(
+    "workingSession", "waitingSession", "pendingApproval", "pendingInput",
+)
+private const val OFFICIAL_RELEASE_SOURCE = "https://github.com/mkaltner/foreman/releases"
+private const val OFFICIAL_RELEASE_SOURCE_LABEL = "Official Foreman GitHub releases"
+
+internal fun validatedServerUpdateOperation(value: ServerUpdateOperation?): ServerUpdateOperation? =
+    value?.takeIf {
+        it.id.matches(Regex("^fmu_[A-Za-z0-9_-]{16,80}$")) &&
+            it.phase in serverUpdatePhases &&
+            parseSemVer(it.currentVersion) != null &&
+            parseSemVer(it.targetVersion)?.prerelease?.isEmpty() == true &&
+            it.source == OFFICIAL_RELEASE_SOURCE_LABEL && it.sourceUrl == OFFICIAL_RELEASE_SOURCE &&
+            it.releaseNotesUrl == "${RELEASE_NOTES_PREFIX}v${it.targetVersion}" &&
+            it.progress in 0..100 && isoTimestampPattern.matches(it.createdAt) && isoTimestampPattern.matches(it.updatedAt) &&
+            (it.completedAt == null || isoTimestampPattern.matches(it.completedAt)) &&
+            (it.message == null || it.message.isNotEmpty() && it.message.length <= 500) &&
+            (it.resultCode == null || it.resultCode.isNotEmpty() && it.resultCode.length <= 80) &&
+            (it.recoveryCommand == null || it.recoveryCommand == "foreman update --recover")
+    }
+
+internal fun validatedServerUpdateCheck(value: ServerUpdateCheck?): ServerUpdateCheck? =
+    value?.takeIf {
+        parseSemVer(it.currentVersion) != null && it.source == OFFICIAL_RELEASE_SOURCE_LABEL &&
+            it.sourceUrl == OFFICIAL_RELEASE_SOURCE &&
+            it.blockers.all { blocker -> blocker.category in blockerCategories && blocker.count in 1..10_000 } &&
+            (it.operation == null || validatedServerUpdateOperation(it.operation) != null) &&
+            (!it.updateAvailable || it.target != null) &&
+            (it.target == null || validRelease(it.target, supported = it.updateAvailable) != null)
+    }
+
+internal fun decodeServerUpdateOperation(json: Json, element: JsonElement?): ServerUpdateOperation? =
+    runCatching { element?.let { json.decodeFromJsonElement<ServerUpdateOperation>(it) } }
+        .getOrNull()
+        .let(::validatedServerUpdateOperation)
+
+internal fun decodeServerUpdateCheck(json: Json, element: JsonElement?): ServerUpdateCheck? =
+    runCatching { element?.let { json.decodeFromJsonElement<ServerUpdateCheck>(it) } }
+        .getOrNull()
+        .let(::validatedServerUpdateCheck)
+
+internal fun serverUpdatePhaseLabel(phase: String): String =
+    mapOf(
+        "downloading" to "Downloading",
+        "verifying" to "Verifying signature",
+        "staging" to "Staging",
+        "activationScheduled" to "Activation scheduled",
+        "activating" to "Activating",
+        "restarting" to "Restarting Foreman",
+        "healthChecking" to "Health checking",
+        "rollingBack" to "Rolling back",
+        "succeeded" to "Update complete",
+        "rolledBack" to "Previous version restored",
+        "recoveryRequired" to "Recovery required",
+        "blocked" to "Blocked by active work",
+        "failed" to "Update failed",
+        "interrupted" to "Update interrupted",
+    )[phase] ?: "Update"

@@ -85,7 +85,9 @@ Linux files:
 - `claude_code.py` and `claude_bridge/bridge.mjs`: optional Linux-only Claude SDK lifecycle boundary;
 - `session_identity.py`: the small explicit `provider + hostId + sessionId` identity value;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
-- `foreman`, `install.sh`, and `foreman.service`: operation and installation.
+- `foreman`, `install.sh`, and `foreman.service`: operation and installation;
+- `foreman_updater.py` and `foreman-update-recovery.service`: external
+  activation/rollback ownership and boot-time recovery of durable update phases.
 
 The React/TypeScript SPA under `web/` and the Compose app under `android/` reload
 provider-authoritative sessions and history after reconnect, resubscribe to the
@@ -198,12 +200,15 @@ The authenticated client projection never returns a token or digest. Codex store
 transcripts; Git supplies repository state. Foreman never offers arbitrary
 commands or Git writes.
 
-The only remote host mutation is the optional, authenticated Foreman restart.
-It is disabled by default, has no command or unit-name parameter, flushes a
+The optional, authenticated Foreman restart is disabled by default, has no
+command or unit-name parameter, flushes a
 scheduled acknowledgement, and enqueues a user-systemd restart of only
 `foreman.service`. Client reconnect is the completion signal. Desktop Codex,
-raw journals, arbitrary shell, reboot, upgrades, configuration, files, roles,
-and persistent audit storage are outside this surface.
+raw journals, arbitrary shell, reboot, configuration, and files remain outside
+this surface. The one additional bounded mutation is the full-access server
+update protocol defined in [server-updates.md](server-updates.md). It accepts no
+remote URL, version, path, command, or unit name and delegates replacement and
+recovery to a durable external helper.
 
 Install replacement is transactional at the application-directory boundary.
 Configuration and pairing state live outside that boundary and are never part
@@ -216,3 +221,9 @@ application shutdown deadline shorter than the systemd unit's stop timeout.
 Reaching that deadline records only a fixed sanitized diagnostic and lets
 systemd finish the process teardown; Foreman still never signals Desktop's
 runtime.
+
+Server updates use the same installation boundaries but add signed provenance,
+a durable state machine, a cross-process lock, an immediate pre-activation
+session-safety check, external restart ownership, versioned health checking,
+and automatic rollback. Configuration, paired-client data, session metadata,
+and provider state remain outside the replacement set.
