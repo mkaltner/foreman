@@ -29,9 +29,6 @@ requires reprioritization.
 
 - [ ] [#71 Show and retain every provider account-usage
   limit](https://github.com/mkaltner/foreman/issues/71).
-- [ ] [#67 Show transient success feedback on copy
-  actions](https://github.com/mkaltner/foreman/issues/67).
-
 ### Architecture gate: [#60 First-class project management](https://github.com/mkaltner/foreman/issues/60)
 
 Model projects as durable host-scoped workspaces, optionally backed by Git, and
@@ -61,6 +58,8 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Show transient success feedback on copy actions
+  ([PR #89](https://github.com/mkaltner/foreman/pull/89)).
 - [x] Support signed Android APK self-update through Android's system installer
   ([PR #88](https://github.com/mkaltner/foreman/pull/88)).
 - [x] Add a shared recoverable Foreman server update mechanism
