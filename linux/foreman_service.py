@@ -280,9 +280,8 @@ class Foreman:
         }
         configured_providers = self.state.provider_enablement()
         self.provider_enabled = {
-            provider: configured_providers.get(
-                provider, self.provider_prerequisites[provider]
-            )
+            provider: self.provider_prerequisites[provider]
+            and configured_providers.get(provider, True)
             for provider in PROVIDER_ORDER
         }
         if not any(
@@ -1028,6 +1027,10 @@ class Foreman:
     async def _configure_provider(self, provider: str, enabled: bool) -> None:
         if self.provider_enabled[provider] == enabled:
             return
+        if enabled and not self.provider_prerequisites[provider]:
+            raise ValueError(
+                "provider prerequisites are unavailable; install or repair the provider runtime first"
+            )
         if not enabled:
             if sum(self.provider_enabled.values()) <= 1:
                 raise ValueError("at least one provider must remain enabled")
