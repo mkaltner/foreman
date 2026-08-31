@@ -5,40 +5,89 @@
 Install and authenticate at least one supported provider CLI: Codex or Claude
 Code. Confirm `codex --version` or `claude --version` works; installing both is
 also supported. Foreman never installs or authenticates either CLI. It needs
-Python 3.10+, Git, OpenSSL, and a user systemd session. Its pinned `websockets`
-dependency is included in the install payload, so installation doesn't require
-pip, venv support, or root access.
+Python 3.10+, OpenSSL, `curl`, Bash, and a user systemd session. Its pinned
+`websockets` dependency is included in the install payload, so installation
+doesn't require pip, venv support, or root access.
+
+The recommended installation resolves and verifies the newest complete stable
+release before running its versioned installer:
 
 ```sh
-git clone https://github.com/mkaltner/foreman.git
-cd foreman
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh
 foreman status
 foreman pair
 foreman web
 ```
 
-Update by pulling the checkout and rerunning the same transactional installer:
+Use `--version` to select an exact complete stable release:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh -s -- --version v1.0.4
+```
+
+The bootstrapper downloads into a mode-`0700` temporary directory, cleans it on
+success, failure, and signals, and makes no installation change during release
+selection or verification. It prints the selected release before delegating to
+the archive's `install.sh`. A same-version run is a normal transactional
+reinstall: the bundled installer stages and validates the complete payload,
+preserves configuration and state, and rolls back an activation failure.
+
+### Download and inspect first
+
+Users who avoid `curl | sh` can keep the bootstrap step visible:
+
+```sh
+install_tmp="$(mktemp -d)"
+chmod 700 "$install_tmp"
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh -o "$install_tmp/install-foreman.sh"
+less "$install_tmp/install-foreman.sh"
+sh "$install_tmp/install-foreman.sh" --version v1.0.4
+rm -rf -- "$install_tmp"
+```
+
+If inspection is interrupted, remove the private directory when finished. The
+bootstrapper's own temporary release directory is still cleaned automatically.
+
+### Manual signed release
+
+The [GitHub release page](https://github.com/mkaltner/foreman/releases) exposes
+the versioned Linux archive plus `SHA256SUMS`, `SHA256SUMS.sig`, and
+`foreman-release-cert.pem`. A manual installation must download the exact five
+custom assets into an empty private directory, verify that the certificate DER
+SHA-256 is
+`80d479d1a8f9f038c6977a1cfb68a2b45c3117492c364620e48babebf1810ad3`,
+verify the detached signature over the unmodified checksum manifest, verify the
+archive checksum named by that signed manifest, and reject unsafe archive
+entries before extraction. Then run only the verified archive's `install.sh`.
+The bootstrapper is the maintained implementation of those checks; its source
+is designed to be downloaded and inspected for a manual workflow. Never use
+GitHub's mutable branch archive or automatic source archive as a release
+payload.
+
+### Source checkout
+
+The source-checkout installer remains available for development and recovery:
+
+```sh
+git clone https://github.com/mkaltner/foreman.git
 cd foreman
-git pull
 ./install.sh
 ```
 
-For a reproducible release upgrade, verify the tag and check it out explicitly
-before reinstalling. Do not run an unreviewed branch checkout on a host that
-controls sensitive Codex sessions:
+Update a source checkout by pulling it and rerunning the transactional
+installer. For a reproducible release, verify and detach the exact tag first.
+Do not run an unreviewed branch checkout on a host that controls sensitive
+provider sessions:
 
 ```sh
-git fetch origin tag v1.0.0
-git checkout --detach v1.0.0
-python3 scripts/verify_release.py --tag v1.0.0
+git fetch origin tag v1.0.4
+git checkout --detach v1.0.4
+python3 scripts/verify_release.py --tag v1.0.4
 ./install.sh
 ```
 
-The tagged Linux archive from a GitHub release contains the same install
-payload and is an alternative to cloning the repository.
+See [`bootstrap-installer.md`](bootstrap-installer.md) for release selection,
+trust boundaries, failure behavior, and key rotation.
 
 Claude Code web and Android support requires an authenticated native Claude Code
 CLI, Node.js 20 or newer, and the exact SDK lock under `linux/claude_bridge`.

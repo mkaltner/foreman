@@ -48,10 +48,33 @@ Claude Code (`claude`). A Claude-capable host also needs Node.js 20 or newer.
 Foreman does not install or authenticate either provider CLI.
 
 ```sh
-git clone https://github.com/mkaltner/foreman.git
-cd foreman
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh
 ```
+
+The bootstrapper resolves the newest complete stable GitHub release, verifies
+its pinned signing identity, signed checksum manifest, Linux archive checksum,
+and safe archive layout, then delegates installation to that release's bundled
+`install.sh`. It never uses `sudo`. Install a specific stable release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh -s -- --version v1.0.4
+```
+
+To inspect the bootstrapper instead of piping it directly to a shell, download
+it into a private temporary directory first:
+
+```sh
+install_tmp="$(mktemp -d)"
+chmod 700 "$install_tmp"
+curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh -o "$install_tmp/install-foreman.sh"
+less "$install_tmp/install-foreman.sh"
+sh "$install_tmp/install-foreman.sh"
+rm -rf -- "$install_tmp"
+```
+
+Manual signed-release and source-checkout installation remain supported. See
+the [installation guide](docs/install.md) and the
+[bootstrap trust model](docs/bootstrap-installer.md).
 
 Then verify the user service, create a short-lived pairing code, and print the
 browser URL:
@@ -88,13 +111,14 @@ rollback to an external user-systemd helper. A verified checkout plus
 `./install.sh` remains the manual installation and recovery path. For exact
 exit codes and recovery commands, see the [installation guide](docs/install.md).
 
-Foreman requires Linux with user systemd, Python 3.10+, Git, OpenSSL, and at
-least one authenticated `codex` or `claude` CLI. Its pinned Python dependency
+Foreman requires Linux with user systemd, Python 3.10+, OpenSSL, `curl`, Bash,
+and at least one authenticated `codex` or `claude` CLI. Its pinned Python dependency
 and prebuilt web assets are included, so Codex-only installation does not
-require pip, a Python virtual environment, Node, Java, root access, or network
-access. Tagged Linux archives and signed Android APKs
-are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
-as an alternative.
+require Git, pip, a Python virtual environment, Node, Java, or root access.
+After the bootstrapper downloads the signed release, the bundled Codex-only
+installer does not need additional network access. Tagged Linux archives and
+signed Android APKs are available from
+[GitHub releases](https://github.com/mkaltner/foreman/releases) as an alternative.
 
 Web and Android show release discovery and authorized server update controls in **Settings → About**. The
 Linux service performs one cached lookup against the official
@@ -420,6 +444,14 @@ and compatible protocol before the external helper can activate it. Active or
 waiting work and pending approval/input fail closed. See the complete
 [server-update trust and recovery model](docs/server-updates.md).
 
+The one-command Linux bootstrapper uses the same five-asset stable-release
+contract but has a separate, inspectable acquisition path for a host without
+Foreman installed. It pins the production certificate fingerprint in the
+bootstrap script, treats the downloaded certificate only as key material to
+compare against that pin, verifies the detached manifest signature and archive
+checksum, and rejects unsafe archive entries before invoking the signed
+`install.sh`. See the [bootstrap installer trust model](docs/bootstrap-installer.md).
+
 Android app updates use the same official release certificate and signed
 checksum contract but never invoke the server updater. The app also requires
 the downloaded package signer to match installed Foreman and requires both a
@@ -474,6 +506,7 @@ Issues and feedback are welcome in the
 
 - [Product roadmap](ROADMAP.md)
 - [Installation guide](docs/install.md)
+- [Bootstrap installer security model](docs/bootstrap-installer.md)
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
 - [Claude Code integration](docs/claude-code-integration.md)
