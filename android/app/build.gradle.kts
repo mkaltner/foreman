@@ -17,6 +17,10 @@ val foremanVersionName =
     providers.gradleProperty("foremanVersionName").orNull
         ?: releaseProperties.getProperty("foremanVersion")
 val foremanProtocolVersion = releaseProperties.getProperty("protocolVersion").toInt()
+val foremanAndroidSigningCertificateSha256 =
+    releaseProperties.getProperty("androidSigningCertificateSha256")
+        ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        ?: error("release.properties: invalid androidSigningCertificateSha256")
 val foremanReleaseBuild =
     releaseProperties.getProperty("releaseBuild")?.toBooleanStrictOrNull()
         ?: error("release.properties: releaseBuild must be true or false")
@@ -43,6 +47,11 @@ android {
         buildConfigField("int", "FOREMAN_PROTOCOL_VERSION", foremanProtocolVersion.toString())
         buildConfigField("String", "FOREMAN_BUILD_COMMIT", "\"$foremanBuildCommit\"")
         buildConfigField("boolean", "FOREMAN_RELEASE_BUILD", foremanReleaseBuild.toString())
+        buildConfigField(
+            "String",
+            "FOREMAN_ANDROID_SIGNING_CERTIFICATE_SHA256",
+            "\"$foremanAndroidSigningCertificateSha256\"",
+        )
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -73,7 +82,23 @@ android {
     }
 
     testOptions {
-        unitTests.isReturnDefaultValues = true
+        unitTests {
+            isReturnDefaultValues = true
+            isIncludeAndroidResources = true
+            all {
+                it.jvmArgs(
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                    "--add-opens=java.base/java.net=ALL-UNNAMED",
+                    "--add-opens=java.base/java.security=ALL-UNNAMED",
+                    "--add-opens=java.base/java.text=ALL-UNNAMED",
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+                )
+            }
+        }
     }
 }
 
@@ -93,4 +118,6 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("org.robolectric:robolectric:4.16")
 }

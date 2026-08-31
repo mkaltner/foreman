@@ -37,9 +37,11 @@ can point out the unavailable artifact while offering only the newest older
 complete component release. Development, prerelease, malformed, and
 newer-than-published builds never receive a downgrade recommendation.
 
-This discovery path never downloads an artifact or modifies an installed
-release. #58 owns shared server installation/restart behavior and #59 owns APK
-download/package installation.
+Discovery itself never downloads an artifact or modifies an installed release.
+The shared server updater and Android APK updater consume the same selected
+stable target and signed release contract through their separate trust and
+recovery models. See `docs/server-updates.md` and
+`docs/android-apk-updates.md`.
 
 Do not derive Android version code from a CI run number. Confirm the previous
 APK with `aapt2 dump badging`; Android cannot install a lower code over a higher
@@ -77,6 +79,9 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
    secret values. Keep recovery material outside the repository with tested,
    access-controlled backups.
 9. Require every PR check to pass and resolve every blocker before merging.
+10. For Android self-update acceptance, run the physical-device matrix in
+    `docs/android-apk-updates.md` with two already approved release-signed APKs.
+    Do not create or publish a tag merely to exercise the updater.
 
 ## Tagged workflow
 
