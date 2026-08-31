@@ -86,6 +86,26 @@ def main() -> None:
     if lock.get("version") != version or lock.get("packages", {}).get("", {}).get("version") != version:
         raise SystemExit("web/package-lock.json version does not match release.properties")
 
+    bridge_package = json.loads(
+        (ROOT / "linux/claude_bridge/package.json").read_text(encoding="utf-8")
+    )
+    bridge_lock = json.loads(
+        (ROOT / "linux/claude_bridge/package-lock.json").read_text(encoding="utf-8")
+    )
+    if bridge_package.get("version") != version:
+        raise SystemExit("linux/claude_bridge/package.json version does not match release.properties")
+    if (
+        bridge_lock.get("version") != version
+        or bridge_lock.get("packages", {}).get("", {}).get("version") != version
+    ):
+        raise SystemExit(
+            "linux/claude_bridge/package-lock.json version does not match release.properties"
+        )
+    require_text(
+        ROOT / "linux/claude_bridge/bridge.mjs",
+        f'CLAUDE_AGENT_SDK_CLIENT_APP: "foreman/{version}"',
+    )
+
     notes = ROOT / "docs" / "releases" / f"{version}.md"
     if not notes.is_file():
         raise SystemExit(f"missing release notes: {notes}")

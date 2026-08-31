@@ -64,7 +64,11 @@ describe("AboutSection", () => {
     expect(screen.getByText("Connected Foreman installation")).toBeInTheDocument();
     expect(screen.getByText("Bundled web client").nextElementSibling).toHaveTextContent("matches server");
     expect(screen.queryByText("This browser’s Foreman web client")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Development or source-checkout build")).toHaveLength(1);
+    if (WEB_RELEASE_BUILD) {
+      expect(screen.queryByText("Development or source-checkout build")).not.toBeInTheDocument();
+    } else {
+      expect(screen.getAllByText("Development or source-checkout build")).toHaveLength(1);
+    }
   });
 
   it("distinguishes development builds from official release builds", () => {
