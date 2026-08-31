@@ -1948,6 +1948,14 @@ function App() {
     }
     return result;
   }, [client]);
+  const currentApprovals = useMemo(
+    () => current ? approvals.filter((approval) => approval.sessionId === current.id) : [],
+    [approvals, current?.id],
+  );
+  const currentInputs = useMemo(
+    () => current ? inputs.filter((pending) => pending.sessionId === current.id) : [],
+    [current?.id, inputs],
+  );
 
   if (!activeHost) {
     return (
@@ -2225,8 +2233,8 @@ function App() {
               <ConversationView
                 key={`${activeHost.id}:${sessionProvider(current)}:${current.id}`}
                 session={current}
-                approvals={approvals.filter((approval) => approval.sessionId === current.id)}
-                inputs={inputs.filter((pending) => pending.sessionId === current.id)}
+                approvals={currentApprovals}
+                inputs={currentInputs}
                 models={sessionProvider(current) === "claude-code" ? claudeModels : models}
                 accessLevels={sessionProvider(current) === "claude-code" ? claudePermissionModes : accessLevels}
                 connected={connected}
