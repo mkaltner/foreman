@@ -2043,17 +2043,23 @@ function App() {
             }
           }}
           onCheckAgain={async () => {
+            const requestHostId = activeHost.id;
             const snapshot = normalizeReleaseUpdates(
               await client.request<Record<string, unknown>>("release.check"),
             );
             if (!snapshot) throw new Error("Foreman returned invalid release information");
+            if (activeHostIdRef.current !== requestHostId) return;
             const info: CachedReleaseUpdateInfo = {
               serverVersion: serviceStatus?.foremanVersion ?? releaseUpdateInfo?.serverVersion ?? null,
               serverReleaseBuild: serviceStatus?.foremanReleaseBuild ?? releaseUpdateInfo?.serverReleaseBuild ?? null,
               snapshot,
             };
-            saveReleaseUpdateInfo(activeHost.id, info);
+            saveReleaseUpdateInfo(requestHostId, info);
             setReleaseUpdateInfo(info);
+            setServiceStatus((current) => current
+              ? { ...current, releaseUpdates: snapshot, receivedAt: Date.now() }
+              : current
+            );
           }}
           onReviewUpdate={hello?.capabilities.serverUpdate ? async () => {
             const requestHostId = activeHost.id;
