@@ -15,6 +15,7 @@ import java.net.URI
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -345,12 +346,14 @@ internal class AndroidAppUpdateViewModel(
     private val source: ApkReleaseSource,
     private val inspector: ApkPackageInspector,
     private val store: ApkUpdateStore,
+    private val ioDispatcher: CoroutineDispatcher,
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(
         application,
         GithubApkReleaseSource(),
         AndroidApkPackageInspector(application),
         ApkUpdateStore(application),
+        Dispatchers.IO,
     )
 
     private val installed = inspector.installed()
@@ -438,7 +441,7 @@ internal class AndroidAppUpdateViewModel(
                 installerClaimed = false,
             ),
         )
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(ioDispatcher) {
             canceledJob?.join()
             if (operation?.id == current.id && operation?.phase == ApkUpdatePhase.Canceled) {
                 store.clearFiles(current.id)
@@ -550,14 +553,14 @@ internal class AndroidAppUpdateViewModel(
         val current = operation ?: return
         val targetCode = current.targetVersionCode ?: return
         viewModelScope.launch {
-            val freshInstalled = withContext(Dispatchers.IO) {
+            val freshInstalled = withContext(ioDispatcher) {
                 runCatching(inspector::installed).getOrNull()
             } ?: return@launch
             if (
                 operation?.id == current.id && freshInstalled.versionCode >= targetCode &&
                 freshInstalled.versionName == current.target.version
             ) {
-                withContext(Dispatchers.IO) { store.clearFiles(current.id) }
+                withContext(ioDispatcher) { store.clearFiles(current.id) }
                 updateOperation(
                     current.copy(
                         phase = ApkUpdatePhase.Completed,
@@ -602,10 +605,10 @@ internal class AndroidAppUpdateViewModel(
         source.download(assets.checksumSignature, signatureFile) { _, _ -> }
         current = current.copy(phase = ApkUpdatePhase.Verifying, progress = 8)
         updateOperation(current)
-        val installedIdentity = withContext(Dispatchers.IO) { inspector.installed() }
+        val installedIdentity = withContext(ioDispatcher) { inspector.installed() }
         val expectedApkName = assets.apk.name
         val expectedArchiveName = "foreman-linux-${assets.tag}.tar.gz"
-        val manifest = withContext(Dispatchers.IO) {
+        val manifest = withContext(ioDispatcher) {
             verifySignedReleaseManifest(
                 certificateBytes = certificateFile.readBytes(),
                 signatureBytes = signatureFile.readBytes(),
@@ -627,11 +630,11 @@ internal class AndroidAppUpdateViewModel(
         updateOperation(current.copy(phase = ApkUpdatePhase.Verifying, progress = 92))
         val expectedChecksum = manifest.checksums[assets.apk.name]
             ?: throw ApkUpdateValidationException("missingApkChecksum", "The signed release data has no APK checksum.")
-        val actualChecksum = withContext(Dispatchers.IO) { sha256(apkFile) }
+        val actualChecksum = withContext(ioDispatcher) { sha256(apkFile) }
         if (actualChecksum != expectedChecksum) {
             throw ApkUpdateValidationException("apkChecksumMismatch", "The downloaded APK failed signed checksum verification.")
         }
-        val downloadedIdentity = withContext(Dispatchers.IO) { inspector.archive(apkFile) }
+        val downloadedIdentity = withContext(ioDispatcher) { inspector.archive(apkFile) }
         validateDownloadedApkIdentity(
             installedIdentity,
             downloadedIdentity,
@@ -658,7 +661,7 @@ internal class AndroidAppUpdateViewModel(
         viewModelScope.launch {
             val current = operation
             val apk = current?.let(store::apkFile)
-            val valid = withContext(Dispatchers.IO) {
+            val valid = withContext(ioDispatcher) {
                 current != null && current.phase == ApkUpdatePhase.Ready &&
                     current.apkSha256 != null && apk?.isFile == true &&
                     runCatching {
