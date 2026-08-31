@@ -4,8 +4,33 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import shutil
 import sys
+
+
+RUNTIME_FILES = ("server_update.py", "release_updates.py", "state.py")
+
+
+def prepare_runtime(state_directory: Path, operation: str, install_directory: Path) -> Path:
+    """Copy the helper runtime before activation can replace the installation."""
+    runtime = state_directory / "updates" / operation / "helper-runtime"
+    ready = runtime / ".ready"
+    if ready.is_file():
+        return runtime
+    shutil.rmtree(runtime, ignore_errors=True)
+    runtime.mkdir(parents=True, mode=0o700)
+    for name in RUNTIME_FILES:
+        source = install_directory / name
+        if not source.is_file():
+            raise RuntimeError("The installed updater runtime is incomplete.")
+        destination = runtime / name
+        shutil.copy2(source, destination)
+        os.chmod(destination, 0o600)
+    ready.write_text("1\n", encoding="ascii")
+    os.chmod(ready, 0o600)
+    return runtime
 
 
 def main() -> int:
@@ -18,7 +43,8 @@ def main() -> int:
     parser.add_argument("--helper-file", type=Path, required=True)
     parser.add_argument("--health-port", type=int, default=8766)
     args = parser.parse_args()
-    sys.path.insert(0, str(args.install_directory))
+    runtime = prepare_runtime(args.state_directory, args.operation, args.install_directory)
+    sys.path.insert(0, str(runtime))
     from server_update import run_external_helper
 
     return run_external_helper(

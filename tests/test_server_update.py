@@ -33,6 +33,7 @@ from server_update import (  # noqa: E402
     signed_checksums,
     verify_certificate_and_signature,
 )
+from foreman_updater import prepare_runtime  # noqa: E402
 
 
 TAG = "v1.0.3"
@@ -340,17 +341,29 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.helper_calls, [])
 
     async def test_interruption_during_download_is_recoverable(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
         class BlockingFetcher(FakeFetcher):
             def fetch(inner_self, url, maximum):
                 if url.startswith(RELEASE_API_PREFIX):
-                    import time
-                    time.sleep(2)
+                    entered.set()
+                    release.wait(5)
                 return super().fetch(url, maximum)
 
         manager = self.manager(fetcher=BlockingFetcher(dict(self.values)))
         started = await manager.start("cancel")
-        await asyncio.sleep(0.05)
-        await manager.stop()
+        for _ in range(100):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(entered.is_set())
+        # Downloading must not monopolize the cross-process coordination lock.
+        with manager.store.lock():
+            pass
+        stopping = asyncio.create_task(manager.stop())
+        release.set()
+        await stopping
         self.assertEqual(manager.store.read(started["id"])["phase"], "interrupted")
 
     async def test_interruption_during_staging_is_recoverable(self) -> None:
@@ -376,6 +389,39 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
             await stopping
         self.assertEqual(manager.store.read(started["id"])["phase"], "interrupted")
 
+    async def test_helper_terminal_outcomes_are_not_overwritten(self) -> None:
+        for phase, result in (("rolledBack", 1), ("recoveryRequired", 3)):
+            with self.subTest(phase=phase):
+                manager = self.manager()
+
+                async def helper(operation_id: str, outcome=phase, code=result) -> int:
+                    manager.store.transition(
+                        operation_id, outcome, progress=100,
+                        resultCode="rollbackSucceeded" if outcome == "rolledBack" else "rollbackFailed",
+                        message="bounded helper outcome",
+                    )
+                    return code
+
+                manager.helper_runner = helper
+                started = await manager.start(f"outcome-{phase}")
+                await manager.task
+                self.assertEqual(manager.store.read(started["id"])["phase"], phase)
+                shutil.rmtree(self.root / "state", ignore_errors=True)
+
+    async def test_transient_helper_restarts_only_after_unexpected_failure(self) -> None:
+        manager = self.manager()
+
+        class Process:
+            async def wait(self) -> int:
+                return 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=Process()) as spawn:
+            self.assertEqual(await manager._systemd_run_helper("fmu_" + "c" * 32), 0)
+        arguments = spawn.call_args.args
+        self.assertIn("--property=Restart=on-failure", arguments)
+        self.assertIn("--property=RestartSec=1s", arguments)
+        self.assertIn("--property=RestartPreventExitStatus=1 2 3 4", arguments)
+
 
 def make_archive_with_payload(directory: Path, payload: Path) -> bytes:
     archive = directory / "release-final.tar.gz"
@@ -395,6 +441,7 @@ class HelperTests(unittest.TestCase):
             "currentVersion": "1.0.2", "targetVersion": "1.0.3",
             "createdAt": "2026-01-01T00:00:00Z",
             "protocolVersion": 1, "healthPort": 9999,
+            "authorizationPrincipal": "local",
         })
         operation_dir = store.operation_directory(operation_id)
         staged = operation_dir / "staged-install"
@@ -431,6 +478,66 @@ class HelperTests(unittest.TestCase):
             self.assertEqual((paths["install"] / "payload").read_text(), "new")
             self.assertEqual(paths["launcher"].read_text(), "new")
             self.assertFalse((store.operation_directory(operation_id) / "backup").exists())
+
+    def test_interrupted_activation_is_restarted_as_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, operation_id, paths = self.prepare(root)
+            operation_dir = store.operation_directory(operation_id)
+            backup = operation_dir / "backup"
+            backup.mkdir(parents=True)
+            for destination, name in (
+                (paths["launcher"], "launcher"),
+                (paths["unit"], "unit"),
+                (paths["helper"], "helper"),
+            ):
+                shutil.copy2(destination, backup / name)
+            store.transition(
+                operation_id, "activating", activationPrepared=True,
+                launcherExisted=True, unitExisted=True, helperExisted=True,
+            )
+            # Simulate the helper dying after the first atomic directory rename.
+            os.replace(paths["install"], backup / "install")
+            self.assertFalse(paths["install"].exists())
+            with patch("server_update._systemctl"), patch("server_update._health", return_value=True):
+                result = run_external_helper(
+                    operation_id=operation_id, state_directory=root / "state",
+                    install_directory=paths["install"], launcher_file=paths["launcher"],
+                    unit_file=paths["unit"], helper_file=paths["helper"], health_port=9999,
+                )
+            self.assertEqual(result, 1)
+            self.assertEqual(store.read(operation_id)["phase"], "rolledBack")
+            self.assertEqual((paths["install"] / "payload").read_text(), "old")
+
+    def test_helper_rechecks_remote_authorization_at_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, operation_id, paths = self.prepare(root)
+            store.transition(operation_id, "activationScheduled", authorizationPrincipal="device:fmc_revoked")
+            (root / "state/state.json").write_text('{"devices":[]}\n', encoding="utf-8")
+            with patch("server_update._systemctl") as systemctl:
+                result = run_external_helper(
+                    operation_id=operation_id, state_directory=root / "state",
+                    install_directory=paths["install"], launcher_file=paths["launcher"],
+                    unit_file=paths["unit"], helper_file=paths["helper"], health_port=9999,
+                )
+            self.assertEqual(result, 4)
+            self.assertEqual(store.read(operation_id)["resultCode"], "authorizationRevoked")
+            self.assertEqual((paths["install"] / "payload").read_text(), "old")
+            systemctl.assert_not_called()
+
+    def test_helper_runtime_survives_install_directory_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "install"
+            install.mkdir()
+            for name in ("server_update.py", "release_updates.py", "state.py"):
+                shutil.copy2(ROOT / "linux" / name, install / name)
+            operation_id = "fmu_" + "b" * 32
+            runtime = prepare_runtime(root / "state", operation_id, install)
+            shutil.rmtree(install)
+            self.assertEqual(prepare_runtime(root / "state", operation_id, install), runtime)
+            self.assertTrue(all((runtime / name).is_file() for name in ("server_update.py", "release_updates.py", "state.py")))
 
     def test_failed_health_check_rolls_back_and_preserves_external_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

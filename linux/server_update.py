@@ -525,6 +525,19 @@ class ServerUpdateManager:
     def status(self, operation_id: str | None = None) -> dict[str, Any]:
         return {"operation": public_operation(self.store.read(operation_id))}
 
+    def _existing_operation(self, request_id: str | None) -> dict[str, Any] | None:
+        latest = self.store.read()
+        if latest and request_id and latest.get("requestId") == request_id:
+            return latest
+        if latest and latest.get("phase") == "recoveryRequired":
+            raise UpdateFailure(
+                "updateRecoveryRequired",
+                "Recover the previous update with `foreman update --recover` before starting another update.",
+            )
+        if latest and latest.get("phase") not in TERMINAL_PHASES:
+            raise UpdateFailure("updateConcurrent", "Another update operation is already running.")
+        return None
+
     async def start(
         self,
         request_id: str | None = None,
@@ -535,16 +548,10 @@ class ServerUpdateManager:
         if authorization_principal != "local" and not authorization_principal.startswith("device:"):
             raise UpdateFailure("authorizationRequired", "Update authorization is invalid.")
         async with self._async_lock:
-            latest = self.store.read()
-            if latest and request_id and latest.get("requestId") == request_id:
-                return public_operation(latest) or {}
-            if latest and latest.get("phase") == "recoveryRequired":
-                raise UpdateFailure(
-                    "updateRecoveryRequired",
-                    "Recover the previous update with `foreman update --recover` before starting another update.",
-                )
-            if latest and latest.get("phase") not in TERMINAL_PHASES:
-                raise UpdateFailure("updateConcurrent", "Another update operation is already running.")
+            with self.store.lock():
+                existing = self._existing_operation(request_id)
+            if existing is not None:
+                return public_operation(existing) or {}
             check = await self.check(refresh=True)
             if check["blockers"]:
                 raise UpdateFailure("updateBlocked", "The update is blocked by active or waiting work.")
@@ -564,25 +571,29 @@ class ServerUpdateManager:
                     "updateUnavailable",
                     "The installed external updater or a required verification tool is unavailable. Reinstall Foreman from a verified release archive.",
                 )
-            operation_id = "fmu_" + os.urandom(18).hex()
-            operation = self.store.write({
-                "schema": UPDATE_SCHEMA,
-                "id": operation_id,
-                "requestId": request_id,
-                "authorizationPrincipal": authorization_principal,
-                "phase": "downloading",
-                "currentVersion": self.current_version,
-                "targetVersion": target["version"],
-                "targetTag": target["tag"],
-                "protocolVersion": self.protocol_version,
-                "healthPort": self.health_port,
-                "source": SOURCE,
-                "sourceUrl": SOURCE_URL,
-                "releaseNotesUrl": target["releaseNotesUrl"],
-                "progress": 5,
-                "createdAt": utc_now(self.clock),
-                "message": "Downloading the verified Foreman release.",
-            })
+            with self.store.lock():
+                existing = self._existing_operation(request_id)
+                if existing is not None:
+                    return public_operation(existing) or {}
+                operation_id = "fmu_" + os.urandom(18).hex()
+                operation = self.store.write({
+                    "schema": UPDATE_SCHEMA,
+                    "id": operation_id,
+                    "requestId": request_id,
+                    "authorizationPrincipal": authorization_principal,
+                    "phase": "downloading",
+                    "currentVersion": self.current_version,
+                    "targetVersion": target["version"],
+                    "targetTag": target["tag"],
+                    "protocolVersion": self.protocol_version,
+                    "healthPort": self.health_port,
+                    "source": SOURCE,
+                    "sourceUrl": SOURCE_URL,
+                    "releaseNotesUrl": target["releaseNotesUrl"],
+                    "progress": 5,
+                    "createdAt": utc_now(self.clock),
+                    "message": "Downloading the verified Foreman release.",
+                })
             await self._publish(operation)
             self.task = asyncio.create_task(self._prepare(operation_id))
             return public_operation(operation) or {}
@@ -594,62 +605,68 @@ class ServerUpdateManager:
 
     async def _prepare(self, operation_id: str) -> None:
         try:
+            operation = self.store.read(operation_id)
+            if operation is None:
+                return
+            tag = operation["targetTag"]
+            operation_dir = self.store.operation_directory(operation_id)
+            shutil.rmtree(operation_dir, ignore_errors=True)
+            downloads = operation_dir / "downloads"
+            extracted = operation_dir / "extracted"
+            downloads.mkdir(parents=True, mode=0o700)
+            manifest_body = await asyncio.to_thread(
+                self.fetcher.fetch,
+                RELEASE_API_PREFIX + quote(tag, safe=""),
+                MAX_MANIFEST_BYTES,
+            )
+            assets = release_assets(manifest_body, tag)
+            wanted = {
+                f"foreman-linux-{tag}.tar.gz": MAX_ARCHIVE_BYTES,
+                "SHA256SUMS": MAX_SMALL_ASSET_BYTES,
+                "SHA256SUMS.sig": MAX_SMALL_ASSET_BYTES,
+                "foreman-release-cert.pem": MAX_SMALL_ASSET_BYTES,
+            }
+            for index, (name, maximum) in enumerate(wanted.items(), 1):
+                body = await asyncio.to_thread(self.fetcher.fetch, assets[name][0], maximum)
+                path = downloads / name
+                path.write_bytes(body)
+                os.chmod(path, 0o600)
+                await self._transition(operation_id, "downloading", progress=5 + index * 10, message="Downloading verified release assets.")
+            await self._transition(operation_id, "verifying", progress=50, message="Verifying release provenance and checksums.")
+            await asyncio.to_thread(
+                verify_certificate_and_signature,
+                downloads / "foreman-release-cert.pem",
+                downloads / "SHA256SUMS.sig",
+                downloads / "SHA256SUMS",
+                self.trust_fingerprint,
+            )
+            checksums = signed_checksums(downloads / "SHA256SUMS", tag)
+            archive = downloads / f"foreman-linux-{tag}.tar.gz"
+            if sha256_file(archive) != checksums[archive.name]:
+                raise UpdateFailure("verificationFailed", "The Linux release archive checksum does not match.")
+            await self._transition(operation_id, "staging", progress=65, message="Building and validating the replacement payload.")
+            await asyncio.to_thread(safe_extract, archive, extracted)
+            staged_install = operation_dir / "staged-install"
+            await asyncio.to_thread(
+                build_install_layout,
+                extracted,
+                staged_install,
+                operation["targetVersion"],
+                self.protocol_version,
+                self.trust_fingerprint,
+            )
+            shutil.copy2(extracted / "linux" / "foreman", operation_dir / "staged-launcher")
+            shutil.copy2(extracted / "linux" / "foreman.service", operation_dir / "staged-unit")
+            shutil.copy2(extracted / "linux" / "foreman_updater.py", operation_dir / "staged-helper")
+            os.chmod(operation_dir / "staged-launcher", 0o755)
+            os.chmod(operation_dir / "staged-helper", 0o755)
+
+            # The filesystem lock is intentionally acquired only for the final
+            # coordination boundary; downloads and staging never block recovery.
             with self.store.lock():
                 operation = self.store.read(operation_id)
-                if operation is None:
-                    return
-                tag = operation["targetTag"]
-                operation_dir = self.store.operation_directory(operation_id)
-                shutil.rmtree(operation_dir, ignore_errors=True)
-                downloads = operation_dir / "downloads"
-                extracted = operation_dir / "extracted"
-                downloads.mkdir(parents=True, mode=0o700)
-                manifest_body = await asyncio.to_thread(
-                    self.fetcher.fetch,
-                    RELEASE_API_PREFIX + quote(tag, safe=""),
-                    MAX_MANIFEST_BYTES,
-                )
-                assets = release_assets(manifest_body, tag)
-                wanted = {
-                    f"foreman-linux-{tag}.tar.gz": MAX_ARCHIVE_BYTES,
-                    "SHA256SUMS": MAX_SMALL_ASSET_BYTES,
-                    "SHA256SUMS.sig": MAX_SMALL_ASSET_BYTES,
-                    "foreman-release-cert.pem": MAX_SMALL_ASSET_BYTES,
-                }
-                for index, (name, maximum) in enumerate(wanted.items(), 1):
-                    body = await asyncio.to_thread(self.fetcher.fetch, assets[name][0], maximum)
-                    path = downloads / name
-                    path.write_bytes(body)
-                    os.chmod(path, 0o600)
-                    await self._transition(operation_id, "downloading", progress=5 + index * 10, message="Downloading verified release assets.")
-                await self._transition(operation_id, "verifying", progress=50, message="Verifying release provenance and checksums.")
-                await asyncio.to_thread(
-                    verify_certificate_and_signature,
-                    downloads / "foreman-release-cert.pem",
-                    downloads / "SHA256SUMS.sig",
-                    downloads / "SHA256SUMS",
-                    self.trust_fingerprint,
-                )
-                checksums = signed_checksums(downloads / "SHA256SUMS", tag)
-                archive = downloads / f"foreman-linux-{tag}.tar.gz"
-                if sha256_file(archive) != checksums[archive.name]:
-                    raise UpdateFailure("verificationFailed", "The Linux release archive checksum does not match.")
-                await self._transition(operation_id, "staging", progress=65, message="Building and validating the replacement payload.")
-                await asyncio.to_thread(safe_extract, archive, extracted)
-                staged_install = operation_dir / "staged-install"
-                await asyncio.to_thread(
-                    build_install_layout,
-                    extracted,
-                    staged_install,
-                    operation["targetVersion"],
-                    self.protocol_version,
-                    self.trust_fingerprint,
-                )
-                shutil.copy2(extracted / "linux" / "foreman", operation_dir / "staged-launcher")
-                shutil.copy2(extracted / "linux" / "foreman.service", operation_dir / "staged-unit")
-                shutil.copy2(extracted / "linux" / "foreman_updater.py", operation_dir / "staged-helper")
-                os.chmod(operation_dir / "staged-launcher", 0o755)
-                os.chmod(operation_dir / "staged-helper", 0o755)
+                if operation is None or operation.get("phase") != "staging":
+                    raise UpdateFailure("operationUnavailable", "The update operation changed during staging.")
                 principal = operation.get("authorizationPrincipal")
                 if (
                     not isinstance(principal, str)
@@ -681,13 +698,16 @@ class ServerUpdateManager:
                     message="The external updater is taking ownership of activation and restart.",
                 )
             result = await self.helper_runner(operation_id)
-            if result != 0:
+            current = self.store.read(operation_id)
+            if current is not None and current.get("phase") != scheduled.get("phase"):
+                await self._publish(current)
+            if result != 0 and (
+                current is None or current.get("phase") not in TERMINAL_PHASES
+            ):
                 await self._transition(
                     operation_id, "failed", resultCode="helperStartFailed",
                     message="The external updater could not be started. Nothing was replaced.",
                 )
-            else:
-                await self._publish(scheduled)
         except asyncio.CancelledError:
             current = self.store.read(operation_id)
             if current and current.get("phase") not in TERMINAL_PHASES | ACTIVATION_PHASES:
@@ -719,6 +739,9 @@ class ServerUpdateManager:
         process = await asyncio.create_subprocess_exec(
             "systemd-run", "--user", "--collect", "--quiet",
             "--service-type=exec",
+            "--property=Restart=on-failure",
+            "--property=RestartSec=1s",
+            "--property=RestartPreventExitStatus=1 2 3 4",
             f"--unit=foreman-update-{operation_id}",
             str(self.helper_file),
             "--operation", operation_id,
@@ -779,6 +802,92 @@ def _health(port: int, version: str, protocol_version: int, timeout_seconds: int
     return False
 
 
+def _helper_authorized(state_directory: Path, operation: Mapping[str, Any]) -> bool:
+    principal = operation.get("authorizationPrincipal")
+    if principal == "local":
+        return True
+    if not isinstance(principal, str) or not principal.startswith("device:"):
+        return False
+    device_id = principal.removeprefix("device:")
+    from state import State
+
+    return any(
+        device.get("id") == device_id and device.get("access") == "full"
+        for device in State(state_directory).list_devices()
+    )
+
+
+def _rollback_external_update(
+    *,
+    store: OperationStore,
+    operation_id: str,
+    install_directory: Path,
+    launcher_file: Path,
+    unit_file: Path,
+    helper_file: Path,
+    health_port: int,
+) -> int:
+    operation_dir = store.operation_directory(operation_id)
+    backup = operation_dir / "backup"
+    failed_install = operation_dir / "failed-install"
+    try:
+        with store.lock(blocking=True):
+            operation = store.read(operation_id)
+            if operation is None:
+                return 2
+            store.transition(
+                operation_id, "rollingBack", progress=94,
+                message="The update failed; restoring the previous Foreman payload.",
+            )
+            _systemctl("stop", "foreman.service")
+            if (backup / "install").is_dir():
+                if install_directory.exists():
+                    shutil.rmtree(failed_install, ignore_errors=True)
+                    os.replace(install_directory, failed_install)
+                restore_install = operation_dir / "restore-install"
+                shutil.rmtree(restore_install, ignore_errors=True)
+                shutil.copytree(backup / "install", restore_install)
+                os.replace(restore_install, install_directory)
+            elif not install_directory.is_dir():
+                raise UpdateFailure("rollbackPayloadMissing", "The previous Foreman payload is unavailable.")
+
+            prepared = operation.get("activationPrepared") is True
+            for destination, saved, existed_key in (
+                (launcher_file, backup / "launcher", "launcherExisted"),
+                (unit_file, backup / "unit", "unitExisted"),
+                (helper_file, backup / "helper", "helperExisted"),
+            ):
+                if saved.is_file():
+                    shutil.copy2(saved, destination)
+                elif prepared and operation.get(existed_key) is False:
+                    try:
+                        destination.unlink()
+                    except FileNotFoundError:
+                        pass
+                try:
+                    destination.with_name(destination.name + ".update-tmp").unlink()
+                except FileNotFoundError:
+                    pass
+            _systemctl("daemon-reload")
+            _systemctl("restart", "foreman.service")
+            protocol_version = int(operation["protocolVersion"])
+            if not _health(health_port, operation["currentVersion"], protocol_version):
+                raise UpdateFailure("rollbackHealthFailed", "The restored service did not pass its health check.")
+            store.transition(
+                operation_id, "rolledBack", progress=100, resultCode="rollbackSucceeded",
+                message="The update failed and the previous Foreman release was restored successfully.",
+            )
+            shutil.rmtree(operation_dir, ignore_errors=True)
+            return 1
+    except Exception:
+        store.transition(
+            operation_id, "recoveryRequired", progress=100, resultCode="rollbackFailed",
+            message="Automatic rollback failed. Run the local recovery command before deleting update data.",
+            recoveryCommand="foreman update --recover",
+        )
+        return 3
+
+
 def run_external_helper(
     *,
     operation_id: str,
@@ -791,32 +900,50 @@ def run_external_helper(
 ) -> int:
     store = OperationStore(state_directory)
     operation = store.read(operation_id)
-    if operation is None or operation.get("phase") != "activationScheduled":
+    if operation is None or operation.get("phase") not in ACTIVATION_PHASES:
         return 2
+    if operation.get("phase") != "activationScheduled":
+        return _rollback_external_update(
+            store=store, operation_id=operation_id,
+            install_directory=install_directory, launcher_file=launcher_file,
+            unit_file=unit_file, helper_file=helper_file, health_port=health_port,
+        )
     operation_dir = store.operation_directory(operation_id)
     backup = operation_dir / "backup"
-    failed_install = operation_dir / "failed-install"
-    prior_version = operation["currentVersion"]
-    protocol_version = int(properties(operation_dir / "staged-install" / "release.properties")["protocolVersion"])
-    launcher_existed = launcher_file.exists()
-    unit_existed = unit_file.exists()
-    helper_existed = helper_file.exists()
-    activated = False
     try:
         with store.lock(blocking=True):
+            operation = store.read(operation_id)
+            if operation is None or operation.get("phase") != "activationScheduled":
+                return 2
+            if not _helper_authorized(state_directory, operation):
+                store.transition(
+                    operation_id, "failed", progress=100, resultCode="authorizationRevoked",
+                    message="Update authorization was revoked before activation. Nothing was replaced.",
+                )
+                shutil.rmtree(operation_dir, ignore_errors=True)
+                return 4
             store.transition(operation_id, "activating", progress=84, message="Activating the staged Foreman payload.")
             backup.mkdir(parents=True, mode=0o700)
+            existence: dict[str, bool] = {}
             for destination, saved in (
                 (launcher_file, backup / "launcher"),
                 (unit_file, backup / "unit"),
                 (helper_file, backup / "helper"),
             ):
+                existence[saved.name + "Existed"] = destination.exists()
                 if destination.exists():
                     shutil.copy2(destination, saved)
+            store.transition(
+                operation_id, "activating", progress=84,
+                message="Activating the staged Foreman payload.",
+                activationPrepared=True,
+                launcherExisted=existence["launcherExisted"],
+                unitExisted=existence["unitExisted"],
+                helperExisted=existence["helperExisted"],
+            )
             if install_directory.exists():
                 os.replace(install_directory, backup / "install")
             os.replace(operation_dir / "staged-install", install_directory)
-            activated = True
             _replace_file(operation_dir / "staged-launcher", launcher_file)
             _replace_file(operation_dir / "staged-unit", unit_file)
             _replace_file(operation_dir / "staged-helper", helper_file)
@@ -824,7 +951,7 @@ def run_external_helper(
             _systemctl("daemon-reload")
             _systemctl("restart", "foreman.service")
             store.transition(operation_id, "healthChecking", progress=92, message="Checking the restarted Foreman version and protocol.")
-            if not _health(health_port, operation["targetVersion"], protocol_version):
+            if not _health(health_port, operation["targetVersion"], int(operation["protocolVersion"])):
                 raise UpdateFailure("healthCheckFailed", "The updated service did not pass its health check.")
             store.transition(
                 operation_id, "succeeded", progress=100, resultCode="updated",
@@ -833,51 +960,11 @@ def run_external_helper(
             shutil.rmtree(operation_dir, ignore_errors=True)
             return 0
     except Exception:
-        try:
-            store.transition(operation_id, "rollingBack", progress=94, message="The update failed; restoring the previous Foreman payload.")
-            _systemctl("stop", "foreman.service")
-            if activated and install_directory.exists():
-                if failed_install.exists():
-                    shutil.rmtree(failed_install)
-                os.replace(install_directory, failed_install)
-            if (backup / "install").exists():
-                restore_install = operation_dir / "restore-install"
-                shutil.rmtree(restore_install, ignore_errors=True)
-                shutil.copytree(backup / "install", restore_install)
-                os.replace(restore_install, install_directory)
-            for destination, saved, existed in (
-                (launcher_file, backup / "launcher", launcher_existed),
-                (unit_file, backup / "unit", unit_existed),
-                (helper_file, backup / "helper", helper_existed),
-            ):
-                if existed and saved.exists():
-                    shutil.copy2(saved, destination)
-                elif not existed:
-                    try:
-                        destination.unlink()
-                    except OSError:
-                        pass
-                try:
-                    destination.with_name(destination.name + ".update-tmp").unlink()
-                except OSError:
-                    pass
-            _systemctl("daemon-reload")
-            _systemctl("restart", "foreman.service")
-            if not _health(health_port, prior_version, protocol_version):
-                raise UpdateFailure("rollbackHealthFailed", "The restored service did not pass its health check.")
-            store.transition(
-                operation_id, "rolledBack", progress=100, resultCode="rollbackSucceeded",
-                message="The update failed and the previous Foreman release was restored successfully.",
-            )
-            shutil.rmtree(operation_dir, ignore_errors=True)
-            return 1
-        except Exception:
-            store.transition(
-                operation_id, "recoveryRequired", progress=100, resultCode="rollbackFailed",
-                message="Automatic rollback failed. Run the local recovery command before deleting update data.",
-                recoveryCommand="foreman update --recover",
-            )
-            return 3
+        return _rollback_external_update(
+            store=store, operation_id=operation_id,
+            install_directory=install_directory, launcher_file=launcher_file,
+            unit_file=unit_file, helper_file=helper_file, health_port=health_port,
+        )
 
 
 def recover_latest(

@@ -81,10 +81,12 @@ An operation in `recoveryRequired` must be recovered before a new update can be
 started, which prevents pruning or overwriting its retained backup.
 
 A filesystem advisory lock plus the single nonterminal durable operation
-serializes CLI, web, and Android attempts. A repeated idempotency key returns
-the same operation. Every activation gets a fresh lock, authorization check,
-and safety check after download and staging, so a revoked client or newly active
-session cannot be raced.
+serializes CLI, web, and Android attempts. The lock covers only operation
+creation and the final activation handoff; network transfer, verification, and
+staging do not hold it, so another process can inspect or recover durable state.
+A repeated idempotency key returns the same operation. Every activation gets a
+fresh lock, authorization check, and safety check after download and staging,
+so a revoked client or newly active session cannot be raced.
 
 ## Active-session safety
 
@@ -95,11 +97,13 @@ check reports only blocker categories (`workingSession`, `waitingSession`,
 command, path, or prompt content.
 
 Safety is checked before accepting the operation and immediately before the
-external helper is scheduled. Remote initiation authorization is also checked
-again at that boundary against durable paired-device state. A blocker at either
-point refuses or ends the operation as `blocked`; revoked authorization fails
-without activation. Foreman never interrupts work to make an update proceed.
-Runtime continuity is not claimed: all sessions must be inactive.
+external helper is scheduled. Remote initiation authorization is checked at
+that server boundary and once more by the helper, from durable paired-device
+state, immediately before the first replacement rename. A blocker at either
+safety boundary refuses or ends the operation as `blocked`; revoked
+authorization fails without activation. Foreman never interrupts work to make
+an update proceed. Runtime continuity is not claimed: all sessions must be
+inactive.
 
 ## Staging, activation, and restart ownership
 
@@ -114,6 +118,11 @@ process being replaced, owns activation, `daemon-reload`, restart, health
 checking, cleanup, and rollback. Its command has fixed argument positions and
 locally derived paths; no remote value becomes a command or path. The helper is
 in a separate transient unit so restarting `foreman.service` cannot kill it.
+Before activation, its bounded Python runtime is copied into the private
+operation directory. The transient unit restarts after an unexpected process
+failure, imports that retained runtime even when the installation directory is
+between atomic renames, and treats any durable in-activation phase as a request
+to roll back instead of trying to continue an ambiguous activation.
 
 Activation replaces the application directory, launcher, unit, and helper at
 their existing transactional boundaries. Configuration and durable state are
@@ -134,7 +143,9 @@ restart it, and require the previous version to become healthy. A successful
 rollback ends as `rolledBack` and explains that the old release is running. If
 rollback or its health check fails, the record becomes `recoveryRequired` and
 clients show `foreman update --recover` plus the manual recovery procedure
-below. A recovery command only acts on the latest recorded backup and never
+below. The rollback is restartable from its durable phase and retained backup,
+including an interruption between the old-install and new-install directory
+renames. A recovery command only acts on the latest recorded backup and never
 accepts a path.
 
 Manual recovery, from a local terminal:
