@@ -201,7 +201,10 @@ internal fun conversationBlocks(
 
 private fun ConversationItem.isRoutineCompletedActivity(): Boolean =
     kind in setOf("command", "tool") &&
-        status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done")
+        (
+            status.lowercase() in setOf("completed", "complete", "succeeded", "success", "done") ||
+                (kind == "command" && status.equals("failed", ignoreCase = true) && exitCode != null)
+        )
 
 internal fun activitySummary(items: List<ConversationItem>): ActivitySummary =
     ActivitySummary(

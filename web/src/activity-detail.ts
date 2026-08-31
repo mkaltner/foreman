@@ -83,6 +83,8 @@ export function activityStatusTone(item: ConversationItem): "active" | "attentio
 
 function isRoutineCompletedActivity(item: ConversationItem): boolean {
   const completed = ["completed", "complete", "succeeded", "success", "done"];
+  const status = (item.status ?? "").toLowerCase();
   return (item.kind === "command" || item.kind === "tool") &&
-    completed.includes((item.status ?? "").toLowerCase());
+    (completed.includes(status) ||
+      (item.kind === "command" && status === "failed" && item.exitCode != null));
 }

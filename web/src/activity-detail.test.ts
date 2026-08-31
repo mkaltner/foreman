@@ -11,9 +11,9 @@ describe("activity detail", () => {
   it("collapses mixed zero and non-zero completed activity without changing order or outcomes", () => {
     const activity: ConversationItem[] = [
       { id: "status", kind: "command", description: "git status", status: "completed", exitCode: 0 },
-      { id: "search", kind: "command", description: "rg needle", status: "completed", exitCode: 1 },
+      { id: "search", kind: "command", description: "rg needle", status: "failed", exitCode: 1 },
       { id: "read", kind: "tool", description: "Read file", status: "completed" },
-      { id: "probe", kind: "tool", description: "Probe", status: "completed", exitCode: 7 },
+      { id: "build", kind: "command", description: "gradle test", status: "failed", exitCode: 7 },
     ];
 
     const blocks = conversationBlocks(activity, "focused");
@@ -23,18 +23,19 @@ describe("activity detail", () => {
     expect(blocks[0].items).toEqual(activity);
     expect(blocks[0].items.map(({ id, status, exitCode }) => ({ id, status, exitCode }))).toEqual([
       { id: "status", status: "completed", exitCode: 0 },
-      { id: "search", status: "completed", exitCode: 1 },
+      { id: "search", status: "failed", exitCode: 1 },
       { id: "read", status: "completed", exitCode: undefined },
-      { id: "probe", status: "completed", exitCode: 7 },
+      { id: "build", status: "failed", exitCode: 7 },
     ]);
-    expect(formatActivitySummary(blocks[0].items)).toBe("2 commands · 2 tools · 2 non-zero");
-    expect(formatActivityOutcome(blocks[0].items[1])).toBe("Completed · Exited 1");
+    expect(formatActivitySummary(blocks[0].items)).toBe("3 commands · 1 tool · 2 non-zero");
+    expect(formatActivityOutcome(blocks[0].items[1])).toBe("Failed · Exited 1");
+    expect(formatActivityOutcome(blocks[0].items[3])).toBe("Failed · Exited 7");
   });
 
   it("collapses an all-nonzero group without inferring intent from command text", () => {
     const activity: ConversationItem[] = [
-      { id: "build", kind: "command", description: "build production", status: "completed", exitCode: 2 },
-      { id: "search", kind: "command", description: "rg optional", status: "completed", exitCode: 1 },
+      { id: "build", kind: "command", description: "build production", status: "failed", exitCode: 2 },
+      { id: "search", kind: "command", description: "rg optional", status: "failed", exitCode: 1 },
     ];
 
     const blocks = conversationBlocks(activity, "focused");
@@ -48,7 +49,7 @@ describe("activity detail", () => {
       { id: "done", kind: "tool", status: "completed", exitCode: 1 },
       { id: "running", kind: "command", status: "inProgress" },
       { id: "error", kind: "command", status: "executionError", exitCode: 127 },
-      { id: "failed", kind: "command", status: "failed", exitCode: 2 },
+      { id: "unresolved", kind: "command", status: "failed" },
       { id: "interrupted", kind: "tool", status: "interrupted" },
       { id: "blocked", kind: "tool", status: "denied" },
     ];
@@ -59,7 +60,7 @@ describe("activity detail", () => {
       { collapsedActivity: true, ids: ["done"] },
       { collapsedActivity: false, ids: ["running"] },
       { collapsedActivity: false, ids: ["error"] },
-      { collapsedActivity: false, ids: ["failed"] },
+      { collapsedActivity: false, ids: ["unresolved"] },
       { collapsedActivity: false, ids: ["interrupted"] },
       { collapsedActivity: false, ids: ["blocked"] },
     ]);

@@ -187,9 +187,9 @@ class ForemanConnectionTest {
         val activity =
             listOf(
                 ConversationItem("command", "command", description = "git status", status = "completed", exitCode = 0),
-                ConversationItem("search", "command", description = "rg needle", status = "completed", exitCode = 1),
+                ConversationItem("search", "command", description = "rg needle", status = "failed", exitCode = 1),
                 ConversationItem("tool", "tool", description = "Read file", status = "completed"),
-                ConversationItem("probe", "tool", description = "Probe", status = "completed", exitCode = 7),
+                ConversationItem("build", "command", description = "gradle test", status = "failed", exitCode = 7),
             )
 
         val focused = conversationBlocks(activity, ActivityDetail.Focused)
@@ -198,17 +198,18 @@ class ForemanConnectionTest {
         assertTrue(focused.single().collapsedActivity)
         assertEquals(activity, focused.single().items)
         assertEquals(listOf(0, 1, null, 7), focused.single().items.map { it.exitCode })
-        assertEquals(listOf("completed", "completed", "completed", "completed"), focused.single().items.map { it.status })
-        assertEquals("2 commands · 2 tools · 2 non-zero", formatActivitySummary(activity))
-        assertEquals("Completed · Exited 1", formatActivityOutcome(activity[1]))
+        assertEquals(listOf("completed", "failed", "completed", "failed"), focused.single().items.map { it.status })
+        assertEquals("3 commands · 1 tool · 2 non-zero", formatActivitySummary(activity))
+        assertEquals("Failed · Exited 1", formatActivityOutcome(activity[1]))
+        assertEquals("Failed · Exited 7", formatActivityOutcome(activity[3]))
     }
 
     @Test
     fun focusedActivityCollapsesAllNonzeroWithoutInferringCommandIntent() {
         val activity =
             listOf(
-                ConversationItem("build", "command", description = "build production", status = "completed", exitCode = 2),
-                ConversationItem("search", "command", description = "rg optional", status = "completed", exitCode = 1),
+                ConversationItem("build", "command", description = "build production", status = "failed", exitCode = 2),
+                ConversationItem("search", "command", description = "rg optional", status = "failed", exitCode = 1),
             )
 
         val blocks = conversationBlocks(activity, ActivityDetail.Focused)
@@ -225,7 +226,7 @@ class ForemanConnectionTest {
                 ConversationItem("done", "tool", status = "completed", exitCode = 1),
                 ConversationItem("running", "command", status = "inProgress"),
                 ConversationItem("error", "command", status = "executionError", exitCode = 127),
-                ConversationItem("failed", "command", status = "failed", exitCode = 2),
+                ConversationItem("unresolved", "command", status = "failed"),
                 ConversationItem("interrupted", "tool", status = "interrupted"),
                 ConversationItem("blocked", "tool", status = "denied"),
             )
@@ -237,7 +238,7 @@ class ForemanConnectionTest {
                 listOf("done"),
                 listOf("running"),
                 listOf("error"),
-                listOf("failed"),
+                listOf("unresolved"),
                 listOf("interrupted"),
                 listOf("blocked"),
             ),
@@ -1725,8 +1726,10 @@ class ForemanConnectionTest {
         assertEquals(listOf("user", "read", "failed", "assistant"), synchronized.selected?.messages?.map { it.id })
         assertEquals("Done", synchronized.selected?.messages?.last()?.text)
         val blocks = conversationBlocks(requireNotNull(synchronized.selected).messages, ActivityDetail.Focused)
-        assertTrue(blocks.any { it.collapsedActivity && it.items.single().id == "read" })
-        assertTrue(blocks.any { !it.collapsedActivity && it.items.single().id == "failed" })
+        val activity = blocks.single { it.collapsedActivity }.items
+        assertEquals(listOf("read", "failed"), activity.map { it.id })
+        assertEquals(listOf("completed", "failed"), activity.map { it.status })
+        assertEquals(listOf(null, 1), activity.map { it.exitCode })
     }
 
     @Test
