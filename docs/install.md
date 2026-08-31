@@ -58,7 +58,8 @@ Foreman pairing does not authenticate either provider. Check adapter detection
 with `foreman claude-status`.
 
 The rootless installer copies Foreman to `~/.local/share/foreman`, installs the
-CLI in `~/.local/bin`, installs and starts `foreman.service`, and creates:
+CLI in `~/.local/bin`, installs and starts `foreman.service`, enables the
+boot-time `foreman-update-recovery.service` oneshot, and creates:
 
 ```text
 ~/.config/foreman/foreman.env
@@ -72,8 +73,8 @@ The installer never replaces `~/.config/foreman/foreman.env` or
 `~/.local/state/foreman`, so configuration and paired-client tokens survive a
 successful reinstall and an activation rollback. The installed application
 directory is replaced as a unit, so files left by an older alpha are removed.
-If activation fails, the previous application directory, launcher, and systemd
-unit are restored before the previous service is restarted.
+If activation fails, the previous application directory, launcher, systemd
+units, and updater helper are restored before the previous service is restarted.
 
 To roll Linux back, verify and check out (or unpack) the last known-good release
 and rerun that release's `install.sh`. Confirm `foreman status`, `foreman web`,
@@ -312,10 +313,10 @@ Stop and remove the installed service and launcher without touching the cloned
 repository:
 
 ```sh
-systemctl --user disable --now foreman.service
-rm ~/.config/systemd/user/foreman.service
+systemctl --user disable --now foreman.service foreman-update-recovery.service
+rm ~/.config/systemd/user/foreman.service ~/.config/systemd/user/foreman-update-recovery.service
 systemctl --user daemon-reload
-rm ~/.local/bin/foreman
+rm ~/.local/bin/foreman ~/.local/libexec/foreman-updater
 rm -r ~/.local/share/foreman
 ```
 

@@ -66,7 +66,8 @@ one. The expected signing-certificate SHA-256 digest is public metadata in
    install that exact APK on the physical test device.
 6. Build the Linux archive with the workflow exclusions. Inspect its complete
    file list, dependency licenses, committed web assets, absence of Python cache
-   files, and extraction/install behavior. Verify every SHA-256 checksum.
+   files, extraction/install behavior, external updater, and enabled boot
+   recovery unit. Verify every SHA-256 checksum.
 7. Review the complete resolved web and Android dependency inventories and
    package every legally required license and notice. `THIRD_PARTY_NOTICES.md`
    is only a starting inventory; it is not a completed legal review.

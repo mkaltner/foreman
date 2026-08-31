@@ -12,6 +12,7 @@ unit_dir="$HOME/.config/systemd/user"
 config_file="$config_dir/foreman.env"
 launcher_file="$bin_dir/foreman"
 unit_file="$unit_dir/foreman.service"
+recovery_unit_file="$unit_dir/foreman-update-recovery.service"
 helper_file="$libexec_dir/foreman-updater"
 pinned_version="$(sed -n 's/^websockets==//p' "$project_dir/requirements.txt")"
 staging_dir=""
@@ -19,6 +20,7 @@ backup_dir=""
 rollback_required=0
 had_launcher=0
 had_unit=0
+had_recovery_unit=0
 had_helper=0
 
 cleanup() {
@@ -37,6 +39,12 @@ cleanup() {
       install -m 644 "$backup_dir/foreman.service" "$unit_file"
     else
       rm -f -- "$unit_file"
+    fi
+    if [[ "$had_recovery_unit" == 1 ]]; then
+      install -m 644 "$backup_dir/foreman-update-recovery.service" "$recovery_unit_file"
+    else
+      systemctl --user disable foreman-update-recovery.service >/dev/null 2>&1
+      rm -f -- "$recovery_unit_file"
     fi
     if [[ "$had_helper" == 1 ]]; then
       install -m 755 "$backup_dir/foreman-updater" "$helper_file"
@@ -189,6 +197,10 @@ if [[ -e "$unit_file" ]]; then
   cp -a "$unit_file" "$backup_dir/foreman.service"
   had_unit=1
 fi
+if [[ -e "$recovery_unit_file" ]]; then
+  cp -a "$recovery_unit_file" "$backup_dir/foreman-update-recovery.service"
+  had_recovery_unit=1
+fi
 if [[ -e "$helper_file" ]]; then
   cp -a "$helper_file" "$backup_dir/foreman-updater"
   had_helper=1
@@ -198,6 +210,7 @@ staging_dir=""
 rollback_required=1
 install -m 755 "$project_dir/linux/foreman" "$launcher_file"
 install -m 644 "$project_dir/linux/foreman.service" "$unit_file"
+install -m 644 "$project_dir/linux/foreman-update-recovery.service" "$recovery_unit_file"
 install -m 755 "$project_dir/linux/foreman_updater.py" "$helper_file"
 
 python3 -m compileall -q \
@@ -215,6 +228,7 @@ python3 -m compileall -q \
 python3 "$install_dir/foreman_service.py" --help >/dev/null
 systemctl --user daemon-reload
 systemctl --user enable foreman.service
+systemctl --user enable foreman-update-recovery.service
 systemctl --user restart foreman.service
 sleep 2
 systemctl --user is-active --quiet foreman.service

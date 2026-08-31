@@ -85,7 +85,9 @@ Linux files:
 - `claude_code.py` and `claude_bridge/bridge.mjs`: optional Linux-only Claude SDK lifecycle boundary;
 - `session_identity.py`: the small explicit `provider + hostId + sessionId` identity value;
 - `state.py`: one-time pairing, opaque client IDs, and hashed device tokens;
-- `foreman`, `install.sh`, and `foreman.service`: operation and installation.
+- `foreman`, `install.sh`, and `foreman.service`: operation and installation;
+- `foreman_updater.py` and `foreman-update-recovery.service`: external
+  activation/rollback ownership and boot-time recovery of durable update phases.
 
 The React/TypeScript SPA under `web/` and the Compose app under `android/` reload
 provider-authoritative sessions and history after reconnect, resubscribe to the

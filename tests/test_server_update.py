@@ -33,6 +33,7 @@ from server_update import (  # noqa: E402
     signed_checksums,
     verify_certificate_and_signature,
 )
+import foreman_updater  # noqa: E402
 from foreman_updater import prepare_runtime  # noqa: E402
 from state import State  # noqa: E402
 
@@ -541,6 +542,66 @@ class HelperTests(unittest.TestCase):
                     unit_file=paths["unit"], helper_file=paths["helper"], health_port=9999,
                 )
             self.assertEqual(result, 1)
+            self.assertEqual(store.read(operation_id)["phase"], "rolledBack")
+            self.assertEqual((paths["install"] / "payload").read_text(), "old")
+
+    def test_boot_recovery_wrapper_resumes_without_install_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, operation_id, paths = self.prepare(root)
+            for name in ("server_update.py", "release_updates.py", "state.py"):
+                shutil.copy2(ROOT / "linux" / name, paths["install"] / name)
+            prepare_runtime(root / "state", operation_id, paths["install"])
+            operation_dir = store.operation_directory(operation_id)
+            backup = operation_dir / "backup"
+            backup.mkdir(parents=True)
+            for destination, name in (
+                (paths["launcher"], "launcher"),
+                (paths["unit"], "unit"),
+                (paths["helper"], "helper"),
+            ):
+                shutil.copy2(destination, backup / name)
+            store.transition(
+                operation_id, "activating", activationPrepared=True,
+                launcherExisted=True, unitExisted=True, helperExisted=True,
+            )
+            os.replace(paths["install"], backup / "install")
+            arguments = [
+                "foreman-updater", "--resume-latest",
+                "--state-directory", str(root / "state"),
+                "--install-directory", str(paths["install"]),
+                "--launcher-file", str(paths["launcher"]),
+                "--unit-file", str(paths["unit"]),
+                "--helper-file", str(paths["helper"]),
+                "--health-port", "9999",
+            ]
+            with (
+                patch.object(sys, "argv", arguments),
+                patch.object(sys, "path", list(sys.path)),
+                patch("server_update._systemctl"),
+                patch("server_update._health", return_value=True),
+            ):
+                result = foreman_updater.main()
+            self.assertEqual(result, 1)
+            self.assertEqual(store.read(operation_id)["phase"], "rolledBack")
+            self.assertEqual((paths["install"] / "payload").read_text(), "old")
+
+    def test_manual_recovery_accepts_interrupted_activation_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, operation_id, paths = self.prepare(root)
+            operation_dir = store.operation_directory(operation_id)
+            backup = operation_dir / "backup"
+            backup.mkdir(parents=True)
+            store.transition(operation_id, "activating", activationPrepared=True)
+            os.replace(paths["install"], backup / "install")
+            with patch("server_update._systemctl"), patch("server_update._health", return_value=True):
+                result = recover_latest(
+                    state_directory=root / "state", install_directory=paths["install"],
+                    launcher_file=paths["launcher"], unit_file=paths["unit"],
+                    helper_file=paths["helper"],
+                )
+            self.assertEqual(result, 0)
             self.assertEqual(store.read(operation_id)["phase"], "rolledBack")
             self.assertEqual((paths["install"] / "payload").read_text(), "old")
 

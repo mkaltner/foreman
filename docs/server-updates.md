@@ -131,6 +131,16 @@ by revocation from its final full-access decision through the first activation
 rename. Authorization and revocation therefore have one observable ordering:
 a completed revocation always prevents an activation that has not yet begun.
 
+The installer also enables `foreman-update-recovery.service`, a fixed oneshot
+user unit started with the user's default target. On every boot it inspects only
+the bounded latest operation record and exits without creating files unless the
+phase is an activation phase. For an interrupted activation it loads the
+operation-private helper runtime—even if the application directory is absent—
+and invokes the same helper state machine. The recovery unit and
+`foreman.service` have no ordering dependency: it can stop a concurrently
+started Foreman, restore or finish the payload, restart it, and perform the same
+version/protocol health check without a systemd ordering cycle.
+
 Activation replaces the application directory, launcher, unit, and helper at
 their existing transactional boundaries. Configuration and durable state are
 outside those boundaries and are never copied, rewritten, or deleted. The
@@ -152,8 +162,8 @@ rollback or its health check fails, the record becomes `recoveryRequired` and
 clients show `foreman update --recover` plus the manual recovery procedure
 below. The rollback is restartable from its durable phase and retained backup,
 including an interruption between the old-install and new-install directory
-renames. A recovery command only acts on the latest recorded backup and never
-accepts a path.
+renames and a full host reboot. A recovery command only acts on the latest
+recorded backup and never accepts a path.
 
 Manual recovery, from a local terminal:
 

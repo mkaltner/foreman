@@ -32,8 +32,13 @@ require an explicit intermediate release; the updater never guesses across
 either boundary. The installer and updater preserve
 `~/.config/foreman/foreman.env` and `~/.local/state/foreman`, including paired
 client state, while replacing the installed payload. Activation failure must
-restore the previous payload, launcher, and service unit without modifying
-those configuration or state directories.
+restore the previous payload, launcher, updater helper, and service units
+without modifying those configuration or state directories.
+
+Within one update protocol version, releases preserve the fixed external helper
+CLI used by the enabled boot-recovery unit. Changing that contract requires an
+intermediate release that installs a compatible recovery unit before a later
+protocol version can use the new contract.
 
 Foreman supports upgrades from the latest published release to the next
 release. Larger version jumps should be staged through the intervening release

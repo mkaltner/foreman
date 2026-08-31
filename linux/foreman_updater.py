@@ -4,17 +4,25 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 
 
 RUNTIME_FILES = ("server_update.py", "release_updates.py", "state.py")
+OPERATION_ID = re.compile(r"^fmu_[A-Za-z0-9_-]{16,80}$")
+ACTIVATION_PHASES = {
+    "activationScheduled", "activating", "restarting", "healthChecking", "rollingBack",
+}
 
 
 def prepare_runtime(state_directory: Path, operation: str, install_directory: Path) -> Path:
     """Copy the helper runtime before activation can replace the installation."""
+    if not OPERATION_ID.fullmatch(operation):
+        raise RuntimeError("The update operation ID is invalid.")
     runtime = state_directory / "updates" / operation / "helper-runtime"
     ready = runtime / ".ready"
     if ready.is_file():
@@ -33,9 +41,41 @@ def prepare_runtime(state_directory: Path, operation: str, install_directory: Pa
     return runtime
 
 
+def latest_operation(state_directory: Path) -> str | None:
+    try:
+        operation = (state_directory / "updates" / "latest").read_text(
+            encoding="ascii"
+        ).strip()
+    except (OSError, UnicodeError):
+        return None
+    return operation if OPERATION_ID.fullmatch(operation) else None
+
+
+def latest_activation_operation(state_directory: Path) -> str | None:
+    operation_id = latest_operation(state_directory)
+    if operation_id is None:
+        return None
+    try:
+        raw = (
+            state_directory / "updates" / "operations" / f"{operation_id}.json"
+        ).read_bytes()
+        if len(raw) > 32 * 1024:
+            return None
+        operation = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return operation_id if (
+        isinstance(operation, dict)
+        and operation.get("id") == operation_id
+        and operation.get("phase") in ACTIVATION_PHASES
+    ) else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--operation", required=True)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--operation")
+    operation.add_argument("--resume-latest", action="store_true")
     parser.add_argument("--state-directory", type=Path, required=True)
     parser.add_argument("--install-directory", type=Path, required=True)
     parser.add_argument("--launcher-file", type=Path, required=True)
@@ -43,12 +83,24 @@ def main() -> int:
     parser.add_argument("--helper-file", type=Path, required=True)
     parser.add_argument("--health-port", type=int, default=8766)
     args = parser.parse_args()
-    runtime = prepare_runtime(args.state_directory, args.operation, args.install_directory)
+    operation_id = (
+        latest_activation_operation(args.state_directory)
+        if args.resume_latest
+        else args.operation
+    )
+    if operation_id is None:
+        return 0
+    runtime = prepare_runtime(args.state_directory, operation_id, args.install_directory)
     sys.path.insert(0, str(runtime))
-    from server_update import run_external_helper
+    from server_update import ACTIVATION_PHASES, OperationStore, run_external_helper
+
+    if args.resume_latest:
+        stored = OperationStore(args.state_directory).read(operation_id)
+        if stored is None or stored.get("phase") not in ACTIVATION_PHASES:
+            return 0
 
     return run_external_helper(
-        operation_id=args.operation,
+        operation_id=operation_id,
         state_directory=args.state_directory,
         install_directory=args.install_directory,
         launcher_file=args.launcher_file,

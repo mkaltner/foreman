@@ -183,10 +183,18 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             install_dir = home / ".local" / "share" / "foreman"
             launcher = home / ".local" / "bin" / "foreman"
             unit = home / ".config" / "systemd" / "user" / "foreman.service"
+            recovery_unit = (
+                home / ".config" / "systemd" / "user"
+                / "foreman-update-recovery.service"
+            )
             self.assertFalse((install_dir / "venv").exists())
             self.assertIn(
                 "ExecStart=/usr/bin/env python3 ",
                 unit.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "--resume-latest",
+                recovery_unit.read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "exec /usr/bin/env python3",
@@ -207,6 +215,10 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((install_dir / "server_update.py").is_file())
             self.assertTrue((install_dir / "update_cli.py").is_file())
             self.assertTrue((home / ".local/libexec/foreman-updater").is_file())
+            self.assertIn(
+                "--user enable foreman-update-recovery.service",
+                systemctl_log.read_text(encoding="utf-8"),
+            )
             self.assertTrue((install_dir / "claude_bridge/bridge.mjs").is_file())
             self.assertTrue((install_dir / "claude_bridge/package-lock.json").is_file())
             self.assertFalse((install_dir / "claude_bridge/bridge.test.mjs").exists())
@@ -347,6 +359,11 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             unit = home / ".config" / "systemd" / "user" / "foreman.service"
             unit.parent.mkdir(parents=True)
             unit.write_text("old unit\n", encoding="utf-8")
+            recovery_unit = (
+                home / ".config" / "systemd" / "user"
+                / "foreman-update-recovery.service"
+            )
+            recovery_unit.write_text("old recovery unit\n", encoding="utf-8")
             helper = home / ".local" / "libexec" / "foreman-updater"
             helper.parent.mkdir(parents=True)
             helper.write_text("old helper\n", encoding="utf-8")
@@ -367,6 +384,10 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(obsolete_venv.is_dir())
             self.assertEqual(launcher.read_text(encoding="utf-8"), "old launcher\n")
             self.assertEqual(unit.read_text(encoding="utf-8"), "old unit\n")
+            self.assertEqual(
+                recovery_unit.read_text(encoding="utf-8"),
+                "old recovery unit\n",
+            )
             self.assertEqual(helper.read_text(encoding="utf-8"), "old helper\n")
             self.assertEqual(config.read_bytes(), expected_config)
             self.assertEqual(state.read_bytes(), expected_state)

@@ -65,6 +65,7 @@ REQUIRED_ARCHIVE_FILES = {
     "release.properties",
     "linux/foreman",
     "linux/foreman.service",
+    "linux/foreman-update-recovery.service",
     "linux/foreman_service.py",
     "linux/codex.py",
     "linux/approvals.py",
@@ -924,6 +925,13 @@ def run_external_helper(
     operation = store.read(operation_id)
     if operation is None or operation.get("phase") not in ACTIVATION_PHASES:
         return 2
+    try:
+        recorded_health_port = int(operation["healthPort"])
+    except (KeyError, TypeError, ValueError):
+        return 2
+    if not 1 <= recorded_health_port <= 65535:
+        return 2
+    health_port = recorded_health_port
     if operation.get("phase") != "activationScheduled":
         return _rollback_external_update(
             store=store, operation_id=operation_id,
@@ -999,7 +1007,26 @@ def recover_latest(
 ) -> int:
     store = OperationStore(state_directory)
     operation = store.read()
-    if operation is None or operation.get("phase") != "recoveryRequired":
+    if operation is None:
+        raise UpdateFailure("recoveryUnavailable", "No update operation currently requires recovery.")
+    if operation.get("phase") in ACTIVATION_PHASES:
+        try:
+            health_port = int(operation["healthPort"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise UpdateFailure(
+                "recoveryUnavailable", "The interrupted update has invalid recovery metadata."
+            ) from error
+        if not 1 <= health_port <= 65535:
+            raise UpdateFailure(
+                "recoveryUnavailable", "The interrupted update has invalid recovery metadata."
+            )
+        result = _rollback_external_update(
+            store=store, operation_id=operation["id"],
+            install_directory=install_directory, launcher_file=launcher_file,
+            unit_file=unit_file, helper_file=helper_file, health_port=health_port,
+        )
+        return 0 if result == 1 else result
+    if operation.get("phase") != "recoveryRequired":
         raise UpdateFailure("recoveryUnavailable", "No update operation currently requires recovery.")
     operation_dir = store.operation_directory(operation["id"])
     backup = operation_dir / "backup"
