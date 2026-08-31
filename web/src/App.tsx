@@ -2989,7 +2989,6 @@ export function ConversationView({
           <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateModel(value)} />
           {provider === "codex" && <RouteSelect label="Reasoning" value={effort} options={selectedModel?.reasoningEfforts.map((entry) => ({ value: entry, label: reasoningLabel(entry), description: reasoningDescription(entry) })) ?? []} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateEffort(value)} />}
         </div>
-        {hasActiveTurn && <p className="route-locked-note">{provider === "claude-code" ? "Model and permission are available when this turn finishes." : "Model, reasoning, and access are available when this turn finishes."}</p>}
         {images.length > 0 && <div className="attachment-row">{images.map((image, index) => <figure key={`${image.name}-${index}`}><img src={image.previewUrl} alt={image.name} /><button type="button" onClick={() => setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${image.name}`}>×</button></figure>)}</div>}
         <div className="entry-row">
           {provider === "codex" && <label className="attach-button" title="Attach images">+<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => void addFiles(event)} disabled={processing || submitting || images.length >= 4} /></label>}
@@ -3138,6 +3137,8 @@ export function RouteSelect({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selected = options.find((option) => option.value === value);
   const displayValue = (selected?.label ?? value) || "Server default";
+  const unavailable = disabled || options.length === 0;
+  const disabledReasonId = `${menuId}-disabled-reason`;
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -3175,10 +3176,14 @@ export function RouteSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        disabled={disabled || options.length === 0}
+        aria-disabled={unavailable}
+        aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
         title={disabled ? disabledReason : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!unavailable) setOpen((current) => !current);
+        }}
         onKeyDown={(event) => {
+          if (unavailable) return;
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             setOpen(true);
@@ -3187,6 +3192,7 @@ export function RouteSelect({
       >
         <span>{selected?.warning && <span className="permission-warning-icon" aria-hidden="true">⚠ </span>}{displayValue}</span><i aria-hidden="true">⌄</i>
       </button>
+      {disabled && disabledReason && <span id={disabledReasonId} className="sr-only">{disabledReason}</span>}
       {open && (
         <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>
           {options.map((option, index) => (
