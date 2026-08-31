@@ -3601,6 +3601,7 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hello["capabilities"]["workspaceFiles"])
         self.assertFalse(hello["capabilities"]["remoteRestart"])
         self.assertTrue(hello["capabilities"]["threadSettings"])
+        self.assertTrue(hello["capabilities"]["releaseDiscovery"])
         paired = await self.request(
             "pair",
             {"pairingKey": self.pairing_key, "deviceName": "Test phone"},
@@ -3631,6 +3632,14 @@ class TcpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             (ROOT / "release.properties").read_text(encoding="utf-8")
             .split("foremanVersion=", 1)[1]
             .splitlines()[0],
+        )
+        self.assertEqual(
+            service_status["foremanReleaseBuild"],
+            "releaseBuild=true" in (ROOT / "release.properties").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            set(service_status["releaseUpdates"]["components"]),
+            {"server", "android"},
         )
         self.assertGreaterEqual(service_status["uptimeSeconds"], 12)
         self.assertEqual(service_status["codex"]["mode"], "fallback")

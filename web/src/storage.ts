@@ -1,5 +1,6 @@
 import type { ActivityDetail } from "./activity-detail";
-import { isProviderId, type ProviderId } from "./protocol";
+import { isProviderId, type ProviderId, type ReleaseUpdateSnapshot } from "./protocol";
+import { normalizeReleaseUpdates } from "./update-status";
 
 export type ColorMode = "system" | "light" | "dark";
 export type ThemeId = "foreman" | "harbor" | "grove" | "ember" | "dune" | "slate" | "high-contrast";
@@ -66,6 +67,7 @@ const SESSION_ORGANIZATION_KEY = "foreman.session-organization.v1";
 const SESSION_SEARCH_KEY = "foreman.session-search.v1";
 const COLLAPSED_REPOSITORIES_KEY = "foreman.collapsed-repositories.v1";
 const LAST_SESSION_KEY = "foreman.last-session.v1";
+const RELEASE_UPDATES_KEY = "foreman.release-updates.v1";
 const HOST_SCOPED_KEYS = [
   LEGACY_APPEARANCE_KEY,
   APPEARANCE_KEY,
@@ -76,6 +78,7 @@ const HOST_SCOPED_KEYS = [
   SESSION_SEARCH_KEY,
   COLLAPSED_REPOSITORIES_KEY,
   LAST_SESSION_KEY,
+  RELEASE_UPDATES_KEY,
 ];
 export const DEFAULT_APPEARANCE: Appearance = {
   colorMode: "system",
@@ -232,6 +235,49 @@ export function forgetStoredHost(
     ? remaining.find(({ isDefault }) => isDefault)?.id ?? remaining[0]?.id ?? null
     : registry.activeHostId;
   return normalizeRegistry({ hosts: remaining, activeHostId: nextActive });
+}
+
+export interface CachedReleaseUpdateInfo {
+  serverVersion: string | null;
+  serverReleaseBuild: boolean | null;
+  snapshot: ReleaseUpdateSnapshot;
+}
+
+export function loadReleaseUpdateInfo(
+  hostId: string | null | undefined,
+  storage: Storage = localStorage,
+): CachedReleaseUpdateInfo | null {
+  if (!hostId) return null;
+  try {
+    const value = JSON.parse(storage.getItem(scopedKey(RELEASE_UPDATES_KEY, hostId)) ?? "null") as Partial<CachedReleaseUpdateInfo> | null;
+    const snapshot = normalizeReleaseUpdates(value?.snapshot);
+    const serverVersion = typeof value?.serverVersion === "string" && value.serverVersion.length <= 80
+      ? value.serverVersion
+      : value?.serverVersion === null ? null : undefined;
+    const serverReleaseBuild = typeof value?.serverReleaseBuild === "boolean" || value?.serverReleaseBuild === null
+      ? value.serverReleaseBuild
+      : undefined;
+    return snapshot && serverVersion !== undefined && serverReleaseBuild !== undefined
+      ? { snapshot, serverVersion, serverReleaseBuild }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveReleaseUpdateInfo(
+  hostId: string,
+  info: CachedReleaseUpdateInfo,
+  storage: Storage = localStorage,
+): void {
+  const validated = normalizeReleaseUpdates(info.snapshot);
+  if (
+    validated &&
+    (info.serverVersion === null || (typeof info.serverVersion === "string" && info.serverVersion.length <= 80)) &&
+    (info.serverReleaseBuild === null || typeof info.serverReleaseBuild === "boolean")
+  ) {
+    storage.setItem(scopedKey(RELEASE_UPDATES_KEY, hostId), JSON.stringify({ ...info, snapshot: validated }));
+  }
 }
 
 export function hostIdFromUrl(search = window.location.search): string | null {

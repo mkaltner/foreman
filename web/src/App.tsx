@@ -17,6 +17,7 @@ import remarkGfm from "remark-gfm";
 import { ApprovalCard, approvalAttentionLabel } from "./ApprovalCard";
 import { InputCard, inputAttentionLabel } from "./InputCard";
 import { AboutSection } from "./about";
+import { normalizeReleaseUpdates } from "./update-status";
 import { Dashboard } from "./Dashboard";
 import { conversationBlocks, type ActivityDetail } from "./activity-detail";
 import { messageDraft, updateMessageDraft } from "./drafts";
@@ -112,9 +113,11 @@ import {
   clearHostNotificationOverride,
   clearRememberedSession,
   loadRememberedSession,
+  loadReleaseUpdateInfo,
   saveHostRegistry,
   saveNotificationPreferences,
   saveRememberedSession,
+  saveReleaseUpdateInfo,
   saveSessionSearch,
   saveSessionOrganization,
   selectStoredHost,
@@ -123,6 +126,7 @@ import {
   withHostInSearch,
   type Appearance,
   type HostRegistry,
+  type CachedReleaseUpdateInfo,
   type NewStoredHost,
   type StoredHost,
 } from "./storage";
@@ -262,6 +266,9 @@ function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [hello, setHello] = useState<HelloPayload | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
+  const [releaseUpdateInfo, setReleaseUpdateInfo] = useState<CachedReleaseUpdateInfo | null>(() =>
+    loadReleaseUpdateInfo(initialHostId)
+  );
   const [accountUsage, setAccountUsage] = useState<AccountUsage | null>(null);
   const [pairedClients, setPairedClients] = useState<PairedClient[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -643,7 +650,19 @@ function App() {
       return;
     }
     if (message.type === "service.event") {
-      setServiceStatus({ ...(message.payload as unknown as ServiceStatus), receivedAt: Date.now() });
+      const status = message.payload as unknown as ServiceStatus;
+      setServiceStatus({ ...status, receivedAt: Date.now() });
+      const snapshot = normalizeReleaseUpdates(status.releaseUpdates);
+      const hostId = activeHostIdRef.current;
+      if (snapshot && hostId) {
+        const info: CachedReleaseUpdateInfo = {
+          serverVersion: status.foremanVersion ?? null,
+          serverReleaseBuild: typeof status.foremanReleaseBuild === "boolean" ? status.foremanReleaseBuild : null,
+          snapshot,
+        };
+        saveReleaseUpdateInfo(hostId, info);
+        setReleaseUpdateInfo(info);
+      }
       void clientRef.current?.request<{ clients: PairedClient[] } & Record<string, unknown>>("client.list")
         .then((result) => setPairedClients(result.clients))
         .catch(() => undefined);
@@ -1251,6 +1270,16 @@ function App() {
       })));
       setClaudePermissionModes(claudePermissionResult.modes);
       setServiceStatus({ ...statusResult, receivedAt: Date.now() });
+      const validatedReleaseUpdates = normalizeReleaseUpdates(statusResult.releaseUpdates);
+      if (validatedReleaseUpdates) {
+        const info: CachedReleaseUpdateInfo = {
+          serverVersion: statusResult.foremanVersion ?? null,
+          serverReleaseBuild: typeof statusResult.foremanReleaseBuild === "boolean" ? statusResult.foremanReleaseBuild : null,
+          snapshot: validatedReleaseUpdates,
+        };
+        saveReleaseUpdateInfo(hostId, info);
+        setReleaseUpdateInfo(info);
+      }
       setAccountUsage(usageResult);
       setRepositories(repositoryResult.repositories);
       setPairedClients(clientResult.clients);
@@ -1516,6 +1545,7 @@ function App() {
       notificationPreferencesRef.current = nextNotifications;
       setHostNotificationOverride(loadHostNotificationOverride(hostId) !== null);
       setOrganization(nextOrganization);
+      setReleaseUpdateInfo(loadReleaseUpdateInfo(hostId));
       setCollapsedRepositoriesByHost((previous) => {
         const collapsed = new Map(previous);
         collapsed.set(hostId, loadCollapsedRepositories(hostId));
@@ -1656,10 +1686,12 @@ function App() {
         notificationPreferencesRef.current = nextNotifications;
         setHostNotificationOverride(loadHostNotificationOverride(nextId) !== null);
         setOrganization(loadSessionOrganization(nextId));
+        setReleaseUpdateInfo(loadReleaseUpdateInfo(nextId));
         const filters = parseSessionFilters(loadSessionSearch(nextId));
         searchFiltersRef.current = filters;
         setSearchFilters(filters);
       } else {
+        setReleaseUpdateInfo(null);
         setAppearance(loadAppearance(null));
       }
     }
@@ -1687,6 +1719,7 @@ function App() {
       client.disconnect();
       clearHostProjections();
       persistRegistry(next);
+      setReleaseUpdateInfo(null);
       setAppearance(loadAppearance(saved.id));
       const savedNotifications = loadNotificationPreferences(saved.id);
       setNotificationPreferences(savedNotifications);
@@ -1915,7 +1948,9 @@ function App() {
           hosts={hostRegistry.hosts}
           appearance={appearance}
           hello={hello}
-          serverVersion={serviceStatus?.foremanVersion ?? null}
+          serverVersion={serviceStatus?.foremanVersion ?? releaseUpdateInfo?.serverVersion ?? null}
+          serverReleaseBuild={serviceStatus?.foremanReleaseBuild ?? releaseUpdateInfo?.serverReleaseBuild ?? null}
+          releaseUpdates={normalizeReleaseUpdates(serviceStatus?.releaseUpdates) ?? releaseUpdateInfo?.snapshot ?? null}
           connected={connected}
           providers={providers}
           onAppearance={updateAppearance}
@@ -1943,6 +1978,19 @@ function App() {
               setError(caught instanceof Error ? caught.message : "Provider setting could not be updated");
               throw caught;
             }
+          }}
+          onCheckAgain={async () => {
+            const snapshot = normalizeReleaseUpdates(
+              await client.request<Record<string, unknown>>("release.check"),
+            );
+            if (!snapshot) throw new Error("Foreman returned invalid release information");
+            const info: CachedReleaseUpdateInfo = {
+              serverVersion: serviceStatus?.foremanVersion ?? releaseUpdateInfo?.serverVersion ?? null,
+              serverReleaseBuild: serviceStatus?.foremanReleaseBuild ?? releaseUpdateInfo?.serverReleaseBuild ?? null,
+              snapshot,
+            };
+            saveReleaseUpdateInfo(activeHost.id, info);
+            setReleaseUpdateInfo(info);
           }}
           onAdd={() => setHostSetupOpen(true)}
           onSelect={(hostId) => activateHost(hostId, { view: "settings" })}
@@ -3381,6 +3429,8 @@ function SettingsView({
   appearance,
   hello,
   serverVersion,
+  serverReleaseBuild,
+  releaseUpdates,
   connected,
   providers,
   notificationPreferences,
@@ -3393,6 +3443,7 @@ function SettingsView({
   onNotificationPermission,
   onNotificationTest,
   onProviderEnabled,
+  onCheckAgain,
   onAdd,
   onSelect,
   onRename,
@@ -3403,6 +3454,8 @@ function SettingsView({
   appearance: Appearance;
   hello: HelloPayload | null;
   serverVersion: string | null;
+  serverReleaseBuild: boolean | null;
+  releaseUpdates: import("./protocol").ReleaseUpdateSnapshot | null;
   connected: boolean;
   providers: ProviderInfo[];
   notificationPreferences: NotificationPreferences;
@@ -3415,6 +3468,7 @@ function SettingsView({
   onNotificationPermission: () => Promise<void>;
   onNotificationTest: () => Promise<NotificationDeliveryMethod>;
   onProviderEnabled: (provider: ProviderId, enabled: boolean) => Promise<void>;
+  onCheckAgain: () => Promise<void>;
   onAdd: () => void;
   onSelect: (hostId: string) => void;
   onRename: (hostId: string, displayName: string) => void;
@@ -3456,7 +3510,13 @@ function SettingsView({
       <div className="repository-overrides"><h3>Repository and workspace overrides</h3><p className="muted">Each event inherits the settings above until explicitly set to on or off. Identities are canonical workspace paths and stay in this browser.</p>{repositoryOptions.length === 0 && <p className="muted">No known repositories or workspaces yet.</p>}{repositoryOptions.map((repository) => <details key={repository.id}><summary>{repository.label}</summary><small title={repository.id}>{repository.id}</small><div className="override-grid">{overrideKeys.map(([key, label]) => { const value = notificationPreferences.repositoryOverrides[repository.id]?.[key]; return <label key={key}>{label}<select value={value === undefined ? "inherit" : String(value)} onChange={(event) => onNotificationPreferences(setRepositoryOverride(notificationPreferences, repository.id, { [key]: event.target.value === "inherit" ? undefined : event.target.value === "true" }))}><option value="inherit">Inherit</option><option value="true">On</option><option value="false">Off</option></select></label>; })}</div></details>)}</div>
     </section>
     <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? "Available" : "Unavailable"}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Foreman-managed runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
-    <AboutSection serverVersion={serverVersion} connected={connected} />
+    <AboutSection
+      serverVersion={serverVersion}
+      serverReleaseBuild={serverReleaseBuild}
+      connected={connected}
+      releaseUpdates={releaseUpdates}
+      onCheckAgain={onCheckAgain}
+    />
   </main>;
 }
 

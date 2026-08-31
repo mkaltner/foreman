@@ -32,10 +32,10 @@ class AboutInformationTest {
     }
 
     @Test
-    fun disconnectedAboutDoesNotPresentRetainedServerVersionAsCurrent() {
+    fun disconnectedAboutLabelsRetainedServerVersionAsLastConnected() {
         val information = aboutVersionInformation("1.0.1", false, "1.0.2", "unknown", false)
 
-        assertEquals("Unavailable while disconnected", information.server)
+        assertEquals("1.0.1 (last connected)", information.server)
         assertEquals("1.0.2 (development build)", information.client)
     }
 

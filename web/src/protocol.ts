@@ -188,6 +188,8 @@ export interface SessionSearchResult {
 export interface ServiceStatus {
   receivedAt?: number;
   foremanVersion: string;
+  foremanReleaseBuild?: boolean;
+  releaseUpdates?: ReleaseUpdateSnapshot;
   connected: boolean;
   remoteRestartEnabled?: boolean;
   uptimeSeconds: number;
@@ -213,6 +215,31 @@ export interface ServiceStatus {
   repositoryRoot: string;
   activeBrowserConnections?: number;
   activeTcpConnections?: number;
+}
+
+export interface ForemanRelease {
+  version: string;
+  tag: string;
+  title: string;
+  publishedAt: string;
+  releaseNotesUrl: string;
+  artifactAvailable: boolean;
+}
+
+export interface ComponentReleaseUpdates {
+  supportedRelease: ForemanRelease | null;
+  newestRelease: ForemanRelease | null;
+}
+
+export interface ReleaseUpdateSnapshot {
+  observedAt: string | null;
+  stale: boolean;
+  refreshStatus: "idle" | "checking" | "unavailable";
+  unavailableReason?: string;
+  components: {
+    server: ComponentReleaseUpdates;
+    android: ComponentReleaseUpdates;
+  };
 }
 
 export interface DiagnosticEvent {

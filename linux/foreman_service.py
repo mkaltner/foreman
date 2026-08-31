@@ -25,6 +25,7 @@ from urllib.parse import unquote, urlsplit
 
 from codex import (
     FOREMAN_VERSION,
+    FOREMAN_RELEASE_BUILD,
     SEARCH_SNIPPET_LIMIT,
     SEARCH_SNIPPETS_PER_SESSION,
     Codex,
@@ -49,6 +50,7 @@ from protocol import (
     read,
     response,
 )
+from release_updates import ReleaseUpdateCache
 from state import State
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.datastructures import Headers
@@ -215,6 +217,7 @@ class Foreman:
         claude_factory=None,
         claude_node: str = "node",
         claude_bridge: str | Path | None = None,
+        release_updates: ReleaseUpdateCache | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -298,12 +301,14 @@ class Foreman:
         self.restart_runner = restart_runner or self.systemd_restart
         self.restart_scheduled = False
         self.restart_task: asyncio.Task[None] | None = None
+        self.release_refresh_task: asyncio.Task[None] | None = None
         self.timestamp_persistence_pending: set[tuple[str, str]] = set()
         self.timestamp_persistence_replacements: set[tuple[str, str]] = set()
         self.timestamp_persistence_task: asyncio.Task[bool] | None = None
         self.diagnostics = diagnostics or DiagnosticBuffer()
         self.known_pairing_count = 0
         self.stopping = False
+        self.release_updates = release_updates or ReleaseUpdateCache(self.state.directory)
         self.claude = (
             claude_factory(
                 self.repository_root,
@@ -352,11 +357,17 @@ class Foreman:
             )
         self.diagnostics.record("listeners.started")
         self.diagnostics.record("service.started")
+        self.release_refresh_task = asyncio.create_task(
+            self.refresh_releases_and_broadcast()
+        )
 
     async def stop(self) -> None:
         self.diagnostics.record("service.stopping")
         self.stopping = True
         shutdown: list[Awaitable[Any]] = [self.codex.stop()]
+        shutdown.append(self.release_updates.stop())
+        if self.release_refresh_task is not None:
+            shutdown.append(self.release_refresh_task)
         if self.claude is not None:
             shutdown.append(self.claude.stop())
         if self.server:
@@ -1431,6 +1442,10 @@ class Foreman:
             return_exceptions=True,
         )
 
+    async def refresh_releases_and_broadcast(self) -> None:
+        await self.release_updates.refresh()
+        await self.broadcast_service_status()
+
     def session_presence_projection(self) -> list[dict[str, str]]:
         sessions: set[tuple[str, str]] = set()
         for client in self.clients:
@@ -2384,6 +2399,8 @@ class Foreman:
             web_port = self.web_server.sockets[0].getsockname()[1]
         return {
             "foremanVersion": FOREMAN_VERSION,
+            "foremanReleaseBuild": FOREMAN_RELEASE_BUILD,
+            "releaseUpdates": self.release_updates.snapshot(),
             "connected": True,
             "remoteRestartEnabled": self.remote_restart_enabled,
             "uptimeSeconds": max(0, int(time.monotonic() - self.started_monotonic)),
@@ -2530,6 +2547,7 @@ class Foreman:
                     "sessionPresence": True,
                     "providerConfiguration": True,
                     "remoteRestart": self.remote_restart_enabled,
+                    "releaseDiscovery": True,
                 },
             }
         if message_type == "pair":
@@ -2910,6 +2928,8 @@ class Foreman:
             return {"accepted": True, "provider": provider, "sessionId": session_id}
         if message_type == "service.status":
             return self.service_status()
+        if message_type == "release.check":
+            return await self.release_updates.refresh(manual=True)
         if message_type == "usage.status":
             if self.provider_enabled["codex"]:
                 self.account_usage = await self.codex.account_rate_limits()

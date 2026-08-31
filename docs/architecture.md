@@ -52,6 +52,27 @@ builder supplies it so rebuilding those assets remains deterministic.
 the current published version number; a reviewed release PR is the only place
 that should set it to `true`.
 
+Release discovery is owned by the Linux service, not by each client. A
+background-safe cache queries only the fixed official GitHub releases endpoint,
+inspects at most 20 releases and 50 uploaded assets per release, and persists
+only validated component projections, observation time, ETag, and bounded retry
+metadata. It uses conditional requests, coalesces concurrent refreshes, and
+backs off after failures or rate limits. Startup and normal requests never wait
+for GitHub. A failed refresh leaves the last successful result intact and marks
+it stale.
+
+The stable channel excludes drafts, GitHub prereleases, SemVer prerelease tags,
+and malformed releases. For each component, the newest published stable release
+is distinct from the newest complete supported release. Server support requires
+one nonempty `foreman-linux-v<version>.tar.gz` plus one nonempty `SHA256SUMS`;
+Android support requires one nonempty `foreman-v<version>.apk` plus the checksum
+file. Duplicate, zero-byte, absent, or over-limit assets do not qualify, and
+GitHub's automatic source archives are never component artifacts. Web and
+Android retain a small validated host-scoped projection for offline About views;
+forgetting the host removes it. Issue #57 only discovers and presents releases.
+The shared server updater and APK installer remain the separate architecture
+gates in #58 and #59.
+
 Linux files:
 
 - `foreman_service.py`: listener, request switch, repository discovery;
@@ -59,6 +80,7 @@ Linux files:
 - `approvals.py`: bounded in-memory approval projection, correlation, and validation;
 - `inputs.py`: verified structured-input normalization and response validation;
 - `protocol.py`: bounded JSONL frames;
+- `release_updates.py`: fixed-endpoint release validation, SemVer selection, and cache;
 - `diagnostics.py`: fixed-message, 100-entry sanitized in-memory event ring;
 - `claude_code.py` and `claude_bridge/bridge.mjs`: optional Linux-only Claude SDK lifecycle boundary;
 - `session_identity.py`: the small explicit `provider + hostId + sessionId` identity value;

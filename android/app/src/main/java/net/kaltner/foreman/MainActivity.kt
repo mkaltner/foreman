@@ -860,6 +860,9 @@ internal data class UiState(
     val inputErrors: Map<String, String> = emptyMap(),
     val overviewSnapshots: Map<String, HostOverviewSnapshot> = emptyMap(),
     val foremanVersion: String? = null,
+    val foremanReleaseBuild: Boolean? = null,
+    val releaseUpdates: ReleaseUpdateSnapshot? = null,
+    val releaseCheckLoading: Boolean = false,
     val codexVersion: String? = null,
     val runtimeMode: String? = null,
     val runtimeConnected: Boolean = false,
@@ -972,6 +975,8 @@ private data class SyncSnapshot(
     val approvals: List<ApprovalRequest>,
     val inputs: List<InputRequest>,
     val foremanVersion: String?,
+    val foremanReleaseBuild: Boolean?,
+    val releaseUpdates: ReleaseUpdateSnapshot?,
     val codexVersion: String?,
     val runtimeMode: String?,
     val runtimeConnected: Boolean,
@@ -1039,6 +1044,9 @@ internal fun UiState.withForgottenConnection(): UiState =
         inputErrors = emptyMap(),
         overviewSnapshots = emptyMap(),
         foremanVersion = null,
+        foremanReleaseBuild = null,
+        releaseUpdates = null,
+        releaseCheckLoading = false,
         codexVersion = null,
         runtimeMode = null,
         runtimeConnected = false,
@@ -1056,6 +1064,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private var activeHost = hosts.active()
     private var preferences = PreferenceStore(application, activeHost?.id)
     private val savedPreferences = preferences.load()
+    private val savedReleaseUpdateInfo = preferences.loadReleaseUpdateInfo()
     private val initiallyRememberedSession = rememberedSessionTarget(
         savedPreferences.selectedSessionProvider,
         savedPreferences.selectedSessionId,
@@ -1110,6 +1119,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 pinnedSessionIds = savedPreferences.pinnedSessionIds,
                 hiddenSessionIds = savedPreferences.hiddenSessionIds,
                 overviewSnapshots = overviewStore.all().filterKeys { id -> hosts.load(id) != null },
+                foremanVersion = savedReleaseUpdateInfo?.serverVersion,
+                foremanReleaseBuild = savedReleaseUpdateInfo?.serverReleaseBuild,
+                releaseUpdates = savedReleaseUpdateInfo?.snapshot,
             ),
         )
     private val json = Json { ignoreUnknownKeys = true }
@@ -2447,6 +2459,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         overviewNavigation.invalidateForHost(saved.id)
         preferences = PreferenceStore(getApplication(), saved.id)
         val restored = preferences.load()
+        val restoredReleaseUpdateInfo = preferences.loadReleaseUpdateInfo()
         val remembered = rememberedSessionTarget(
             restored.selectedSessionProvider,
             restored.selectedSessionId,
@@ -2516,7 +2529,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 inputs = emptyList(),
                 submittingInputIds = emptySet(),
                 inputErrors = emptyMap(),
-                foremanVersion = null,
+                foremanVersion = restoredReleaseUpdateInfo?.serverVersion,
+                foremanReleaseBuild = restoredReleaseUpdateInfo?.serverReleaseBuild,
+                releaseUpdates = restoredReleaseUpdateInfo?.snapshot,
+                releaseCheckLoading = false,
                 codexVersion = null,
                 runtimeMode = null,
                 runtimeConnected = false,
@@ -2859,6 +2875,29 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun checkForUpdates() {
+        val current = state.value
+        if (!current.connected || current.releaseCheckLoading) return
+        viewModelScope.launch {
+            state.update { it.copy(releaseCheckLoading = true) }
+            runCatching {
+                decodeReleaseUpdates(json, client.request("release.check").payload)
+                    ?: error("Foreman returned invalid release information")
+            }.onSuccess { snapshot ->
+                val latest = state.value
+                val info = CachedReleaseUpdateInfo(
+                    latest.foremanVersion,
+                    latest.foremanReleaseBuild,
+                    snapshot,
+                )
+                preferences.setReleaseUpdateInfo(info)
+                state.update { it.copy(releaseUpdates = snapshot, releaseCheckLoading = false) }
+            }.onFailure {
+                state.update { it.copy(releaseCheckLoading = false) }
+            }
+        }
+    }
+
     fun openSession(
         id: String,
         highlightedItemId: String? = null,
@@ -3107,6 +3146,8 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     approvals = approvals,
                     inputs = inputs,
                     foremanVersion = serviceStatus["foremanVersion"]?.jsonPrimitive?.content,
+                    foremanReleaseBuild = serviceStatus["foremanReleaseBuild"]?.jsonPrimitive?.content?.toBooleanStrictOrNull(),
+                    releaseUpdates = decodeReleaseUpdates(json, serviceStatus["releaseUpdates"]),
                     codexVersion = codexStatus?.get("version")?.jsonPrimitive?.content,
                     runtimeMode = codexStatus?.get("mode")?.jsonPrimitive?.content,
                     runtimeConnected = codexStatus?.get("connected")?.jsonPrimitive?.content == "true",
@@ -3161,6 +3202,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             ) || syncGeneration != sessionSyncGeneration
         ) return
         nonAuthoritativeSessionProviders = snapshot.nonAuthoritativeSessionProviders
+        val releaseUpdateInfo = snapshot.releaseUpdates?.let {
+            CachedReleaseUpdateInfo(snapshot.foremanVersion, snapshot.foremanReleaseBuild, it)
+        }
+        if (releaseUpdateInfo != null) preferences.setReleaseUpdateInfo(releaseUpdateInfo)
         val applySelection = !archivedSelection &&
             (expectedNavigation == null || hostNavigation.isCurrent(expectedNavigation))
         state.update {
@@ -3186,6 +3231,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                     submittingInputIds = emptySet(),
                     inputErrors = emptyMap(),
                     foremanVersion = snapshot.foremanVersion,
+                    foremanReleaseBuild = snapshot.foremanReleaseBuild,
+                    releaseUpdates = snapshot.releaseUpdates ?: it.releaseUpdates,
+                    releaseCheckLoading = false,
                     codexVersion = snapshot.codexVersion,
                     runtimeMode = snapshot.runtimeMode,
                     runtimeConnected = snapshot.runtimeConnected,
@@ -3225,6 +3273,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         startGlobalTurnMonitoring()
         updateActiveOverview()
         synchronizeSessionPresence()
+        if (state.value.releaseUpdates?.refreshStatus == "checking") checkForUpdates()
     }
 
     private suspend fun listSessions(provider: String = PROVIDER_CODEX): List<SessionSummary> {
@@ -3877,6 +3926,25 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     private fun handleEvent(message: WireMessage) {
         if (handleApprovalEvent(message)) return
         if (handleInputEvent(message)) return
+        if (message.type == "service.event") {
+            val serverVersion = message.payload["foremanVersion"]?.jsonPrimitive?.content
+            val releaseBuild = message.payload["foremanReleaseBuild"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+            val releaseUpdates = decodeReleaseUpdates(json, message.payload["releaseUpdates"])
+            if (releaseUpdates != null) {
+                preferences.setReleaseUpdateInfo(
+                    CachedReleaseUpdateInfo(serverVersion, releaseBuild, releaseUpdates),
+                )
+            }
+            state.update {
+                it.copy(
+                    foremanVersion = serverVersion ?: it.foremanVersion,
+                    foremanReleaseBuild = releaseBuild ?: it.foremanReleaseBuild,
+                    releaseUpdates = releaseUpdates ?: it.releaseUpdates,
+                    releaseCheckLoading = false,
+                )
+            }
+            return
+        }
         if (message.type == "usage.event") {
             val usage = runCatching {
                 json.decodeFromJsonElement<AccountUsage>(message.payload)
@@ -7986,7 +8054,11 @@ private fun UiSettingsMenu(
     if (showingAbout) {
         AboutDialog(
             serverVersion = state.foremanVersion,
+            serverReleaseBuild = state.foremanReleaseBuild,
             connected = state.connected,
+            releaseUpdates = state.releaseUpdates,
+            checking = state.releaseCheckLoading,
+            onCheckAgain = viewModel::checkForUpdates,
             onDismiss = { showingAbout = false },
         )
     }
@@ -7996,7 +8068,11 @@ private fun UiSettingsMenu(
 @Composable
 private fun AboutDialog(
     serverVersion: String?,
+    serverReleaseBuild: Boolean?,
     connected: Boolean,
+    releaseUpdates: ReleaseUpdateSnapshot?,
+    checking: Boolean,
+    onCheckAgain: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -8007,6 +8083,22 @@ private fun AboutDialog(
             clientVersion = BuildConfig.VERSION_NAME,
             clientCommit = BuildConfig.FOREMAN_BUILD_COMMIT,
             releaseBuild = BuildConfig.FOREMAN_RELEASE_BUILD,
+        )
+    val serverStatus =
+        componentUpdateStatus(
+            serverVersion,
+            serverReleaseBuild,
+            releaseUpdates,
+            releaseUpdates?.components?.server,
+            "server",
+        )
+    val androidStatus =
+        componentUpdateStatus(
+            BuildConfig.VERSION_NAME,
+            BuildConfig.FOREMAN_RELEASE_BUILD,
+            releaseUpdates,
+            releaseUpdates?.components?.android,
+            "Android APK",
         )
     BackHandler(onBack = onDismiss)
     Dialog(
@@ -8056,10 +8148,45 @@ private fun AboutDialog(
                     item {
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                                AboutVersionRow("Server", versions.server)
+                                AboutVersionRow(
+                                    if (connected) "Installed server" else "Last connected server",
+                                    versions.server,
+                                )
+                                AboutUpdateStatus(serverStatus)
                                 HorizontalDivider()
-                                AboutVersionRow("Android client", versions.client)
+                                AboutVersionRow("Installed Android APK", versions.client)
+                                AboutUpdateStatus(androidStatus)
                             }
+                        }
+                    }
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val observed = releaseUpdates?.observedAt
+                            Text(
+                                when {
+                                    releaseUpdates?.stale == true && observed != null ->
+                                        "Using stale release information observed $observed."
+                                    observed != null -> "Release information checked $observed."
+                                    else -> "No validated release information is cached."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            FilledTonalButton(
+                                onClick = onCheckAgain,
+                                enabled = connected && !checking && releaseUpdates?.refreshStatus != "checking",
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(if (checking || releaseUpdates?.refreshStatus == "checking") "Checking…" else "Check again")
+                            }
+                            Text(
+                                "Foreman only detects updates. Server installation is tracked in #58; Android APK installation is tracked in #59.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                     items(foremanAboutLinks) { (label, url) ->
@@ -8078,6 +8205,32 @@ private fun AboutDialog(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutUpdateStatus(status: ComponentUpdateStatus) {
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(status.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        status.detail?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        status.release?.let { release ->
+            TextButton(
+                onClick = {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseNotesUrl)))
+                    } catch (_: ActivityNotFoundException) {
+                        Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Release notes for ${release.tag}", modifier = Modifier.weight(1f))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
             }
         }
     }

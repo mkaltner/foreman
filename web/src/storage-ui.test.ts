@@ -14,6 +14,7 @@ import {
   loadNotificationPreferences,
   loadSessionOrganization,
   loadRememberedSession,
+  loadReleaseUpdateInfo,
   loadCollapsedRepositories,
   saveAppearance,
   saveDashboardPreferences,
@@ -22,6 +23,7 @@ import {
   saveNotificationPreferences,
   saveSessionOrganization,
   saveRememberedSession,
+  saveReleaseUpdateInfo,
   saveCollapsedRepositories,
   suggestedHostDisplayName,
   updateStoredHost,
@@ -76,6 +78,34 @@ describe("storage, appearance, and interaction helpers", () => {
     expect(loadRememberedSession(work.id)).toBeNull();
     saveRememberedSession({ hostId: work.id, provider: "codex", sessionId: "x".repeat(1001) });
     expect(loadRememberedSession(work.id)).toBeNull();
+  });
+
+  it("restores validated release information per host and removes it when forgotten", () => {
+    const home = createStoredHost({ displayName: "Home", host: "home.local", webPort: 8766, deviceToken: "fmt_home" });
+    const work = createStoredHost({ displayName: "Work", host: "work.local", webPort: 9766, deviceToken: "fmt_work" });
+    let registry = addStoredHost({ hosts: [], activeHostId: null }, home);
+    registry = addStoredHost(registry, work);
+    const release = {
+      version: "1.0.0", tag: "v1.0.0", title: "Foreman 1.0.0",
+      publishedAt: "2026-08-29T04:47:19Z",
+      releaseNotesUrl: "https://github.com/mkaltner/foreman/releases/tag/v1.0.0",
+      artifactAvailable: true,
+    };
+    const snapshot = {
+      observedAt: "2026-08-30T00:00:00Z", stale: false, refreshStatus: "idle" as const,
+      components: {
+        server: { supportedRelease: release, newestRelease: release },
+        android: { supportedRelease: release, newestRelease: release },
+      },
+    };
+    saveReleaseUpdateInfo(home.id, { serverVersion: "0.9.0", serverReleaseBuild: true, snapshot });
+    saveReleaseUpdateInfo(work.id, { serverVersion: "1.0.0", serverReleaseBuild: false, snapshot });
+
+    expect(loadReleaseUpdateInfo(home.id)).toMatchObject({ serverVersion: "0.9.0", snapshot: { stale: false } });
+    expect(loadReleaseUpdateInfo(work.id)).toMatchObject({ serverReleaseBuild: false });
+    registry = forgetStoredHost(registry, home.id);
+    expect(loadReleaseUpdateInfo(home.id)).toBeNull();
+    expect(loadReleaseUpdateInfo(work.id)?.serverVersion).toBe("1.0.0");
   });
 
   it("does not resurrect a forgotten host when a stale socket update arrives", () => {
