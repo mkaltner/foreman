@@ -450,10 +450,11 @@ does not stop Desktop's Codex runtime.
 Foreman 1.0 is the first stable release. Protocol v1 and the documented
 state-preserving upgrade behavior are the compatibility contract for the 1.x
 series; incompatible wire or configuration changes will not be made silently.
-Current main adds compatible multi-provider functionality intended for v1.1.0;
-it does not change protocol version 1. Android remains distributed by
-sideloading and can now verify and open official newer APKs through Android's
-system installer. The
+Version 1.0.4 is the updater-enabled baseline: after its one-time manual
+installation, Linux and Android can verify and install later compatible
+releases through their respective confirmation and recovery flows. Android
+remains distributed by sideloading and always delegates final APK approval to
+the system installer. The
 [v1.0 acceptance record](docs/acceptance-v1.0.0.md) tracks release evidence.
 Issues and feedback are welcome in the
 [GitHub issue tracker](https://github.com/mkaltner/foreman/issues).

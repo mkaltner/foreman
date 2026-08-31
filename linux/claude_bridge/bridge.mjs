@@ -668,7 +668,7 @@ export class ClaudeBridge {
       includePartialMessages: true,
       persistSession: true,
       permissionMode: run.permissionMode,
-      env: { ...this.env, CLAUDE_AGENT_SDK_CLIENT_APP: "foreman/1.0.3" },
+      env: { ...this.env, CLAUDE_AGENT_SDK_CLIENT_APP: "foreman/1.0.4" },
       canUseTool: (name, toolInput, context) => this.requestApproval(run, name, toolInput, context),
     };
     if (run.model) options.model = run.model;
