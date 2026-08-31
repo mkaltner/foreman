@@ -19,11 +19,7 @@ foreman pair
 foreman web
 ```
 
-Use `--version` to select an exact complete stable release:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh | sh -s -- --version v1.0.4
-```
+The default command always selects the latest complete stable release.
 
 The bootstrapper downloads into a mode-`0700` temporary directory, cleans it on
 success, failure, and signals, and makes no installation change during release
@@ -41,7 +37,7 @@ install_tmp="$(mktemp -d)"
 chmod 700 "$install_tmp"
 curl -fsSL https://raw.githubusercontent.com/mkaltner/foreman/main/scripts/install-foreman.sh -o "$install_tmp/install-foreman.sh"
 less "$install_tmp/install-foreman.sh"
-sh "$install_tmp/install-foreman.sh" --version v1.0.4
+sh "$install_tmp/install-foreman.sh"
 rm -rf -- "$install_tmp"
 ```
 
@@ -80,9 +76,10 @@ Do not run an unreviewed branch checkout on a host that controls sensitive
 provider sessions:
 
 ```sh
-git fetch origin tag v1.0.4
-git checkout --detach v1.0.4
-python3 scripts/verify_release.py --tag v1.0.4
+release_tag="$(curl -fsSL https://api.github.com/repos/mkaltner/foreman/releases/latest | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+git fetch origin tag "$release_tag"
+git checkout --detach "$release_tag"
+python3 scripts/verify_release.py --tag "$release_tag"
 ./install.sh
 ```
 

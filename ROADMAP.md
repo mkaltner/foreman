@@ -58,6 +58,20 @@ adapter and complete web/Android parity.
 
 ## Recently completed
 
+- [x] Reconcile unavailable providers as disabled while retaining their
+  diagnostic Settings entries
+  ([PR #99](https://github.com/mkaltner/foreman/pull/99),
+  [PR #100](https://github.com/mkaltner/foreman/pull/100)).
+- [x] Add a signed, fail-closed one-command Linux bootstrap installer
+  ([PR #97](https://github.com/mkaltner/foreman/pull/97)).
+- [x] Support Codex-only, Claude Code-only, and dual-provider installations
+  ([PR #95](https://github.com/mkaltner/foreman/pull/95)).
+- [x] Remove persistent active-turn configuration helper text while retaining
+  accessible route locks
+  ([PR #96](https://github.com/mkaltner/foreman/pull/96)).
+- [x] Group routine completed nonzero command activity in Focused transcript
+  mode while preserving exact expanded outcomes
+  ([PR #92](https://github.com/mkaltner/foreman/pull/92)).
 - [x] Show transient success feedback on copy actions
   ([PR #89](https://github.com/mkaltner/foreman/pull/89)).
 - [x] Support signed Android APK self-update through Android's system installer
