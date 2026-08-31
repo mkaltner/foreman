@@ -1848,7 +1848,39 @@ describe("conversation drafts", () => {
     expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Model: Model Test" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reasoning: High" })).toBeDisabled();
-    expect(screen.getByText("Model, reasoning, and access are available when this turn finishes.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toHaveAttribute("title", "Available when this turn finishes");
+    expect(screen.queryByText("Model, reasoning, and access are available when this turn finishes.")).not.toBeInTheDocument();
+  });
+
+  it("locks Claude route controls without showing a persistent helper message", () => {
+    render(
+      <ConversationView
+        session={{
+          ...session("claude-active"),
+          provider: "claude-code",
+          status: "working",
+          activeTurnId: "turn-1",
+          model: "sonnet",
+          permissionMode: "default",
+        }}
+        approvals={[]}
+        models={[{ id: "sonnet", displayName: "Sonnet", visible: true, isDefault: true, reasoningEfforts: [] }]}
+        accessLevels={[{ id: "default", displayName: "Default" }]}
+        connected
+        highlightItemId={null}
+        focusedApprovalId={null}
+        draft=""
+        onDraftChange={vi.fn()}
+        onBack={vi.fn()}
+        onRequest={vi.fn().mockResolvedValue({})}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Permission: Default" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: Sonnet" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Permission: Default" })).toHaveAttribute("title", "Available when this turn finishes");
+    expect(screen.queryByText("Model and permission are available when this turn finishes.")).not.toBeInTheDocument();
   });
 
   it("shows known server route values while catalog metadata is reconnecting", () => {

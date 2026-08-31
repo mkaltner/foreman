@@ -216,7 +216,6 @@ button.full{width:100%;min-height:44px}
 .send-button,.interrupt{border-radius:9px;height:34px;padding:0 12px}
 .interrupt{border:1px solid color-mix(in srgb, var(--danger) 45%, var(--border));color:var(--danger);background:0 0;font-size:12px;font-weight:700}
 .composer-note{color:var(--muted);margin:7px 3px 0;font-size:11px}
-.route-locked-note{color:var(--muted);margin:-2px 3px 7px;font-size:11px}
 .attachment-row{gap:8px;margin:-5px 0 8px;padding:5px 5px 0 0;display:flex;overflow-x:auto}
 .attachment-row figure{flex:0 0 64px;height:52px;margin:0;position:relative}
 .attachment-row img{object-fit:cover;border:1px solid var(--border);border-radius:8px;width:100%;height:100%}

@@ -1244,6 +1244,7 @@ class ForemanConnectionTest {
         assertFalse(sessionRouteEditable(session.copy(status = "working")))
         assertFalse(sessionRouteEditable(session.copy(status = "waiting")))
         assertFalse(sessionRouteEditable(session.copy(status = "stopping")))
+        assertTrue(sessionRouteEditable(session.copy(status = "idle")))
         assertFalse(sessionRouteEditable(session.copy(archived = true, readOnly = true)))
     }
 

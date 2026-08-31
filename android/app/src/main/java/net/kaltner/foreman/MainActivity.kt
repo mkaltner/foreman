@@ -6697,7 +6697,6 @@ private fun SessionDetailScreen(
                 interruptible = providerInterruptEligible(selected),
                 interruptEnabled = state.connected && !state.submitting,
                 routeEnabled = state.connected && !state.submitting && sessionRouteEditable(selected),
-                routeLocked = !sessionRouteEditable(selected),
                 enabled = state.connected && !state.submitting &&
                     !(selectedProvider == PROVIDER_CLAUDE_CODE && selected.status in setOf("working", "waiting")) &&
                     selectedApprovals.none { it.status == "pending" || it.status == "submitting" } &&
@@ -7119,7 +7118,6 @@ private fun PromptBox(
     interruptible: Boolean,
     interruptEnabled: Boolean,
     routeEnabled: Boolean,
-    routeLocked: Boolean,
     enabled: Boolean,
     accessLevels: List<AccessLevelInfo>,
     accessLevelId: String?,
@@ -7202,18 +7200,6 @@ private fun PromptBox(
             ) {
                 selectEffort(it)
                 showEfforts = false
-            }
-            if (routeLocked) {
-                Text(
-                    if (provider == PROVIDER_CLAUDE_CODE) {
-                        "Model and permission are available when this turn finishes."
-                    } else {
-                        "Model, reasoning, and access are available when this turn finishes."
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                )
             }
             if (images.isNotEmpty()) {
                 ImageThumbnailRow(images) { index ->
