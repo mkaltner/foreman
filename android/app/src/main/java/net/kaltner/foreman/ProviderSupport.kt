@@ -30,6 +30,18 @@ data class ProviderInfo(
 
 internal fun providerEnabled(provider: ProviderInfo): Boolean = provider.enabled
 
+/** A provider can back task operations only when configuration and host runtime agree. */
+internal fun providerUsableForTasks(provider: ProviderInfo): Boolean =
+    providerEnabled(provider) && provider.available
+
+internal fun usableTaskProviders(providers: List<ProviderInfo>): List<ProviderInfo> =
+    providers.filter(::providerUsableForTasks)
+
+internal fun providerUsableForTasks(
+    providers: List<ProviderInfo>,
+    provider: String,
+): Boolean = providers.any { it.id == provider && providerUsableForTasks(it) }
+
 internal fun providerMustRemainEnabled(
     provider: ProviderInfo,
     providers: List<ProviderInfo>,
@@ -40,18 +52,29 @@ internal fun providerMustRemainEnabled(
     return enabled.size == 1 || (provider.available && usableEnabled == 1)
 }
 
-internal fun soleEnabledProvider(
+internal fun providerConfigurationStatus(provider: ProviderInfo): String {
+    val configured = if (provider.enabled) "Enabled" else "Disabled"
+    val installed = when (provider.installed) {
+        true -> "Installed"
+        false -> "Not installed"
+        null -> "Installation unknown"
+    }
+    val availability = if (provider.available) "Available" else "Unavailable"
+    return "$configured · $installed · $availability"
+}
+
+internal fun soleUsableTaskProvider(
     providers: List<ProviderInfo>,
     catalogLoaded: Boolean,
 ): ProviderInfo? {
     if (!catalogLoaded) return null
-    return providers.filter(::providerEnabled).singleOrNull()
+    return usableTaskProviders(providers).singleOrNull()
 }
 
 internal fun shouldShowProviderIdentity(
     providers: List<ProviderInfo>,
     catalogLoaded: Boolean,
-): Boolean = soleEnabledProvider(providers, catalogLoaded) == null
+): Boolean = soleUsableTaskProvider(providers, catalogLoaded) == null
 
 internal fun newSessionProviderSelection(
     providers: List<ProviderInfo>,
@@ -59,10 +82,10 @@ internal fun newSessionProviderSelection(
     preferredProvider: String,
 ): String? {
     if (!catalogLoaded) return null
-    val enabled = providers.filter(::providerEnabled)
-    return enabled.singleOrNull()?.id
-        ?: enabled.firstOrNull { it.id == preferredProvider }?.id
-        ?: enabled.firstOrNull()?.id
+    val usable = usableTaskProviders(providers)
+    return usable.singleOrNull()?.id
+        ?: usable.firstOrNull { it.id == preferredProvider }?.id
+        ?: usable.firstOrNull()?.id
 }
 
 internal fun providerCatalogResponseIsCurrent(
@@ -110,6 +133,14 @@ data class ProviderAccountUsage(
 data class AccountUsage(
     val providers: Map<String, ProviderAccountUsage> = emptyMap(),
 )
+
+internal fun taskProviderAccountUsage(
+    providers: List<ProviderInfo>,
+    usage: AccountUsage,
+): List<Pair<ProviderInfo, ProviderAccountUsage>> =
+    usableTaskProviders(providers).mapNotNull { provider ->
+        usage.providers[provider.id]?.let { provider to it }
+    }
 
 internal data class ContextUsageView(
     val usedTokens: Long,

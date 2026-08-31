@@ -465,6 +465,33 @@ class ForemanConnectionTest {
     }
 
     @Test
+    fun reconnectAndRecreationRetainUnavailableProviderSessionsWithoutRelabeling() {
+        val claude = SessionSummary(
+            id = "claude-history",
+            repository = "/repo",
+            title = "Claude history",
+            status = "completed",
+            provider = PROVIDER_CLAUDE_CODE,
+            capabilities = listOf("session.read", "session.delete"),
+        )
+        val codex = SessionSummary("codex-live", "/repo", "Codex", "idle")
+
+        val retained = retainNonAuthoritativeProviderSessions(
+            previous = listOf(claude),
+            incoming = listOf(codex),
+            nonAuthoritativeProviders = setOf(PROVIDER_CLAUDE_CODE),
+        )
+
+        assertEquals(listOf(codex, claude), retained)
+        assertEquals("completed", retained.last().status)
+        assertEquals(PROVIDER_CLAUDE_CODE, sessionProvider(retained.last()))
+        assertEquals(
+            retained,
+            retainNonAuthoritativeProviderSessions(retained, listOf(codex), setOf(PROVIDER_CLAUDE_CODE)),
+        )
+    }
+
+    @Test
     fun unifiedOverviewBackTargetPreservesTheScreenOpenedByHome() {
         assertEquals(
             OverviewReturnTarget("host-a", Screen.Sessions),
@@ -808,6 +835,28 @@ class ForemanConnectionTest {
                 globalSessionKey(GlobalSessionIdentity("work", "same")),
         )
         assertEquals("work", work.attention.single().hostId)
+    }
+
+    @Test
+    fun hostOverviewPersistsOnlyThatHostsUsableProviderProjection() {
+        val both = projectHostOverview(
+            "both",
+            emptyList(),
+            emptyList(),
+            "connected",
+            usableProviders = listOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE, PROVIDER_CODEX),
+        )
+        val claudeOnly = projectHostOverview(
+            "claude",
+            emptyList(),
+            emptyList(),
+            "connected",
+            usableProviders = listOf(PROVIDER_CLAUDE_CODE),
+        )
+
+        assertEquals(listOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE), both.usableProviders)
+        assertEquals(listOf(PROVIDER_CLAUDE_CODE), claudeOnly.usableProviders)
+        assertTrue(projectHostOverview("legacy", emptyList(), emptyList(), "checked").usableProviders.isEmpty())
     }
 
     @Test
@@ -1994,9 +2043,10 @@ class ForemanConnectionTest {
         val providers = buildJsonArray {
             add(buildJsonObject { put("id", PROVIDER_CODEX); put("enabled", true); put("available", true) })
             add(buildJsonObject { put("id", PROVIDER_CLAUDE_CODE); put("enabled", false); put("available", true) })
+            add(buildJsonObject { put("id", PROVIDER_CLAUDE_CODE); put("enabled", true); put("available", false) })
             add(buildJsonObject { put("id", "other"); put("enabled", true); put("available", true) })
         }
-        assertEquals(setOf(PROVIDER_CODEX), enabledMonitorProviders(providers))
+        assertEquals(setOf(PROVIDER_CODEX), usableMonitorProviders(providers))
 
         val codexSessions = buildJsonArray {
             add(buildJsonObject { put("id", "working"); put("status", "working"); put("repository", "/repo") })

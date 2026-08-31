@@ -73,9 +73,11 @@ import {
   liveActivityLabel,
   liveActivityMessage,
   providerEnabled,
+  providerUsableForTasks,
   providerCatalogResponseIsCurrent,
   shouldShowProviderIdentity,
-  soleEnabledProvider,
+  soleUsableTaskProvider,
+  usableTaskProviders,
   isProviderId,
   routeForSession,
   providerSessionKey,
@@ -497,7 +499,7 @@ function App() {
     lastImmediateSearch.current = searchRevision;
     const providerAllowsCodex = !searchFilters.provider || searchFilters.provider === "codex";
     const archivedCodexAvailable = providers.some((provider) =>
-      provider.id === "codex" && providerEnabled(provider) && provider.available &&
+      provider.id === "codex" && providerUsableForTasks(provider) &&
       provider.capabilities.includes("session.archived.list")
     );
     if (!query || connection !== "connected" || !providerAllowsCodex || (searchFilters.scope === "archived" && !archivedCodexAvailable)) {
@@ -569,7 +571,7 @@ function App() {
       return;
     }
     const candidates = providers.filter((provider) =>
-      providerEnabled(provider) && provider.available &&
+      providerUsableForTasks(provider) &&
       provider.capabilities.includes("session.archived.list") &&
       (!searchFilters.provider || provider.id === searchFilters.provider)
     );
@@ -805,35 +807,11 @@ function App() {
             .filter((provider) => providerEnabled(provider) && isProviderId(provider.id))
             .map(({ id }) => id),
         );
-        const openable = new Set(
-          nextProviders
-            .filter((provider) => providerEnabled(provider) && provider.available && isProviderId(provider.id))
-            .map(({ id }) => id),
-        );
         setProviders(nextProviders);
         setProviderCatalogLoaded(true);
-        setSessions((previous) => {
-          const next = previous.filter((session) => openable.has(sessionProvider(session)));
-          sessionsRef.current = next;
-          return next;
-        });
-        setSearchResults((previous) => previous.filter(({ session }) => openable.has(sessionProvider(session))));
-        setCurrent((previous) => previous && openable.has(sessionProvider(previous)) ? previous : null);
         const hostId = activeHostIdRef.current;
         const remembered = loadRememberedSession(hostId);
         if (remembered && !enabled.has(remembered.provider)) clearRememberedSession(hostId);
-        if (viewRef.current === "detail" && !openable.has(selectedProviderRef.current)) {
-          sessionOpenGenerationRef.current += 1;
-          selectedIdRef.current = null;
-          selectedProviderRef.current = "codex";
-          currentRef.current = null;
-          viewRef.current = "sessions";
-          setSelectedId(null);
-          setSelectedProvider("codex");
-          setCurrent(null);
-          setView("sessions");
-          updateRoute({ view: "sessions" }, true);
-        }
         if (hostId) queueMicrotask(() => {
           void refreshStateRef.current?.(hostId).catch(() => undefined);
         });
@@ -1209,10 +1187,10 @@ function App() {
       if (reconnected) setProviderCatalogLoaded(false);
       const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
       const codexAvailable = providerResult.providers.some(
-        (provider) => provider.id === "codex" && providerEnabled(provider) && provider.available,
+        (provider) => provider.id === "codex" && providerUsableForTasks(provider),
       );
       const claudeAvailable = providerResult.providers.some(
-        (provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available,
+        (provider) => provider.id === "claude-code" && providerUsableForTasks(provider),
       );
       const [approvalResult, inputResult, codexSessionRequest, modelResult, accessResult, statusResult, usageResult, repositoryResult, clientResult] = await Promise.all([
         codexAvailable
@@ -1473,9 +1451,22 @@ function App() {
       viewRef.current = "detail";
       setView("detail");
       if (updateHistory) updateRoute({ view: "detail", provider, sessionId: id });
+      const summary = [...archivedSessionsRef.current, ...sessionsRef.current]
+        .find((session) => session.id === id && sessionProvider(session) === provider);
+      const providerUsable = providers.some((entry) => entry.id === provider && providerUsableForTasks(entry));
+      if (providerCatalogLoaded && !providerUsable) {
+        if (summary) {
+          currentRef.current = summary;
+          setCurrent(summary);
+          if (hostId) saveRememberedSession({ hostId, provider, sessionId: id });
+        } else {
+          setError(`${providerDisplayName(provider)} is unavailable, so this session cannot be loaded right now.`);
+          showSessionList(true);
+        }
+        setBusy(false);
+        return;
+      }
       try {
-        const summary = [...archivedSessionsRef.current, ...sessionsRef.current]
-          .find((session) => session.id === id && sessionProvider(session) === provider);
         const archived = summary?.archived === true || searchFiltersRef.current.scope === "archived";
         const [result, pending] = await Promise.all([
           client.request<
@@ -1537,7 +1528,7 @@ function App() {
         if (generation === sessionOpenGenerationRef.current) setBusy(false);
       }
     },
-    [approvals, client, inputs, updateRoute],
+    [approvals, client, inputs, providerCatalogLoaded, providers, updateRoute],
   );
   openSessionRef.current = (provider, id, updateHistory = true) => { void openSession(provider, id, updateHistory); };
 
@@ -1815,6 +1806,7 @@ function App() {
   }, [openSession]);
   const restoreArchivedSession = useCallback(async (session: SessionSummary) => {
     if (!session.archived || !session.capabilities?.includes("session.restore")) return;
+    if (!providers.some((provider) => provider.id === sessionProvider(session) && providerUsableForTasks(provider))) return;
     const identityKey = providerSessionKey("codex", session.id);
     if (restoringSessionsRef.current.has(identityKey)) return;
     if (!window.confirm(`Restore “${session.title}”? It will return to normal Codex sessions.`)) return;
@@ -1852,17 +1844,18 @@ function App() {
     } finally {
       restoringSessionsRef.current.delete(identityKey);
     }
-  }, [client]);
+  }, [client, providers]);
   const dashboardInterrupt = useCallback((session: SessionSummary) => {
     if (!session.activeTurnId) return;
     const provider = sessionProvider(session);
+    if (!providers.some((entry) => entry.id === provider && providerUsableForTasks(entry))) return;
     const type = provider === "claude-code" ? "provider.turn.interrupt" : "turn.interrupt";
     void client.request(type, {
       ...(provider === "claude-code" ? { provider } : {}),
       sessionId: session.id,
       ...(provider === "codex" ? { turnId: session.activeTurnId } : {}),
     }).catch((caught) => setError(caught instanceof Error ? caught.message : "Interrupt failed"));
-  }, [client]);
+  }, [client, providers]);
   const dashboardRefresh = useCallback(() => {
     const hostId = activeHostIdRef.current;
     if (hostId) void refreshState(hostId).catch((caught) => setError(String(caught)));
@@ -2106,8 +2099,8 @@ function App() {
             }}
           />
           <div className="dashboard-discovery"><SessionSearchControls filters={searchFilters} repositories={repositoryOptions} providers={providers} loading={searchLoading || archivedLoading} onChange={setSearchFilters} onSearchNow={() => setSearchRevision((value) => value + 1)} /></div>
-          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading || archivedLoading} error={searchError || archivedError} showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></main> : <>
-            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></section>}
+          {discoveryActive ? <main className="dashboard-page search-page"><SessionSearchResults results={visibleSessions} query={searchFilters.query} loading={searchLoading || archivedLoading} error={searchError || archivedError} showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} usableProviderIds={new Set(usableTaskProviders(providers).map(({ id }) => id))} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></main> : <>
+            {visibleSessions.some(({ pinned }) => pinned) && <section className="dashboard-pinned"><header><h2>Pinned</h2><span>Client-local</span></header><SessionSearchResults results={visibleSessions.filter(({ pinned }) => pinned)} query="" loading={false} error="" showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)} usableProviderIds={new Set(usableTaskProviders(providers).map(({ id }) => id))} onOpen={searchResultOpen} onPin={togglePin} onHide={toggleHidden} onRestore={restoreArchivedSession} /></section>}
             <Dashboard
             hostId={activeHost.id}
             sessions={visibleSessions.map(({ session }) => session)}
@@ -2184,12 +2177,14 @@ function App() {
                 setError(caught instanceof Error ? caught.message : "Repositories could not be loaded");
               }
             }}
+            onOpenProviderSettings={showSettings}
             onFilters={setSearchFilters}
             onSearchNow={() => setSearchRevision((value) => value + 1)}
             onPin={togglePin}
             onHide={toggleHidden}
             onRestore={restoreArchivedSession}
             onAction={async (action, session) => {
+              if (!providers.some((provider) => provider.id === sessionProvider(session) && providerUsableForTasks(provider))) return;
               if (!confirmSessionAction(action, session.title)) return;
               try {
                 const request = sessionActionRequest(action, session);
@@ -2239,7 +2234,8 @@ function App() {
                 models={sessionProvider(current) === "claude-code" ? claudeModels : models}
                 accessLevels={sessionProvider(current) === "claude-code" ? claudePermissionModes : accessLevels}
                 connected={connected}
-                showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded)}
+                providerUsable={providers.some((provider) => provider.id === sessionProvider(current) && providerUsableForTasks(provider))}
+                showProviderIdentity={shouldShowProviderIdentity(providers, providerCatalogLoaded) || !providers.some((provider) => provider.id === sessionProvider(current) && providerUsableForTasks(provider))}
                 activityDetail={appearance.activityDetail}
                 highlightItemId={highlightItemId}
                 focusedApprovalId={focusedApprovalId}
@@ -2279,6 +2275,9 @@ function App() {
           onCreate={async (settings) => {
             setBusy(true);
             try {
+              if (!providers.some((provider) => provider.id === settings.provider && providerUsableForTasks(provider))) {
+                throw new Error(`${providerDisplayName(settings.provider)} is no longer available for tasks.`);
+              }
               const requestType = settings.provider === "claude-code" ? "provider.session.start" : "session.start";
               const payload = settings.provider === "claude-code"
                 ? {
@@ -2434,6 +2433,7 @@ export function SessionList({
   onOpen,
   onRefresh,
   onNew,
+  onOpenProviderSettings,
   onAction,
   onFilters,
   onSearchNow,
@@ -2460,6 +2460,7 @@ export function SessionList({
   onOpen: (provider: ProviderId, id: string, itemId?: string | null) => void;
   onRefresh: () => void;
   onNew: () => void;
+  onOpenProviderSettings?: () => void;
   onAction: (action: "archive" | "delete", session: SessionSummary) => void;
   onFilters: (filters: SessionFilters) => void;
   onSearchNow: () => void;
@@ -2491,18 +2492,22 @@ export function SessionList({
   const discoveryActive = activeFilterCount(filters) > 0;
   const showSearchResults = discoveryActive && (filters.scope !== "archived" || !groupByRepository);
   const showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded);
+  const taskProviders = usableTaskProviders(providers);
+  const usableProviderIds = new Set(taskProviders.map(({ id }) => id));
+  const noTaskProvider = providerCatalogLoaded && providers.length > 0 && taskProviders.length === 0;
   return (
     <aside className="session-pane">
       <div className="pane-heading">
         <div><span className="eyebrow">Workspace</span><h1>Sessions</h1></div>
         <div className="heading-actions">
           <button className="icon-button" onClick={onRefresh} disabled={disabled} aria-label="Refresh sessions">↻</button>
-          <button className="primary" onClick={onNew} disabled={disabled}>New</button>
+          <button className="primary" onClick={onNew} disabled={disabled || noTaskProvider}>New</button>
         </div>
       </div>
+      {noTaskProvider && <div className="new-session-empty" role="status"><strong>No provider is available for tasks.</strong><p>Install Codex or Claude Code on this host, or enable an installed provider.</p>{onOpenProviderSettings && <button type="button" className="secondary" onClick={onOpenProviderSettings}>Open provider settings</button>}</div>}
       <SessionSearchControls filters={filters} repositories={repositoryOptions} providers={providers} loading={searchLoading} onChange={onFilters} onSearchNow={onSearchNow} />
       <div className="session-scroll">
-        {showSearchResults ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} showProviderIdentity={showProviderIdentity} onOpen={onOpen} onPin={onPin} onHide={onHide} onRestore={onRestore} /> : <>
+        {showSearchResults ? <SessionSearchResults results={results} query={filters.query} loading={searchLoading} error={searchError} showProviderIdentity={showProviderIdentity} usableProviderIds={usableProviderIds} onOpen={onOpen} onPin={onPin} onHide={onHide} onRestore={onRestore} /> : <>
         {searchError && <div className="search-state error" role="alert"><strong>Archived sessions could not be loaded</strong><span>{searchError}</span></div>}
         {searchLoading && sessions.length === 0 && <div className="search-state" role="status">Loading archived sessions…</div>}
         {!searchLoading && !searchError && sessions.length === 0 && <div className="empty-list"><h3>{filters.scope === "archived" ? "No archived sessions" : "No sessions yet"}</h3><p>{filters.scope === "archived" ? "Archived Codex sessions will appear here." : "Start one from a repository."}</p></div>}
@@ -2541,6 +2546,7 @@ export function SessionList({
     context: SessionCardRenderContext = { groupByRepository: false },
   ) {
     const provider = sessionProvider(session);
+    const providerUsable = providers.length === 0 || providers.some((entry) => entry.id === provider && providerUsableForTasks(entry));
     const pinned = results.find((item) => item.session.id === session.id && sessionProvider(item.session) === provider)?.pinned;
     const showRepository = showSessionCardRepository(session, repositories, repositoryRoot, context);
     return <article
@@ -2548,7 +2554,7 @@ export function SessionList({
       className={`session-card ${session.archived ? "archived" : ""} ${showRepository ? "" : "repository-metadata-suppressed"} ${selectedId === session.id && selectedProvider === provider ? "selected" : ""}`}
       onClick={() => onOpen(provider, session.id)}
     >
-      <div className="session-title-row"><h3>{session.title}</h3>{showProviderIdentity && <ProviderBadge provider={provider} />}{session.archived ? <span className="status-pill archived">Archived</span> : <StatusPill status={session.status} />}</div>
+      <div className="session-title-row"><h3>{session.title}</h3>{(showProviderIdentity || !providerUsable) && <ProviderBadge provider={provider} />}{!providerUsable && providerCatalogLoaded ? <span className="status-pill disconnected">Provider unavailable</span> : session.archived ? <span className="status-pill archived">Archived</span> : <StatusPill status={session.status} />}</div>
       {showRepository && <p className="repository">{shortRepository(session.repository)}</p>}
       {provider === "claude-code" && session.source === "external" && <p className="session-limitation"><strong>Resumable</strong> · Not live-attached</p>}
       <div className="session-meta">
@@ -2556,9 +2562,9 @@ export function SessionList({
         <span className="card-actions">
           <button className={pinned ? "selected" : ""} onClick={(event) => { event.stopPropagation(); onPin(provider, session.id); }} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`}>{pinned ? "★" : "☆"}</button>
           <button onClick={(event) => { event.stopPropagation(); onHide(provider, session.id); }}>Hide</button>
-          {session.archived && session.capabilities?.includes("session.restore") && <button className="restore-link" onClick={(event) => { event.stopPropagation(); onRestore(session); }}>Restore</button>}
-          {!session.archived && session.capabilities?.includes("session.archive") && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
-          {!session.archived && session.capabilities?.includes("session.delete") && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
+          {providerUsable && session.archived && session.capabilities?.includes("session.restore") && <button className="restore-link" onClick={(event) => { event.stopPropagation(); onRestore(session); }}>Restore</button>}
+          {providerUsable && !session.archived && session.capabilities?.includes("session.archive") && <button onClick={(event) => { event.stopPropagation(); onAction("archive", session); }} disabled={session.status === "working" || session.status === "waiting"}>Archive</button>}
+          {providerUsable && !session.archived && session.capabilities?.includes("session.delete") && <button className="danger-link" onClick={(event) => { event.stopPropagation(); onAction("delete", session); }} disabled={session.status === "working" || session.status === "waiting"}>Delete</button>}
         </span>
       </div>
     </article>;
@@ -2574,7 +2580,7 @@ export function AccountUsageDock({ usage, providers: providerInfo, providerCatal
   ] as const)
     .filter((provider) => providerInfo.length === 0
       ? usage.providers[provider.id] !== undefined
-      : providerInfo.some((entry) => entry.id === provider.id && providerEnabled(entry)))
+      : providerInfo.some((entry) => entry.id === provider.id && providerUsableForTasks(entry)))
     .map((provider) => ({ ...provider, usage: usage.providers[provider.id] }));
   const availableWindows = providers.flatMap(({ usage: providerUsage }) => accountUsageWindows(providerUsage));
   const showProviderIdentity = shouldShowProviderIdentity(providerInfo, providerCatalogLoaded);
@@ -2640,6 +2646,7 @@ export function ConversationView({
   models,
   accessLevels,
   connected,
+  providerUsable = true,
   showProviderIdentity = true,
   activityDetail = "focused",
   highlightItemId,
@@ -2659,6 +2666,7 @@ export function ConversationView({
   models: ModelInfo[];
   accessLevels: AccessLevelInfo[];
   connected: boolean;
+  providerUsable?: boolean;
   showProviderIdentity?: boolean;
   activityDetail?: ActivityDetail;
   highlightItemId: string | null;
@@ -2962,7 +2970,8 @@ export function ConversationView({
           if (atBottom) setJumpVisible(false);
         }}
       >
-        {readOnly && <div className="archived-read-only" role="note"><div><strong>Archived · Read only</strong><p>This transcript is being viewed without resuming or changing the Codex thread.</p></div>{session.capabilities?.includes("session.restore") && onRestore && <button className="primary" onClick={onRestore}>Restore</button>}</div>}
+        {!providerUsable && <div className="provider-limitation warning" role="status"><strong>{providerDisplayName(provider)} is unavailable on this host.</strong><p>This session remains visible, but provider-backed actions are unavailable until the provider runtime returns.</p></div>}
+        {readOnly && <div className="archived-read-only" role="note"><div><strong>Archived · Read only</strong><p>This transcript is being viewed without resuming or changing the Codex thread.</p></div>{providerUsable && session.capabilities?.includes("session.restore") && onRestore && <button className="primary" onClick={onRestore}>Restore</button>}</div>}
         {provider === "claude-code" && session.source === "external" && <div className="provider-limitation" role="note"><strong>Resumable · Not live-attached</strong><p>Open history here, then resume in Foreman to prompt, stream, or interrupt. Foreman cannot attach to the external running process.</p></div>}
         {provider === "claude-code" && session.status === "waiting" && <div className="provider-limitation warning" role="status"><strong>Permission required in Claude session.</strong><p>Foreman web approval support is not yet available.</p></div>}
         {!session.messages?.length && !approvals.length && !inputs.length && <div className="empty-conversation"><h2>{readOnly ? "No transcript content" : "Ready when you are"}</h2><p>{readOnly ? "This archived session has no projected messages." : provider === "claude-code" ? "Send a prompt using the Claude model and permission mode below." : "Choose a route below and send the first prompt."}</p></div>}
@@ -2971,10 +2980,10 @@ export function ConversationView({
             return <CollapsedActivityGroup key={`activity-${block.items[0].id}`} items={block.items} onOpenWorkspaceFile={openWorkspaceFile} />;
           }
           const item = block.items[0];
-          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} onOpenWorkspaceFile={openWorkspaceFile} />{!readOnly && approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{!readOnly && inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
+          return <Fragment key={item.id}><ConversationItemView item={item} highlighted={item.id === highlightItemId} onOpenWorkspaceFile={openWorkspaceFile} />{!readOnly && approvals.filter((approval) => approval.itemId === item.id).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected && providerUsable} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}{!readOnly && inputs.filter((input) => input.itemId === item.id).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected && providerUsable} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}</Fragment>;
         })}
-        {!readOnly && approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
-        {!readOnly && inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
+        {!readOnly && approvals.filter((approval) => !approval.itemId || !session.messages?.some((item) => item.id === approval.itemId)).map((approval) => <ApprovalCard key={approval.id} approval={approval} focused={focusedApprovalId === approval.id} connected={connected && providerUsable} onRespond={async (approvalId, decision) => { await onRequest("approval.respond", { approvalId, decision }); }} />)}
+        {!readOnly && inputs.filter((input) => !input.itemId || !session.messages?.some((item) => item.id === input.itemId)).map((input) => <InputCard key={input.id} input={input} focused={focusedApprovalId === input.id} connected={connected && providerUsable} onRespond={async (inputId, response) => { await onRequest("input.respond", { inputId, response }); }} />)}
         {!readOnly && (session.status === "working" || session.status === "waiting") && (
           <div className="live-activity">
             <span className="pulse" />
@@ -2983,7 +2992,7 @@ export function ConversationView({
         )}
       </div>
       {jumpVisible && <button className="jump-latest" onClick={() => { following.current = true; setJumpVisible(false); transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" }); }}>Jump to latest ↓</button>}
-      {!readOnly && <form className="composer" onSubmit={submit}>
+      {!readOnly && providerUsable && <form className="composer" onSubmit={submit}>
         <div className="route-row">
           <RouteSelect label={provider === "claude-code" ? "Permission" : "Access"} value={access} options={accessLevels.map((level) => ({ value: level.id, label: level.displayName, description: level.description, warning: provider === "claude-code" ? level.id === "bypassPermissions" : level.id === "full" }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateAccess(value)} />
           <RouteSelect label="Model" value={model} options={models.map((entry) => ({ value: entry.id, label: entry.displayName, description: entry.description }))} disabled={!connected || submitting || updatingRoute || hasActiveTurn} disabledReason={hasActiveTurn ? "Available when this turn finishes" : undefined} onChange={(value) => void updateModel(value)} />
@@ -3380,12 +3389,12 @@ export interface NewSessionSettings {
 
 export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] }], providerCatalogLoaded = true, models, accessLevels, claudeModels = [], claudePermissionModes = [], onClose, onCreate }: { repositories: RepositoryInfo[]; repositoryRoot: string; providers?: ProviderInfo[]; providerCatalogLoaded?: boolean; models: ModelInfo[]; accessLevels: AccessLevelInfo[]; claudeModels?: ModelInfo[]; claudePermissionModes?: PermissionModeInfo[]; onClose: () => void; onCreate: (settings: NewSessionSettings) => Promise<void> }) {
   const [selected, setSelected] = useState(".");
-  const enabledProviders = providers.filter(providerEnabled);
+  const taskProviders = usableTaskProviders(providers);
   const [providerChoice, setProviderChoice] = useState<ProviderId>(() =>
-    enabledProviders.find(({ id }) => id === "codex")?.id ?? enabledProviders[0]?.id ?? "codex"
+    taskProviders.find(({ id }) => id === "codex")?.id ?? taskProviders[0]?.id ?? "codex"
   );
-  const soleProvider = soleEnabledProvider(providers, providerCatalogLoaded);
-  const provider = soleProvider?.id ?? enabledProviders.find(({ id }) => id === providerChoice)?.id ?? enabledProviders[0]?.id ?? providerChoice;
+  const soleProvider = soleUsableTaskProvider(providers, providerCatalogLoaded);
+  const provider = soleProvider?.id ?? taskProviders.find(({ id }) => id === providerChoice)?.id ?? taskProviders[0]?.id ?? providerChoice;
   const showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded);
   const [prompt, setPrompt] = useState("");
   const defaultRoute = routeForSession(null, models, accessLevels);
@@ -3400,15 +3409,15 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
   const selectionAvailable = selected === "." || repositories.some((repository) => repository.id === selected);
   const location = selectionAvailable ? selected : ".";
   const selectedModel = models.find((entry) => entry.id === model);
-  const selectedProviderInfo = enabledProviders.find((entry) => entry.id === provider);
+  const selectedProviderInfo = taskProviders.find((entry) => entry.id === provider);
   useEffect(() => {
     if (!selectionAvailable) setSelected(".");
   }, [selectionAvailable]);
   useEffect(() => {
-    if (!enabledProviders.some(({ id }) => id === providerChoice) && enabledProviders[0]) {
-      setProviderChoice(enabledProviders[0].id);
+    if (!taskProviders.some(({ id }) => id === providerChoice) && taskProviders[0]) {
+      setProviderChoice(taskProviders[0].id);
     }
-  }, [enabledProviders, providerChoice]);
+  }, [taskProviders, providerChoice]);
   const submit = () => onCreate({
     provider,
     repositoryId: location,
@@ -3422,41 +3431,29 @@ export function NewSessionDialog({ repositories, repositoryRoot, providers = [{ 
       ...(access ? { accessLevel: access } : {}),
     }),
   });
-  const catalogEmpty = providerCatalogLoaded && enabledProviders.length === 0;
-  const unavailable = !providerCatalogLoaded || catalogEmpty || selectedProviderInfo?.available !== true;
+  const catalogEmpty = providerCatalogLoaded && taskProviders.length === 0;
+  const unavailable = !providerCatalogLoaded || catalogEmpty;
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (location && !unavailable && (provider === "codex" || prompt.trim())) void submit(); }}>
     <div className="modal-heading"><div>{showProviderIdentity && selectedProviderInfo && <span className="eyebrow">{selectedProviderInfo.displayName}</span>}<h2>New session</h2></div><button type="button" onClick={onClose} aria-label="Close">×</button></div>
-    {providerCatalogLoaded && enabledProviders.length > 1 && <label>Provider<select value={provider} onChange={(event) => setProviderChoice(event.target.value as ProviderId)}>{enabledProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}{entry.available ? "" : " · unavailable"}</option>)}</select></label>}
+    {providerCatalogLoaded && taskProviders.length > 1 && <label>Provider<select value={provider} onChange={(event) => setProviderChoice(event.target.value as ProviderId)}>{taskProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>}
     {!providerCatalogLoaded && <div className="new-session-empty" role="status"><strong>Loading providers…</strong><p>Foreman is checking the enabled providers for this host.</p></div>}
-    {catalogEmpty && <div className="new-session-empty" role="status"><strong>No enabled provider is available.</strong><p>Open provider settings and enable at least one provider.</p></div>}
-    {providerCatalogLoaded && !catalogEmpty && selectedProviderInfo?.available !== true && <div className="new-session-empty" role="status"><strong>{selectedProviderInfo?.displayName ?? providerDisplayName(provider)} is unavailable on this host.</strong><p>{providerUnavailableDescription(selectedProviderInfo?.unavailableReason, provider)}</p></div>}
+    {catalogEmpty && <div className="new-session-empty" role="status"><strong>No provider is available for tasks.</strong><p>Install Codex or Claude Code on this host, or enable an installed provider in Settings → Providers.</p></div>}
     {hasRepositories ? <label>Workspace<select value={selected} onChange={(event) => setSelected(event.target.value)} required><option value=".">Workspace root · {rootRepository ? "repository" : "no repository"}</option>{selectableRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.path}{repository.dirty ? " · modified" : ""}</option>)}</select></label> : <div className="new-session-empty" role="status"><strong>No Git repositories yet</strong><p>Start in the configured workspace folder instead. You can initialize Git later if you need version control.</p>{repositoryRoot && <code title={repositoryRoot}>{repositoryRoot}</code>}</div>}
     {provider === "claude-code" && !unavailable && <label>Initial prompt<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="What should Claude work on?" required /></label>}
-    <div className="new-session-settings">{provider === "codex" ? <>
+    {!unavailable && <div className="new-session-settings">{provider === "codex" ? <>
       {accessLevels.length > 0 && <label>Access<select value={access} onChange={(event) => setAccess(event.target.value)}>{accessLevels.map((level) => <option key={level.id} value={level.id}>{level.displayName}</option>)}</select></label>}
       {models.length > 0 && <label>Model<select value={model} onChange={(event) => { const next = models.find((entry) => entry.id === event.target.value); setModel(event.target.value); setEffort(next?.defaultReasoningEffort ?? next?.reasoningEfforts[0] ?? ""); }}>{models.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select></label>}
       {selectedModel && selectedModel.reasoningEfforts.length > 0 && <label>Reasoning<select value={effort} onChange={(event) => setEffort(event.target.value)}>{selectedModel.reasoningEfforts.map((entry) => <option key={entry} value={entry}>{reasoningLabel(entry)}</option>)}</select></label>}
-    </> : !unavailable && <>
+    </> : <>
       <label>Permission mode<select aria-label="Permission mode" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value)}>{claudePermissionModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.displayName}{mode.highRisk ? " · high risk" : ""}</option>)}</select><small>{claudePermissionModes.find((mode) => mode.id === permissionMode)?.description}</small></label>
       <label>Claude model<select aria-label="Claude model" value={claudeModel} onChange={(event) => setClaudeModel(event.target.value)}>{claudeModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}</select><small>Adapter-supported list; not dynamically discovered.</small></label>
-    </>}</div>
+    </>}</div>}
     <div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={unavailable || (provider === "claude-code" && !prompt.trim())}>{provider === "claude-code" ? showProviderIdentity ? "Start Claude session" : "Start session" : hasRepositories ? "Create" : "Start in workspace"}</button></div>
   </form></div>;
 }
 
 function providerDisplayName(provider: ProviderId): string {
   return provider === "claude-code" ? "Claude Code" : "Codex";
-}
-
-function providerUnavailableDescription(reason?: ProviderInfo["unavailableReason"], provider: ProviderId = "claude-code"): string {
-  const descriptions: Record<string, string> = {
-    "cli-missing": "The Claude Code CLI is missing.",
-    "node-missing": "Node.js 20 or newer is missing.",
-    "sdk-missing": "The pinned Claude Agent SDK is missing.",
-    "authentication-unavailable": "Claude authentication is unavailable on the host.",
-    "adapter-unavailable": "The Claude adapter is unavailable.",
-  };
-  return reason ? descriptions[reason] ?? `${providerDisplayName(provider)} is unavailable.` : `${providerDisplayName(provider)} is unavailable.`;
 }
 
 function SettingsView({
@@ -3551,7 +3548,7 @@ function SettingsView({
       <label className="check-row"><input type="checkbox" checked={notificationPreferences.criticalBypassQuietHours} onChange={(event) => update("criticalBypassQuietHours", event.target.checked)} /><span><strong>Allow critical alerts during quiet hours</strong><small>Only approval/input and failure alerts bypass quiet hours.</small></span></label>
       <div className="repository-overrides"><h3>Repository and workspace overrides</h3><p className="muted">Each event inherits the settings above until explicitly set to on or off. Identities are canonical workspace paths and stay in this browser.</p>{repositoryOptions.length === 0 && <p className="muted">No known repositories or workspaces yet.</p>}{repositoryOptions.map((repository) => <details key={repository.id}><summary>{repository.label}</summary><small title={repository.id}>{repository.id}</small><div className="override-grid">{overrideKeys.map(([key, label]) => { const value = notificationPreferences.repositoryOverrides[repository.id]?.[key]; return <label key={key}>{label}<select value={value === undefined ? "inherit" : String(value)} onChange={(event) => onNotificationPreferences(setRepositoryOverride(notificationPreferences, repository.id, { [key]: event.target.value === "inherit" ? undefined : event.target.value === "true" }))}><option value="inherit">Inherit</option><option value="true">On</option><option value="false">Off</option></select></label>; })}</div></details>)}</div>
     </section>
-    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{!providerEnabled(provider) ? "Disabled" : provider.available ? "Available" : "Unavailable"}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Foreman-managed runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
+    <section className="settings-card"><h2>Active connection</h2><dl><div><dt>Host</dt><dd>{host.host}:{host.webPort}</dd></div><div><dt>Local host ID</dt><dd>{host.id}</dd></div>{providers.map((provider) => <div key={provider.id}><dt>{provider.displayName}</dt><dd>{providerConfigurationStatus(provider)}</dd></div>)}{providers.some((provider) => provider.id === "codex" && providerEnabled(provider)) && <div><dt>Codex runtime</dt><dd>{hello?.codexRuntime === "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE" ? "Shared Desktop runtime attached" : hello?.codexConnected ? "Foreman-managed runtime" : "Unavailable"}</dd></div>}</dl><p className="muted">Each persistent device token stays in browser-local storage and is never placed in the URL. Browser storage is less protected than Android Keystore.</p></section>
     <AboutSection
       key={host.id}
       serverVersion={serverVersion}
@@ -3572,19 +3569,17 @@ export function ProviderSettings({ providers, onProviderEnabled }: {
 }) {
   const [pending, setPending] = useState<ProviderId | null>(null);
   const enabledCount = providers.filter(providerEnabled).length;
-  const usableEnabledCount = providers.filter((provider) => providerEnabled(provider) && provider.available).length;
+  const usableEnabledCount = providers.filter(providerUsableForTasks).length;
   return <section className="settings-card provider-settings">
     <h2>Providers</h2>
-    <p className="muted">Choose which installed CLIs Foreman uses on this host. At least one available provider must remain enabled.</p>
+    <p className="muted">Configure supported provider CLIs on this host. At least one available provider must remain enabled.</p>
     <div className="provider-setting-list">{providers.map((provider) => {
       const enabled = providerEnabled(provider);
       const requiredEnabled = enabled && (
         enabledCount === 1 || (provider.available && usableEnabledCount === 1)
       );
       const version = provider.version ?? provider.cliVersion;
-      const state = !enabled
-        ? provider.installed === false ? "Not installed" : "Disabled"
-        : provider.available ? "Available" : "Unavailable";
+      const state = providerConfigurationStatus(provider);
       return <label className="check-row" key={provider.id}>
         <input
           type="checkbox"
@@ -3600,6 +3595,12 @@ export function ProviderSettings({ providers, onProviderEnabled }: {
       </label>;
     })}</div>
   </section>;
+}
+
+function providerConfigurationStatus(provider: ProviderInfo): string {
+  const configured = providerEnabled(provider) ? "Enabled" : "Disabled";
+  const installed = provider.installed === true ? "Installed" : provider.installed === false ? "Not installed" : "Installation unknown";
+  return `${configured} · ${installed} · ${provider.available ? "Available" : "Unavailable"}`;
 }
 
 function StatusPill({ status }: { status: string }) {

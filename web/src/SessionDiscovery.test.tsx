@@ -52,7 +52,7 @@ describe("SessionSearchControls", () => {
     const { rerender } = render(<SessionSearchControls filters={DEFAULT_SESSION_FILTERS} repositories={[]} providers={[]} loading={false} onChange={change} onSearchNow={vi.fn()} />);
     fireEvent.click(screen.getByText("Filters"));
     expect(screen.getByRole("option", { name: "Archived" })).toBeDisabled();
-    expect(screen.getByText(/no enabled provider advertises support/i)).toBeInTheDocument();
+    expect(screen.getByText(/no usable provider advertises support/i)).toBeInTheDocument();
 
     rerender(<SessionSearchControls filters={DEFAULT_SESSION_FILTERS} repositories={[]} providers={[codexArchiveProvider]} loading={false} onChange={change} onSearchNow={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("Sessions"), { target: { value: "archived" } });
