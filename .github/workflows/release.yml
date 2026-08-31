@@ -157,7 +157,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit "$RELEASE_TAG" --draft=false
+          publish_args=("$RELEASE_TAG" --draft=false)
+          if [[ "$RELEASE_TAG" != *-* ]]; then
+            publish_args+=(--latest)
+          fi
+          gh release edit "${publish_args[@]}"
           published="$RUNNER_TEMP/foreman-published-release.json"
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$published"
           python3 scripts/verify_release_assets.py --tag "$RELEASE_TAG" --manifest "$published"

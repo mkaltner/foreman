@@ -110,6 +110,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('gh api "${release_api_url#https://api.github.com/}"', upload_step)
         self.assertNotIn("releases/tags/$RELEASE_TAG", upload_step)
 
+    def test_stable_release_is_explicitly_promoted_as_latest(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        publish_step = workflow.split("- name: Publish verified GitHub release", 1)[1]
+        publish_step = publish_step.split("- name: Upload failed release candidate", 1)[0]
+
+        self.assertIn('if [[ "$RELEASE_TAG" != *-* ]]', publish_step)
+        self.assertIn("publish_args+=(--latest)", publish_step)
+        self.assertIn('gh release edit "${publish_args[@]}"', publish_step)
+
 
 if __name__ == "__main__":
     unittest.main()
