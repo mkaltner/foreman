@@ -12,6 +12,7 @@ from scripts.verify_release_assets import (
 
 
 TAG = "v1.2.3"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def manifest(*, missing: str | None = None, extra: bool = False, empty: str | None = None):
@@ -97,6 +98,17 @@ class ReleaseDirectoryTests(unittest.TestCase):
 
     def test_cli_manifest_fixture_is_json_serializable(self):
         self.assertIsInstance(json.dumps(manifest()), str)
+
+
+class ReleaseWorkflowTests(unittest.TestCase):
+    def test_draft_manifest_uses_authenticated_release_api_url(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        upload_step = workflow.split("- name: Upload and verify draft release assets", 1)[1]
+        upload_step = upload_step.split("- name: Publish verified GitHub release", 1)[0]
+
+        self.assertIn('gh release view "$RELEASE_TAG" --json apiUrl', upload_step)
+        self.assertIn('gh api "${release_api_url#https://api.github.com/}"', upload_step)
+        self.assertNotIn("releases/tags/$RELEASE_TAG", upload_step)
 
 
 if __name__ == "__main__":

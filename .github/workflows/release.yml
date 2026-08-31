@@ -120,7 +120,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "::error::A GitHub release already exists for $RELEASE_TAG; inspect and remove only an unpublished draft before retrying" >&2
             exit 1
           fi
@@ -146,7 +146,8 @@ jobs:
         run: |
           gh release upload "$RELEASE_TAG" dist/*
           manifest="$RUNNER_TEMP/foreman-release-manifest.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$manifest"
+          release_api_url="$(gh release view "$RELEASE_TAG" --json apiUrl --jq .apiUrl)"
+          gh api "${release_api_url#https://api.github.com/}" > "$manifest"
           python3 scripts/verify_release_assets.py --tag "$RELEASE_TAG" --manifest "$manifest"
 
           downloaded="$(mktemp -d)"
