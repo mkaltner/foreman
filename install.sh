@@ -93,6 +93,7 @@ install -m 644 "$project_dir/linux/state.py" "$staging_dir/state.py"
 install -m 644 "$project_dir/linux/diagnostics.py" "$staging_dir/diagnostics.py"
 install -m 644 "$project_dir/linux/claude_code.py" "$staging_dir/claude_code.py"
 install -m 644 "$project_dir/linux/session_identity.py" "$staging_dir/session_identity.py"
+install -m 644 "$project_dir/linux/release_updates.py" "$staging_dir/release_updates.py"
 cp -a "$project_dir/linux/claude_bridge" "$staging_dir/claude_bridge"
 rm -f -- \
   "$staging_dir/claude_bridge/bridge.test.mjs" \
@@ -121,6 +122,7 @@ python3 -m compileall -q \
   "$staging_dir/diagnostics.py" \
   "$staging_dir/claude_code.py" \
   "$staging_dir/session_identity.py" \
+  "$staging_dir/release_updates.py" \
   "$staging_dir/vendor"
 FOREMAN_STAGING_DIR="$staging_dir" \
 FOREMAN_WEBSOCKETS_VERSION="$pinned_version" \

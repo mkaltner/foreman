@@ -347,6 +347,7 @@ class PreferenceStore(context: Context, hostId: String?) {
             hostId?.let(HostStore::preferenceFile) ?: "foreman_preferences",
             Context.MODE_PRIVATE,
         )
+    private val json = Json { ignoreUnknownKeys = true }
 
     fun load(): UiPreferences =
         UiPreferences(
@@ -423,6 +424,24 @@ class PreferenceStore(context: Context, hostId: String?) {
         preferences.edit()
             .putString("selectedSessionProvider", provider)
             .putString("selectedSessionId", sessionId)
+            .commit()
+    }
+    internal fun loadReleaseUpdateInfo(): CachedReleaseUpdateInfo? {
+        val encoded = preferences.getString("releaseUpdates.v1", null) ?: return null
+        if (encoded.length > 32_000) return null
+        return runCatching { json.decodeFromString<CachedReleaseUpdateInfo>(encoded) }
+            .getOrNull()
+            ?.takeIf { it.serverVersion == null || it.serverVersion.length <= 80 }
+            ?.let { info ->
+                validatedReleaseUpdates(info.snapshot)?.let { info.copy(snapshot = it) }
+            }
+    }
+
+    internal fun setReleaseUpdateInfo(info: CachedReleaseUpdateInfo) {
+        val snapshot = validatedReleaseUpdates(info.snapshot) ?: return
+        if (info.serverVersion != null && info.serverVersion.length > 80) return
+        preferences.edit()
+            .putString("releaseUpdates.v1", json.encodeToString(info.copy(snapshot = snapshot)))
             .commit()
     }
     fun loadDrafts(): Map<String, String> =

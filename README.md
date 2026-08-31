@@ -89,6 +89,13 @@ root access, or network access. Tagged Linux archives and signed Android APKs
 are available from [GitHub releases](https://github.com/mkaltner/foreman/releases)
 as an alternative.
 
+Web and Android show a nonintrusive release check in **Settings → About**. The
+Linux service performs one cached lookup against the official
+`mkaltner/foreman` GitHub releases endpoint and both clients compare their own
+component versions with complete stable artifacts. Cached results remain useful
+offline and never install, download, restart, or replace anything. Server update
+installation is tracked in #58 and Android APK installation is tracked in #59.
+
 Claude Code is optional. Enabling it requires Node.js 20+, local Claude CLI
 authentication, and the packaged pinned Agent SDK. A missing or failed Claude
 bridge leaves Codex and Foreman startup unaffected. Pairing remains host-level:
@@ -148,6 +155,8 @@ one paired client can use every provider available on that host.
   outcomes into one OS notification.
 - Choose System, Light, or Dark color mode independently from curated Foreman, Harbor, Grove, Ember, Dune, Slate, and High Contrast themes.
 - Use dedicated Android and responsive web clients.
+- Distinguish server, bundled web, and installed Android APK release status in
+  About without triggering update notifications or installation.
 - Install as a rootless user-level systemd service without pip or a Python venv.
 
 ## Android

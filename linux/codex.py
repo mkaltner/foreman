@@ -45,6 +45,25 @@ SHARED_DESKTOP_LIVE_STATUS_AVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_AVAILABLE"
 SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE = "SHARED_DESKTOP_LIVE_STATUS_UNAVAILABLE"
 FOREMAN_VERSION = "1.0.2"
 
+
+def _foreman_release_build() -> bool:
+    for candidate in (
+        Path(__file__).resolve().parent / "release.properties",
+        Path(__file__).resolve().parent.parent / "release.properties",
+    ):
+        try:
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                if line.strip() == "releaseBuild=true":
+                    return True
+                if line.strip() == "releaseBuild=false":
+                    return False
+        except OSError:
+            continue
+    return False
+
+
+FOREMAN_RELEASE_BUILD = _foreman_release_build()
+
 ACCESS_LEVELS = (
     {
         "id": "ask",

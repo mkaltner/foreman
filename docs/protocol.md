@@ -41,7 +41,7 @@ Implemented types:
 - `repository.list`;
 - `model.list`;
 - `access.list`;
-- `service.status`;
+- `service.status`, `release.check`;
 - `usage.status`;
 - `diagnostics.list`, `service.restart`;
 - `client.list`, `client.revoke`;
@@ -68,6 +68,26 @@ Provider-aware requests always include `provider`; the service never infers a
 provider from a session ID. Unsupported provider operations return the normal
 error envelope with code `capabilityUnavailable`. Older protocol-v1 clients can
 ignore the new catalog, operations, provider fields, and events.
+
+`service.status.releaseUpdates` is a bounded release-discovery projection. It
+contains `observedAt`, `stale`, `refreshStatus` (`idle`, `checking`, or
+`unavailable`), an optional safe unavailability reason, and `server` and
+`android` component entries. Each component contains only `supportedRelease`
+and `newestRelease`; a release contains the normalized SemVer, tag, bounded
+title and publication time, an official
+`https://github.com/mkaltner/foreman/releases/tag/...` notes URL, and whether the
+required uploaded artifact plus `SHA256SUMS` is available. Raw GitHub payloads,
+asset URLs, tokens, arbitrary repositories, and installation operations are not
+projected.
+
+Authenticated `release.check` requests a manual refresh and returns the same
+projection. The service coalesces concurrent calls and throttles repeated manual
+checks. A 304 renews the observation time. Offline, timeout, malformed JSON,
+oversize response, HTTP error, and rate-limit failures retain the last validated
+projection as stale; clients with no cache receive an honest unavailable state.
+The operation is additive within protocol v1 and does not block other requests.
+`service.status.foremanReleaseBuild` lets clients distinguish an installed
+source/development checkout from an official release build.
 
 `provider.list` reports the adapters actually available on the authenticated
 host. Each bounded entry contains an ID, display name, separate `enabled` and

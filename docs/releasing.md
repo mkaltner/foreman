@@ -25,6 +25,19 @@ rebuild stays deterministic. About labels clients from `releaseBuild=false`
 manifests as development builds. A release-preparation PR sets the chosen
 version and `releaseBuild=true`; development resumes in a follow-up reviewed PR.
 
+Settings → About discovers only the stable channel: drafts, GitHub prereleases,
+and SemVer prerelease tags are excluded from ordinary update offers. A component
+release is supported only when its exact nonempty APK or Linux archive and one
+nonempty `SHA256SUMS` are uploaded without duplicate names. Automatic GitHub
+source archives do not count. If the newest stable release is incomplete, About
+can point out the unavailable artifact while offering only the newest older
+complete component release. Development, prerelease, malformed, and
+newer-than-published builds never receive a downgrade recommendation.
+
+This discovery path never downloads an artifact or modifies an installed
+release. #58 owns shared server installation/restart behavior and #59 owns APK
+download/package installation.
+
 Do not derive Android version code from a CI run number. Confirm the previous
 APK with `aapt2 dump badging`; Android cannot install a lower code over a higher
 one. The expected signing-certificate SHA-256 digest is public metadata in

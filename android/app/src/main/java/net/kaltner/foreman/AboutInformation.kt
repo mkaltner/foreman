@@ -24,7 +24,11 @@ internal fun aboutVersionInformation(
     releaseBuild: Boolean,
 ): AboutVersionInformation =
     AboutVersionInformation(
-        server = if (connected) serverVersion ?: "Unavailable" else "Unavailable while disconnected",
+        server = if (connected) {
+            serverVersion ?: "Unavailable"
+        } else {
+            serverVersion?.let { "$it (last connected)" } ?: "Unavailable while disconnected"
+        },
         client = clientBuildDescription(clientVersion, clientCommit, releaseBuild),
     )
 

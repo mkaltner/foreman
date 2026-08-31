@@ -83,6 +83,7 @@ jobs:
           grep -Fxq 'LICENSE' <<<"$archive_listing"
           grep -Fxq 'THIRD_PARTY_NOTICES.md' <<<"$archive_listing"
           grep -Fxq 'linux/claude_code.py' <<<"$archive_listing"
+          grep -Fxq 'linux/release_updates.py' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/bridge.mjs' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/package-lock.json' <<<"$archive_listing"
           grep -Fxq 'linux/claude_bridge/node_modules/@anthropic-ai/claude-agent-sdk/package.json' <<<"$archive_listing"
