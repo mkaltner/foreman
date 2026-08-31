@@ -192,10 +192,11 @@ button.full{width:100%;min-height:44px}
 .route-select.open{border-color:color-mix(in srgb, var(--accent) 45%, var(--border));box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent)}
 .route-caption{color:var(--muted);letter-spacing:.05em;text-transform:uppercase;font-size:9px;font-weight:800}
 .route-trigger{background:0 0;border:0;width:100%;min-width:0;height:32px;align-items:center;gap:5px;padding:0 8px 0 7px;font-size:11px;font-weight:650;display:flex;overflow:hidden}
+.route-trigger[aria-disabled="true"]{cursor:not-allowed;opacity:.52}
 .route-trigger>span{white-space:nowrap;text-overflow:ellipsis;min-width:0;overflow:hidden}
 .route-trigger>i{color:var(--muted);margin-left:auto;font-size:12px;font-style:normal;transition:transform .15s}
 .route-select.open .route-trigger>i{transform:rotate(180deg)}
-.route-trigger.warning,.route-trigger.warning:disabled{color:var(--full-access);opacity:1}
+.route-trigger.warning,.route-trigger.warning:disabled,.route-trigger.warning[aria-disabled="true"]{color:var(--full-access);opacity:1}
 .route-menu{border:1px solid var(--border);background:var(--surface);z-index:30;width:max(100%,280px);max-width:min(360px,calc(100vw - 24px));max-height:min(390px,55vh);box-shadow:var(--shadow);border-radius:12px;padding:5px;position:absolute;bottom:calc(100% + 8px);left:0;overflow-y:auto}
 .route-select:nth-child(2) .route-menu{left:50%;transform:translateX(-50%)}
 .route-select:last-child .route-menu{left:auto;right:0}

@@ -1489,6 +1489,32 @@ describe("route selector", () => {
     expect(onChange).toHaveBeenCalledWith("ask");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
+
+  it("keeps a disabled route focusable and exposes its reason without opening", () => {
+    render(
+      <RouteSelect
+        label="Model"
+        value="model-test"
+        options={[{ value: "model-test", label: "Model Test" }]}
+        disabled
+        disabledReason="Available when this turn finishes"
+        onChange={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Model: Model Test" });
+    const descriptionId = trigger.getAttribute("aria-describedby");
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    expect(trigger).not.toHaveAttribute("tabindex");
+    expect(descriptionId).toBeTruthy();
+    expect(document.getElementById(descriptionId!)).toHaveClass("sr-only");
+    expect(trigger).toHaveAccessibleDescription("Available when this turn finishes");
+    trigger.focus();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
 });
 
 describe("assistant code blocks", () => {
@@ -1845,10 +1871,10 @@ describe("conversation drafts", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Model: Model Test" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Reasoning: High" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toHaveAttribute("title", "Available when this turn finishes");
+    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Model: Model Test" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Reasoning: High" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Access: Ask for approval" })).toHaveAccessibleDescription("Available when this turn finishes");
     expect(screen.queryByText("Model, reasoning, and access are available when this turn finishes.")).not.toBeInTheDocument();
   });
 
@@ -1877,9 +1903,9 @@ describe("conversation drafts", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Permission: Default" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Model: Sonnet" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Permission: Default" })).toHaveAttribute("title", "Available when this turn finishes");
+    expect(screen.getByRole("button", { name: "Permission: Default" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Model: Sonnet" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Permission: Default" })).toHaveAccessibleDescription("Available when this turn finishes");
     expect(screen.queryByText("Model and permission are available when this turn finishes.")).not.toBeInTheDocument();
   });
 
@@ -1901,9 +1927,9 @@ describe("conversation drafts", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Access: full" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Model: gpt-known" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Reasoning: high" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Access: full" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Model: gpt-known" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Reasoning: high" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByText("Server default")).not.toBeInTheDocument();
   });
 

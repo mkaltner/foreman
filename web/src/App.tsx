@@ -3137,6 +3137,8 @@ export function RouteSelect({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selected = options.find((option) => option.value === value);
   const displayValue = (selected?.label ?? value) || "Server default";
+  const unavailable = disabled || options.length === 0;
+  const disabledReasonId = `${menuId}-disabled-reason`;
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -3174,10 +3176,14 @@ export function RouteSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        disabled={disabled || options.length === 0}
+        aria-disabled={unavailable}
+        aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
         title={disabled ? disabledReason : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!unavailable) setOpen((current) => !current);
+        }}
         onKeyDown={(event) => {
+          if (unavailable) return;
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             setOpen(true);
@@ -3186,6 +3192,7 @@ export function RouteSelect({
       >
         <span>{selected?.warning && <span className="permission-warning-icon" aria-hidden="true">⚠ </span>}{displayValue}</span><i aria-hidden="true">⌄</i>
       </button>
+      {disabled && disabledReason && <span id={disabledReasonId} className="sr-only">{disabledReason}</span>}
       {open && (
         <div id={menuId} className="route-menu" role="listbox" aria-label={`${label} options`}>
           {options.map((option, index) => (
