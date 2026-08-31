@@ -2330,13 +2330,13 @@ describe("ProviderSettings", () => {
     expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeEnabled();
   });
 
-  it("keeps enabled unavailable providers visible with distinct configuration, installation, and runtime state", () => {
+  it("shows unavailable providers unchecked with distinct configuration, installation, and runtime state", () => {
     render(<ProviderSettings
       providers={[{
         id: "claude-code",
         displayName: "Claude Code",
         installed: false,
-        enabled: true,
+        enabled: false,
         available: false,
         capabilities: [],
         limitations: [],
@@ -2344,7 +2344,7 @@ describe("ProviderSettings", () => {
       onProviderEnabled={vi.fn()}
     />);
 
-    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeChecked();
-    expect(screen.getByText(/Enabled · Not installed · Unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).not.toBeChecked();
+    expect(screen.getByText(/Disabled · Not installed · Unavailable/)).toBeInTheDocument();
   });
 });

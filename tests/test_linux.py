@@ -1098,7 +1098,7 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(restored.provider_enabled("codex"))
             self.assertTrue(restored.provider_enabled("claude-code"))
 
-    async def test_provider_reconciliation_preserves_choices_and_adds_usable_fallback(self) -> None:
+    async def test_provider_reconciliation_disables_unavailable_choice_and_adds_usable_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state = State(root / "state")
@@ -1116,10 +1116,75 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 provider_prerequisites={"codex": False, "claude-code": True},
             )
 
-            self.assertTrue(app.provider_enabled["codex"])
+            self.assertFalse(app.provider_enabled["codex"])
             self.assertTrue(app.provider_enabled["claude-code"])
-            self.assertTrue(State(root / "state").provider_enabled("codex"))
+            self.assertFalse(State(root / "state").provider_enabled("codex"))
             self.assertTrue(State(root / "state").provider_enabled("claude-code"))
+
+    async def test_provider_reconciliation_unchecks_stale_unavailable_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            state.set_provider_enabled("codex", True)
+            state.set_provider_enabled("claude-code", True)
+
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                provider_prerequisites={"codex": True, "claude-code": False},
+                provider_installed={"codex": True, "claude-code": False},
+            )
+
+            self.assertTrue(app.provider_enabled["codex"])
+            self.assertFalse(app.provider_enabled["claude-code"])
+            self.assertTrue(State(root / "state").provider_enabled("codex"))
+            self.assertFalse(State(root / "state").provider_enabled("claude-code"))
+
+            statuses = await app.provider_status()
+            self.assertEqual(
+                [(item["enabled"], item["available"]) for item in statuses],
+                [(True, True), (False, False)],
+            )
+
+            restarted = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                provider_prerequisites={"codex": True, "claude-code": False},
+                provider_installed={"codex": True, "claude-code": False},
+            )
+            self.assertTrue(restarted.provider_enabled["codex"])
+            self.assertFalse(restarted.provider_enabled["claude-code"])
+
+    async def test_unavailable_provider_prerequisites_cannot_be_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = State(root / "state")
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                state,
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+                provider_prerequisites={"codex": True, "claude-code": False},
+            )
+
+            with self.assertRaisesRegex(ValueError, "prerequisites are unavailable"):
+                await app.configure_provider("claude-code", True)
+
+            self.assertFalse(app.provider_enabled["claude-code"])
+            self.assertFalse(State(root / "state").provider_enabled("claude-code"))
 
     async def test_concurrent_provider_disables_preserve_one_usable_provider(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

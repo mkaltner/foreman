@@ -91,7 +91,10 @@ class ProviderSupportTest {
             available = false,
         )
 
-        assertEquals("Enabled · Not installed · Unavailable", providerConfigurationStatus(unavailable))
+        assertEquals(
+            "Disabled · Not installed · Unavailable",
+            providerConfigurationStatus(unavailable.copy(enabled = false)),
+        )
         assertEquals(
             "Disabled · Installed · Unavailable",
             providerConfigurationStatus(unavailable.copy(installed = true, enabled = false)),
