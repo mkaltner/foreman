@@ -25,10 +25,11 @@ class ProviderSupportTest {
     @Test
     fun providerCatalogDecodesHostEnablement() {
         val provider = json.decodeFromString<ProviderInfo>(
-            """{"id":"codex","displayName":"Codex","enabled":false,"available":false}""",
+            """{"id":"codex","displayName":"Codex","installed":false,"enabled":false,"available":false}""",
         )
 
         assertFalse(provider.enabled)
+        assertFalse(provider.installed ?: true)
     }
 
     @Test
@@ -47,6 +48,21 @@ class ProviderSupportTest {
                 listOf(codex, unavailableClaude.copy(enabled = false)),
                 catalogLoaded = true,
             )?.id,
+        )
+    }
+
+    @Test
+    fun providerSettingsProtectTheOnlyEnabledAvailableProvider() {
+        val codex = ProviderInfo(PROVIDER_CODEX, "Codex", available = true)
+        val unavailableClaude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", available = false)
+
+        assertTrue(providerMustRemainEnabled(codex, listOf(codex, unavailableClaude)))
+        assertFalse(providerMustRemainEnabled(unavailableClaude, listOf(codex, unavailableClaude)))
+        assertTrue(
+            providerMustRemainEnabled(
+                unavailableClaude,
+                listOf(codex.copy(enabled = false), unavailableClaude),
+            ),
         )
     }
 

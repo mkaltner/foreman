@@ -46,14 +46,16 @@ sessions may never expose plan limits. Compact-boundary history/events are proje
 their summary text, allowing the UI to show count, trigger, before/after tokens,
 and duration when supplied.
 
-Claude support is optional on the Linux host and exposed through the Foreman web
-and Android clients. It requires an authenticated native `claude` executable, Node.js 20 or
+Claude can be the only provider on a Linux Foreman host or can run alongside
+Codex. It requires an authenticated native `claude` executable, Node.js 20 or
 newer, and the pinned SDK dependency. Tagged Foreman Linux archives contain the
-production dependency and notices. The installer never runs npm; a source
-checkout intended to expose Claude must be prepared with
-`npm ci --omit=dev --ignore-scripts` in `linux/claude_bridge` before running
-`./install.sh`. A missing or failed Claude adapter leaves Codex and Foreman
-startup intact. Local status is available with `foreman claude-status`.
+production dependency and notices. From a source checkout, the installer runs
+`npm ci --omit=dev --ignore-scripts` against the exact lockfile inside its
+disposable staging payload when the dependency is absent; this may require
+package-registry access. It never installs or authenticates the Claude CLI. A
+missing or failed Claude runtime aborts activation when Claude is the only
+provider, while a usable Codex provider may continue without Claude. Local
+status is available with `foreman claude-status`.
 
 The authenticated protocol-v1 provider catalog reports availability, CLI/SDK
 versions, capabilities, and explicit limitations. Web and Android sessions use

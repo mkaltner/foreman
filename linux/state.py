@@ -545,6 +545,23 @@ class State:
 
         return self._locked(update)
 
+    def provider_enablement(self) -> dict[str, bool]:
+        """Return only provider choices that have been explicitly persisted."""
+
+        def update(data: dict[str, Any]) -> dict[str, bool]:
+            stored = data.get("providerEnabled")
+            if not isinstance(stored, dict):
+                data["providerEnabled"] = {}
+                return {}
+            return {
+                provider: value
+                for provider, value in stored.items()
+                if provider in {"codex", "claude-code"}
+                and isinstance(value, bool)
+            }
+
+        return self._locked(update)
+
     def set_provider_enabled(self, provider: str, enabled: bool) -> None:
         if provider not in {"codex", "claude-code"}:
             return

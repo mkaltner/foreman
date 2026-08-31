@@ -3566,26 +3566,31 @@ export function ProviderSettings({ providers, onProviderEnabled }: {
 }) {
   const [pending, setPending] = useState<ProviderId | null>(null);
   const enabledCount = providers.filter(providerEnabled).length;
+  const usableEnabledCount = providers.filter((provider) => providerEnabled(provider) && provider.available).length;
   return <section className="settings-card provider-settings">
     <h2>Providers</h2>
-    <p className="muted">Choose which installed CLIs Foreman uses on this host. At least one provider must remain enabled.</p>
+    <p className="muted">Choose which installed CLIs Foreman uses on this host. At least one available provider must remain enabled.</p>
     <div className="provider-setting-list">{providers.map((provider) => {
       const enabled = providerEnabled(provider);
-      const lastEnabled = enabled && enabledCount === 1;
+      const requiredEnabled = enabled && (
+        enabledCount === 1 || (provider.available && usableEnabledCount === 1)
+      );
       const version = provider.version ?? provider.cliVersion;
-      const state = !enabled ? "Disabled" : provider.available ? "Available" : "Unavailable";
+      const state = !enabled
+        ? provider.installed === false ? "Not installed" : "Disabled"
+        : provider.available ? "Available" : "Unavailable";
       return <label className="check-row" key={provider.id}>
         <input
           type="checkbox"
           checked={enabled}
-          disabled={pending !== null || lastEnabled}
+          disabled={pending !== null || requiredEnabled}
           onChange={(event) => {
             const next = event.target.checked;
             setPending(provider.id);
             void onProviderEnabled(provider.id, next).finally(() => setPending(null));
           }}
         />
-        <span><strong>{provider.displayName}</strong><small>{state}{version ? ` · ${version}` : ""}{lastEnabled ? " · at least one required" : ""}</small></span>
+        <span><strong>{provider.displayName}</strong><small>{state}{version ? ` · ${version}` : ""}{requiredEnabled ? " · at least one available provider required" : ""}</small></span>
       </label>;
     })}</div>
   </section>;

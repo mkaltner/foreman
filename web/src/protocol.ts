@@ -9,6 +9,7 @@ export function isProviderId(value: unknown): value is ProviderId {
 export interface ProviderInfo {
   id: ProviderId;
   displayName: string;
+  installed?: boolean;
   enabled?: boolean;
   available: boolean;
   version?: string | null;

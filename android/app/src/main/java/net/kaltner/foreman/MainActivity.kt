@@ -7913,33 +7913,33 @@ private fun UiSettingsMenu(
                 )
                 HorizontalDivider()
                 Text(
-                    "Choose which installed CLIs Foreman uses on this host. At least one provider must remain enabled.",
+                    "Choose which installed CLIs Foreman uses on this host. At least one available provider must remain enabled.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-                val enabledCount = state.providers.count { it.enabled }
                 state.providers.forEach { provider ->
-                    val lastEnabled = provider.enabled && enabledCount == 1
+                    val requiredEnabled = providerMustRemainEnabled(provider, state.providers)
                     DropdownMenuItem(
                         text = {
                             Column {
                                 Text(provider.displayName)
                                 Text(
                                     when {
+                                        !provider.enabled && provider.installed == false -> "Not installed"
                                         !provider.enabled -> "Disabled"
                                         provider.available -> "Available"
                                         else -> "Unavailable"
-                                    } + if (lastEnabled) " · at least one required" else "",
+                                    } + if (requiredEnabled) " · at least one available provider required" else "",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         },
                         leadingIcon = {
-                            Checkbox(checked = provider.enabled, onCheckedChange = null, enabled = !lastEnabled && !state.submitting)
+                            Checkbox(checked = provider.enabled, onCheckedChange = null, enabled = !requiredEnabled && !state.submitting)
                         },
-                        enabled = !lastEnabled && !state.submitting,
+                        enabled = !requiredEnabled && !state.submitting,
                         onClick = { viewModel.setProviderEnabled(provider.id, !provider.enabled) },
                     )
                 }

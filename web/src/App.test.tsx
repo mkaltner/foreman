@@ -2231,6 +2231,13 @@ describe("ProviderSettings", () => {
       onProviderEnabled={update}
     />);
     expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeDisabled();
-    expect(screen.getByText(/at least one required/)).toBeInTheDocument();
+    expect(screen.getByText(/at least one available provider required/)).toBeInTheDocument();
+
+    view.rerender(<ProviderSettings
+      providers={[providers[0], { ...providers[1], available: false }]}
+      onProviderEnabled={update}
+    />);
+    expect(screen.getByRole("checkbox", { name: /Codex/ })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeEnabled();
   });
 });

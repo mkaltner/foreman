@@ -16,6 +16,7 @@ internal fun supportedProvider(provider: String): Boolean =
 data class ProviderInfo(
     val id: String,
     val displayName: String,
+    val installed: Boolean? = null,
     val enabled: Boolean = true,
     val available: Boolean,
     val version: String? = null,
@@ -28,6 +29,16 @@ data class ProviderInfo(
 )
 
 internal fun providerEnabled(provider: ProviderInfo): Boolean = provider.enabled
+
+internal fun providerMustRemainEnabled(
+    provider: ProviderInfo,
+    providers: List<ProviderInfo>,
+): Boolean {
+    if (!provider.enabled) return false
+    val enabled = providers.filter(::providerEnabled)
+    val usableEnabled = enabled.count { it.available }
+    return enabled.size == 1 || (provider.available && usableEnabled == 1)
+}
 
 internal fun soleEnabledProvider(
     providers: List<ProviderInfo>,
