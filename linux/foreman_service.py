@@ -243,6 +243,7 @@ class Foreman:
         self.state = state
         self.clients: set[Client] = set()
         self.thread_locks: dict[str, asyncio.Lock] = {}
+        self.provider_configuration_lock = asyncio.Lock()
         self.pairing_limiter = PairingLimiter()
         self.codex = codex_factory(codex_executable, self.codex_event)
         self.server: asyncio.Server | None = None
@@ -1021,6 +1022,10 @@ class Foreman:
         )
 
     async def configure_provider(self, provider: str, enabled: bool) -> None:
+        async with self.provider_configuration_lock:
+            await self._configure_provider(provider, enabled)
+
+    async def _configure_provider(self, provider: str, enabled: bool) -> None:
         if self.provider_enabled[provider] == enabled:
             return
         if not enabled:

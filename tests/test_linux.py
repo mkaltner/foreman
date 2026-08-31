@@ -1121,6 +1121,41 @@ class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(State(root / "state").provider_enabled("codex"))
             self.assertTrue(State(root / "state").provider_enabled("claude-code"))
 
+    async def test_concurrent_provider_disables_preserve_one_usable_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            await app.start()
+            try:
+                results = await asyncio.gather(
+                    app.configure_provider("codex", False),
+                    app.configure_provider("claude-code", False),
+                    return_exceptions=True,
+                )
+
+                self.assertEqual(
+                    sum(isinstance(result, ValueError) for result in results), 1
+                )
+                self.assertEqual(sum(app.provider_enabled.values()), 1)
+                statuses = await app.provider_status()
+                self.assertEqual(
+                    sum(
+                        item["enabled"] and item["available"]
+                        for item in statuses
+                    ),
+                    1,
+                )
+            finally:
+                await app.stop()
+
     async def test_provider_enablement_is_persisted_guarded_and_applied(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
