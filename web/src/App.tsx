@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   type ChangeEvent,
   type ClipboardEvent,
   type FormEvent,
@@ -1947,6 +1948,14 @@ function App() {
     }
     return result;
   }, [client]);
+  const currentApprovals = useMemo(
+    () => current ? approvals.filter((approval) => approval.sessionId === current.id) : [],
+    [approvals, current?.id],
+  );
+  const currentInputs = useMemo(
+    () => current ? inputs.filter((pending) => pending.sessionId === current.id) : [],
+    [current?.id, inputs],
+  );
 
   if (!activeHost) {
     return (
@@ -2224,8 +2233,8 @@ function App() {
               <ConversationView
                 key={`${activeHost.id}:${sessionProvider(current)}:${current.id}`}
                 session={current}
-                approvals={approvals.filter((approval) => approval.sessionId === current.id)}
-                inputs={inputs.filter((pending) => pending.sessionId === current.id)}
+                approvals={currentApprovals}
+                inputs={currentInputs}
                 models={sessionProvider(current) === "claude-code" ? claudeModels : models}
                 accessLevels={sessionProvider(current) === "claude-code" ? claudePermissionModes : accessLevels}
                 connected={connected}
@@ -2745,7 +2754,7 @@ export function ConversationView({
   const activityMessage = liveActivityMessage(session);
   const contextUsage = contextUsageView(session.tokenUsage);
 
-  const openWorkspaceFile = async ({ path, line }: WorkspaceFileTarget) => {
+  const openWorkspaceFile = useCallback(async ({ path, line }: WorkspaceFileTarget) => {
     const request = ++workspaceFileRequest.current;
     setOpeningWorkspaceFile(path);
     try {
@@ -2758,7 +2767,7 @@ export function ConversationView({
     } finally {
       if (workspaceFileRequest.current === request) setOpeningWorkspaceFile(null);
     }
-  };
+  }, [onError, onRequest]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -3212,7 +3221,7 @@ export function RouteSelect({
   );
 }
 
-function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+const ConversationItemView = memo(function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }: { item: NonNullable<SessionSummary["messages"]>[number]; highlighted?: boolean; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   if (item.kind === "compaction") {
     return <article id={`message-${item.id}`} className={`tool-card compaction-card ${highlighted ? "search-highlight" : ""}`}><span>↻</span><div><strong>Context compacted</strong><p>{compactionDetail(item)}</p></div>{item.durationMs !== undefined && <small>{formatDuration(item.durationMs)}</small>}</article>;
   }
@@ -3227,9 +3236,9 @@ function ConversationItemView({ item, highlighted = false, onOpenWorkspaceFile }
       {!!item.imageCount && !item.images?.length && <span className="image-indicator">▧ {item.imageCount} image{item.imageCount === 1 ? "" : "s"}</span>}
     </article>
   );
-}
+});
 
-function CollapsedActivityGroup({ items, onOpenWorkspaceFile }: { items: NonNullable<SessionSummary["messages"]>; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+const CollapsedActivityGroup = memo(function CollapsedActivityGroup({ items, onOpenWorkspaceFile }: { items: NonNullable<SessionSummary["messages"]>; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   const commands = items.filter(({ kind }) => kind === "command").length;
   const tools = items.length - commands;
   const breakdown = [
@@ -3237,7 +3246,7 @@ function CollapsedActivityGroup({ items, onOpenWorkspaceFile }: { items: NonNull
     tools ? `${tools} tool${tools === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(" · ");
   return <details className="collapsed-activity"><summary><span aria-hidden="true">◇</span><span><strong>{items.length} completed activity item{items.length === 1 ? "" : "s"}</strong><small>{breakdown}</small></span><i>Details</i></summary><div>{items.map((item) => <ConversationItemView key={item.id} item={item} onOpenWorkspaceFile={onOpenWorkspaceFile} />)}</div></details>;
-}
+});
 
 export function LinkedUserText({ text }: { text: string }) {
   return <p className="user-text">{linkifyPlainText(text).map((segment, index) => segment.href
@@ -3245,7 +3254,7 @@ export function LinkedUserText({ text }: { text: string }) {
     : segment.text)}</p>;
 }
 
-export function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
+export const Markdown = memo(function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   return (
     <div className="markdown">
       {parseAssistantContent(text).map((segment, index) => segment.kind === "directive"
@@ -3253,7 +3262,7 @@ export function Markdown({ text, onOpenWorkspaceFile }: { text: string; onOpenWo
         : <MarkdownBody key={`markdown-${index}`} text={segment.text} onOpenWorkspaceFile={onOpenWorkspaceFile} />)}
     </div>
   );
-}
+});
 
 function MarkdownBody({ text, onOpenWorkspaceFile }: { text: string; onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
