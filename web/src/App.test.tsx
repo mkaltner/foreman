@@ -218,6 +218,63 @@ describe("host navigation history", () => {
     expect(screen.queryByText("Accent")).not.toBeInTheDocument();
   });
 
+  it("replaces stale About release information immediately after Check again", async () => {
+    const release = (version: string) => ({
+      version,
+      tag: `v${version}`,
+      title: `Foreman v${version}`,
+      publishedAt: "2026-08-31T22:01:42Z",
+      releaseNotesUrl: `https://github.com/mkaltner/foreman/releases/tag/v${version}`,
+      artifactAvailable: true,
+    });
+    const staleRelease = release("1.0.4");
+    const freshRelease = release("1.1.0");
+    const staleSnapshot = {
+      observedAt: "2026-08-31T21:19:01Z",
+      stale: true,
+      refreshStatus: "unavailable",
+      unavailableReason: "rate-limited",
+      components: {
+        server: { supportedRelease: staleRelease, newestRelease: staleRelease },
+        android: { supportedRelease: staleRelease, newestRelease: staleRelease },
+      },
+    };
+    const freshSnapshot = {
+      observedAt: "2026-08-31T22:51:26Z",
+      stale: false,
+      refreshStatus: "idle",
+      components: {
+        server: { supportedRelease: freshRelease, newestRelease: freshRelease },
+        android: { supportedRelease: freshRelease, newestRelease: freshRelease },
+      },
+    };
+    saveHostRegistry({ hosts: [home], activeHostId: home.id });
+    window.history.replaceState(null, "", `/settings?host=${home.id}`);
+    mockConnectedState([]);
+    const baseRequest = clientMock.request.getMockImplementation();
+    if (!baseRequest) throw new Error("Connected request mock is missing");
+    clientMock.request.mockImplementation(async (type: string, payload?: Record<string, unknown>) => {
+      if (type === "service.status") {
+        return {
+          ...await baseRequest(type, payload),
+          foremanVersion: "1.0.4",
+          foremanReleaseBuild: true,
+          releaseUpdates: staleSnapshot,
+        };
+      }
+      if (type === "release.check") return freshSnapshot;
+      return baseRequest(type, payload);
+    });
+
+    render(<App />);
+    await screen.findByText(/Cached release information from/);
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    await screen.findByText(/Release information checked/);
+    expect(screen.getByText("Update available · 1.1.0")).toBeInTheDocument();
+    expect(screen.queryByText(/Cached release information from/)).not.toBeInTheDocument();
+  });
+
   it("resumes the last session when Sessions is entered from Dashboard", async () => {
     const session: SessionSummary = { id: "dashboard-return", repository: "/repo", title: "Dashboard return", status: "idle", messages: [] };
     saveHostRegistry({ hosts: [home], activeHostId: home.id });
