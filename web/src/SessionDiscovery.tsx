@@ -1,6 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 import { activeFilterCount, type RepositoryFilterOption, type SessionFilters, type VisibleSession } from "./session-search";
-import { providerEnabled, sessionProvider, type ProviderId, type ProviderInfo } from "./protocol";
+import { providerUsableForTasks, sessionProvider, type ProviderId, type ProviderInfo } from "./protocol";
 
 export function SessionSearchControls({
   filters,
@@ -18,7 +18,7 @@ export function SessionSearchControls({
   onSearchNow: () => void;
 }) {
   const count = activeFilterCount(filters);
-  const availableProviders = providers.filter((provider) => providerEnabled(provider) && provider.available);
+  const availableProviders = providers.filter(providerUsableForTasks);
   const archivedProviders = availableProviders.filter((provider) => provider.capabilities.includes("session.archived.list"));
   const archivedAvailable = archivedProviders.length > 0;
   const panelRef = useRef<HTMLDetailsElement>(null);
@@ -73,11 +73,11 @@ export function SessionSearchControls({
                 <option value="normal">Normal</option>
                 <option value="archived" disabled={!archivedAvailable}>Archived</option>
               </select>
-              {!archivedAvailable && <small>Archived discovery is unavailable because no enabled provider advertises support.</small>}
+              {!archivedAvailable && <small>Archived discovery is unavailable because no usable provider advertises support.</small>}
             </label>
             <label>Provider
               <select value={filters.provider} onChange={(event) => onChange({ ...filters, provider: event.target.value as SessionFilters["provider"] })}>
-                <option value="">All enabled providers</option>
+                <option value="">All available providers</option>
                 {availableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.displayName}</option>)}
               </select>
               {filters.scope === "archived" && filters.provider && !archivedProviders.some(({ id }) => id === filters.provider) && <small>{providers.find(({ id }) => id === filters.provider)?.displayName ?? "This provider"} does not expose archived sessions.</small>}
@@ -121,6 +121,7 @@ export function SessionSearchResults({
   loading,
   error,
   showProviderIdentity = true,
+  usableProviderIds,
   onOpen,
   onPin,
   onHide,
@@ -131,6 +132,7 @@ export function SessionSearchResults({
   loading: boolean;
   error: string;
   showProviderIdentity?: boolean;
+  usableProviderIds?: ReadonlySet<ProviderId>;
   onOpen: (provider: ProviderId, id: string, itemId?: string | null) => void;
   onPin: (provider: ProviderId, id: string) => void;
   onHide: (provider: ProviderId, id: string) => void;
@@ -140,9 +142,12 @@ export function SessionSearchResults({
   if (loading && results.length === 0) return <div className="search-state" role="status">Searching sessions…</div>;
   if (results.length === 0) return <div className="search-state"><strong>No matching sessions</strong><span>Try clearing a filter or using a shorter substring.</span></div>;
   return <div className="search-results" aria-live="polite">
-    {results.map(({ session, matches, pinned, hidden }, index) => <article className={`search-result ${session.archived ? "archived" : ""}`} key={`${sessionProvider(session)}:${session.id}`}>
+    {results.map(({ session, matches, pinned, hidden }, index) => {
+      const provider = sessionProvider(session);
+      const providerUsable = usableProviderIds?.has(provider) ?? true;
+      return <article className={`search-result ${session.archived ? "archived" : ""}`} key={`${provider}:${session.id}`}>
       <button data-search-result={index === 0 ? "first" : ""} className="search-result-main" onClick={() => onOpen(sessionProvider(session), session.id, matches.find((match) => match.itemId)?.itemId)}>
-        <span className="search-result-title"><strong>{session.title}</strong>{showProviderIdentity && <ProviderBadge provider={sessionProvider(session)} />}{session.archived ? <span className="status-pill archived">Archived</span> : <StatusLabel status={session.status} />}</span>
+        <span className="search-result-title"><strong>{session.title}</strong>{(showProviderIdentity || !providerUsable) && <ProviderBadge provider={provider} />}{!providerUsable ? <span className="status-pill disconnected">Provider unavailable</span> : session.archived ? <span className="status-pill archived">Archived</span> : <StatusLabel status={session.status} />}</span>
         <small title={session.repository}>{session.repository || "Unknown workspace"}</small>
         {matches.slice(0, 3).map((match, matchIndex) => <p key={`${match.itemId ?? match.kind}-${matchIndex}`}><span>{match.kind}</span>{match.snippet}</p>)}
         {!matches.length && query && <p><span>title</span>{session.title}</p>}
@@ -151,9 +156,10 @@ export function SessionSearchResults({
       <div className="search-result-actions">
         <button className={pinned ? "selected" : ""} onClick={() => onPin(sessionProvider(session), session.id)} aria-label={`${pinned ? "Unpin" : "Pin"} ${session.title}`} title={pinned ? "Unpin session" : "Pin session"}>{pinned ? "★" : "☆"}</button>
         <button onClick={() => onHide(sessionProvider(session), session.id)} aria-label={`${hidden ? "Restore" : "Hide"} ${session.title}`}>{hidden ? "Restore" : "Hide"}</button>
-        {session.archived && session.capabilities?.includes("session.restore") && onRestore && <button className="restore-link" onClick={() => onRestore(session)}>Restore</button>}
+        {providerUsable && session.archived && session.capabilities?.includes("session.restore") && onRestore && <button className="restore-link" onClick={() => onRestore(session)}>Restore</button>}
       </div>
-    </article>)}
+    </article>;
+    })}
   </div>;
 }
 

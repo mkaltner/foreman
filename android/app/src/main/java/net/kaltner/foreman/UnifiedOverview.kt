@@ -37,6 +37,7 @@ data class HostOverviewSnapshot(
     val codexVersion: String? = null,
     val runtimeMode: String? = null,
     val runtimeConnected: Boolean = false,
+    val usableProviders: List<String> = emptyList(),
     val active: Int = 0,
     val codexActive: Int = 0,
     val claudeActive: Int = 0,
@@ -139,6 +140,7 @@ internal fun projectHostOverview(
     runtimeConnected: Boolean = false,
     observedAt: Long = System.currentTimeMillis(),
     inputs: List<InputRequest> = emptyList(),
+    usableProviders: List<String> = emptyList(),
 ): HostOverviewSnapshot {
     val pending = approvals.filter { it.status == "pending" || it.status == "submitting" }
     val pendingInputs = inputs.filter { it.status == "pending" || it.status == "submitting" }
@@ -221,6 +223,7 @@ internal fun projectHostOverview(
         codexVersion = codexVersion,
         runtimeMode = runtimeMode,
         runtimeConnected = runtimeConnected,
+        usableProviders = usableProviders.filter(::supportedProvider).distinct(),
         active = active.size,
         codexActive = active.count { sessionProvider(it) == PROVIDER_CODEX },
         claudeActive = active.count { sessionProvider(it) == PROVIDER_CLAUDE_CODE },

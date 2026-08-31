@@ -1,7 +1,7 @@
 import { ForemanWebClient, parseEndpoint, type ClientHooks, type ConnectionState, type Endpoint } from "./client";
 import {
   applySessionSummaryEvent,
-  providerEnabled,
+  providerUsableForTasks,
   providerSessionKey,
   reconcileSessionSummaries,
   sessionProvider,
@@ -106,8 +106,8 @@ export class UnifiedHostConnections {
     this.clients.set(host.id, client);
     void client.start(parseEndpoint(host.host, host.webPort), host.deviceToken, async () => {
       const providerResult = await client.request<{ providers: ProviderInfo[] } & Record<string, unknown>>("provider.list");
-      const codexAvailable = providerResult.providers.some((provider) => provider.id === "codex" && providerEnabled(provider) && provider.available);
-      const claudeAvailable = providerResult.providers.some((provider) => provider.id === "claude-code" && providerEnabled(provider) && provider.available);
+      const codexAvailable = providerResult.providers.some((provider) => provider.id === "codex" && providerUsableForTasks(provider));
+      const claudeAvailable = providerResult.providers.some((provider) => provider.id === "claude-code" && providerUsableForTasks(provider));
       const [codexSessionResult, claudeSessionResult, approvalResult, inputResult, statusResult] = await Promise.all([
         codexAvailable
           ? client.request<{ sessions: SessionSummary[] } & Record<string, unknown>>("provider.session.list", { provider: "codex" })

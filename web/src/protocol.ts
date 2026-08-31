@@ -25,20 +25,31 @@ export function providerEnabled(provider: Pick<ProviderInfo, "enabled">): boolea
   return provider.enabled !== false;
 }
 
-export function soleEnabledProvider(
+/** A provider can back task operations only when configuration and host runtime agree. */
+export function providerUsableForTasks(
+  provider: Pick<ProviderInfo, "enabled" | "available">,
+): boolean {
+  return providerEnabled(provider) && provider.available;
+}
+
+export function usableTaskProviders(providers: readonly ProviderInfo[]): ProviderInfo[] {
+  return providers.filter(providerUsableForTasks);
+}
+
+export function soleUsableTaskProvider(
   providers: readonly ProviderInfo[],
   catalogLoaded: boolean,
 ): ProviderInfo | null {
   if (!catalogLoaded) return null;
-  const enabled = providers.filter(providerEnabled);
-  return enabled.length === 1 ? enabled[0] : null;
+  const usable = usableTaskProviders(providers);
+  return usable.length === 1 ? usable[0] : null;
 }
 
 export function shouldShowProviderIdentity(
   providers: readonly ProviderInfo[],
   catalogLoaded: boolean,
 ): boolean {
-  return soleEnabledProvider(providers, catalogLoaded) === null;
+  return soleUsableTaskProvider(providers, catalogLoaded) === null;
 }
 
 export function providerCatalogResponseIsCurrent(

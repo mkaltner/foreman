@@ -33,22 +33,21 @@ class ProviderSupportTest {
     }
 
     @Test
-    fun providerUiSimplifiesOnlyForOneEnabledProviderInLoadedCatalog() {
+    fun taskUsabilityRequiresEnabledAndAvailableAcrossTheProviderMatrix() {
         val codex = ProviderInfo(PROVIDER_CODEX, "Codex", available = true)
         val unavailableClaude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", available = false)
 
-        assertEquals(null, soleEnabledProvider(listOf(codex), catalogLoaded = false))
-        assertEquals(null, soleEnabledProvider(emptyList(), catalogLoaded = true))
-        assertEquals(PROVIDER_CODEX, soleEnabledProvider(listOf(codex), catalogLoaded = true)?.id)
+        assertTrue(providerUsableForTasks(codex))
+        assertFalse(providerUsableForTasks(unavailableClaude))
+        assertFalse(providerUsableForTasks(codex.copy(enabled = false)))
+        assertEquals(null, soleUsableTaskProvider(listOf(codex), catalogLoaded = false))
+        assertEquals(null, soleUsableTaskProvider(emptyList(), catalogLoaded = true))
+        assertEquals(PROVIDER_CODEX, soleUsableTaskProvider(listOf(codex), catalogLoaded = true)?.id)
         assertFalse(shouldShowProviderIdentity(listOf(codex), catalogLoaded = true))
-        assertTrue(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
-        assertEquals(
-            PROVIDER_CODEX,
-            soleEnabledProvider(
-                listOf(codex, unavailableClaude.copy(enabled = false)),
-                catalogLoaded = true,
-            )?.id,
-        )
+        assertFalse(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
+        assertEquals(null, soleUsableTaskProvider(listOf(codex, unavailableClaude.copy(available = true)), true))
+        assertTrue(shouldShowProviderIdentity(listOf(codex, unavailableClaude.copy(available = true)), true))
+        assertEquals(null, soleUsableTaskProvider(listOf(codex.copy(available = false), unavailableClaude), true))
     }
 
     @Test
@@ -67,7 +66,7 @@ class ProviderSupportTest {
     }
 
     @Test
-    fun sessionListProviderBadgesAndNewSessionSelectionFollowProviderTransitions() {
+    fun newSessionSelectionFollowsUsableProviderTransitions() {
         val codex = ProviderInfo(PROVIDER_CODEX, "Codex", available = true)
         val unavailableClaude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", available = false)
 
@@ -75,9 +74,28 @@ class ProviderSupportTest {
         assertEquals(null, newSessionProviderSelection(listOf(codex), catalogLoaded = false, PROVIDER_CLAUDE_CODE))
         assertFalse(shouldShowProviderIdentity(listOf(codex), catalogLoaded = true))
         assertEquals(PROVIDER_CODEX, newSessionProviderSelection(listOf(codex), true, PROVIDER_CLAUDE_CODE))
-        assertTrue(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
-        assertEquals(PROVIDER_CLAUDE_CODE, newSessionProviderSelection(listOf(codex, unavailableClaude), true, PROVIDER_CLAUDE_CODE))
+        assertFalse(shouldShowProviderIdentity(listOf(codex, unavailableClaude), catalogLoaded = true))
+        assertEquals(PROVIDER_CODEX, newSessionProviderSelection(listOf(codex, unavailableClaude), true, PROVIDER_CLAUDE_CODE))
+        assertEquals(PROVIDER_CLAUDE_CODE, newSessionProviderSelection(listOf(codex.copy(available = false), unavailableClaude.copy(available = true)), true, PROVIDER_CODEX))
+        assertEquals(null, newSessionProviderSelection(listOf(codex.copy(available = false), unavailableClaude), true, PROVIDER_CODEX))
         assertFalse(shouldShowProviderIdentity(listOf(codex, unavailableClaude.copy(enabled = false)), catalogLoaded = true))
+    }
+
+    @Test
+    fun settingsDescribeConfigurationInstallationAndAvailabilitySeparately() {
+        val unavailable = ProviderInfo(
+            PROVIDER_CLAUDE_CODE,
+            "Claude Code",
+            installed = false,
+            enabled = true,
+            available = false,
+        )
+
+        assertEquals("Enabled · Not installed · Unavailable", providerConfigurationStatus(unavailable))
+        assertEquals(
+            "Disabled · Installed · Unavailable",
+            providerConfigurationStatus(unavailable.copy(installed = true, enabled = false)),
+        )
     }
 
     @Test
@@ -167,6 +185,23 @@ class ProviderSupportTest {
         assertEquals(14.0, usage.providers[PROVIDER_CODEX]?.rateLimits?.primary?.usedPercent)
         assertTrue(usage.providers[PROVIDER_CLAUDE_CODE]?.experimental == true)
         assertEquals("Unavailable", usage.providers[PROVIDER_CLAUDE_CODE]?.availabilityReason)
+    }
+
+    @Test
+    fun accountUsageIncludesOnlyTaskUsableProvidersAcrossTheProviderMatrix() {
+        val codex = ProviderInfo(PROVIDER_CODEX, "Codex", enabled = true, available = true)
+        val claude = ProviderInfo(PROVIDER_CLAUDE_CODE, "Claude Code", enabled = true, available = true)
+        val usage = AccountUsage(
+            providers = mapOf(
+                PROVIDER_CODEX to ProviderAccountUsage(available = true),
+                PROVIDER_CLAUDE_CODE to ProviderAccountUsage(available = true),
+            ),
+        )
+
+        assertEquals(listOf(PROVIDER_CODEX), taskProviderAccountUsage(listOf(codex, claude.copy(available = false)), usage).map { it.first.id })
+        assertEquals(listOf(PROVIDER_CLAUDE_CODE), taskProviderAccountUsage(listOf(codex.copy(enabled = false), claude), usage).map { it.first.id })
+        assertEquals(listOf(PROVIDER_CODEX, PROVIDER_CLAUDE_CODE), taskProviderAccountUsage(listOf(codex, claude), usage).map { it.first.id })
+        assertTrue(taskProviderAccountUsage(listOf(codex.copy(available = false), claude.copy(enabled = false)), usage).isEmpty())
     }
 
     @Test

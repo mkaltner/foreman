@@ -703,20 +703,25 @@ describe("host navigation history", () => {
 
   it("does not erase memory during temporary provider unavailability", async () => {
     const session: SessionSummary = { id: "outage", repository: "/repo", title: "Outage", status: "idle", messages: [] };
+    const providers = [{ id: "codex" as const, displayName: "Codex", enabled: true, available: true }];
     saveHostRegistry({ hosts: [home], activeHostId: home.id });
     window.history.replaceState(null, "", `/sessions/codex/${session.id}?host=${home.id}`);
-    mockConnectedState([session]);
+    mockConnectedState([session], providers);
 
     render(<App />);
     await waitFor(() => expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id));
+    providers[0].available = false;
     act(() => clientMock.onEvent?.({
       version: 1,
       type: "provider.event",
-      payload: { providers: [{ id: "codex", displayName: "Codex", enabled: true, available: false }] },
+      payload: { providers },
     }));
 
-    await screen.findByRole("heading", { name: "Sessions" });
-    expect(loadRememberedSession(home.id)?.sessionId).toBe(session.id);
+    await screen.findByText("Provider unavailable");
+    expect(screen.getByText(session.title)).toBeInTheDocument();
+    expect(screen.getByText("No recent activity")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(loadRememberedSession(home.id)).toMatchObject({ provider: "codex", sessionId: session.id });
   });
 
   it("keeps other providers synchronized when one session list temporarily fails", async () => {
@@ -1049,7 +1054,7 @@ describe("Claude session deletion", () => {
 
   });
 
-  it("removes session-list provider badges only for one enabled provider", () => {
+  it("uses only task-usable providers for badges and safely labels unavailable historical sessions", () => {
     const codexSession: SessionSummary = { id: "codex-session", repository: "/repo", title: "Codex work", status: "idle" };
     const baseProps = {
       results: [{ session: codexSession, pinned: false, hidden: false, matches: [] }],
@@ -1075,7 +1080,11 @@ describe("Claude session deletion", () => {
 
     expect(document.querySelector(".session-card .provider-badge")).toBeNull();
     view.rerender(<SessionList {...baseProps} providers={[codex, claude]} providerCatalogLoaded />);
-    expect(document.querySelector(".session-card .provider-badge")).toHaveTextContent("Codex");
+    expect(document.querySelector(".session-card .provider-badge")).toBeNull();
+    view.rerender(<SessionList {...baseProps} results={[{ session, pinned: false, hidden: false, matches: [] }]} providers={[codex, claude]} providerCatalogLoaded />);
+    expect(document.querySelector(".session-card .provider-badge")).toHaveTextContent("Claude Code");
+    expect(screen.getByText("Provider unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     view.rerender(<SessionList {...baseProps} providers={[codex, { ...claude, enabled: false }]} providerCatalogLoaded />);
     expect(document.querySelector(".session-card .provider-badge")).toBeNull();
     view.rerender(<SessionList {...baseProps} providers={[codex]} providerCatalogLoaded={false} />);
@@ -1304,7 +1313,7 @@ describe("session context usage", () => {
     expect(screen.queryByRole("complementary", { name: "Account usage" })).not.toBeInTheDocument();
   });
 
-  it("omits disabled providers from account usage status", () => {
+  it("omits disabled and enabled-but-unavailable providers from account usage status", () => {
     render(<AccountUsageDock
       usage={{ providers: {
         codex: { available: true, rateLimits: { primary: { usedPercent: 12 } } },
@@ -1312,7 +1321,7 @@ describe("session context usage", () => {
       } }}
       providers={[
         { id: "codex", displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] },
-        { id: "claude-code", displayName: "Claude Code", enabled: false, available: false, capabilities: [], limitations: [] },
+        { id: "claude-code", displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] },
       ]}
     />);
 
@@ -1321,6 +1330,24 @@ describe("session context usage", () => {
     expect(screen.queryByText("Across providers")).not.toBeInTheDocument();
     expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
+  });
+
+  it("shows only Claude usage on a Claude-only host and no usage when neither provider is usable", () => {
+    const usage = { providers: {
+      codex: { available: true, rateLimits: { primary: { usedPercent: 12 } } },
+      "claude-code": { available: true, rateLimits: { primary: { usedPercent: 34 } } },
+    } };
+    const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: false, capabilities: [], limitations: [] };
+    const claude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: true, capabilities: [], limitations: [] };
+    const view = render(<AccountUsageDock usage={usage} providers={[codex, claude]} />);
+
+    expect(screen.getByRole("button", { name: "Account usage, 66% left" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Account usage, 66% left" }));
+    expect(screen.queryByText("Across providers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
+
+    view.rerender(<AccountUsageDock usage={usage} providers={[codex, { ...claude, available: false }]} />);
+    expect(screen.queryByRole("button", { name: /Account usage/ })).not.toBeInTheDocument();
   });
 });
 
@@ -2142,7 +2169,7 @@ describe("NewSessionDialog", () => {
     expect(screen.getByRole("button", { name: "Start in workspace" })).toBeEnabled();
   });
 
-  it("restores selection immediately for two enabled providers and simplifies again", () => {
+  it("excludes enabled-but-unavailable choices and restores selection when both become usable", () => {
     const create = vi.fn().mockResolvedValue(undefined);
     const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
     const claude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
@@ -2150,8 +2177,12 @@ describe("NewSessionDialog", () => {
 
     expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
     view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[codex, claude]} onClose={vi.fn()} onCreate={create} />);
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+
+    view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[codex, { ...claude, available: true }]} onClose={vi.fn()} onCreate={create} />);
     expect(screen.getByLabelText("Provider")).toHaveValue("codex");
-    expect(screen.getByRole("option", { name: "Claude Code · unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Claude Code" })).toBeInTheDocument();
 
     view.rerender(<NewSessionDialog repositories={[]} repositoryRoot="/projects" {...routeProps} providers={[{ ...codex, enabled: false }, { ...claude, available: true }]} onClose={vi.fn()} onCreate={create} />);
     expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
@@ -2252,22 +2283,22 @@ describe("NewSessionDialog", () => {
     expect(screen.getAllByText(/high risk/i).length).toBeGreaterThan(0);
   });
 
-  it("explains an unavailable Claude provider without exposing internals", () => {
+  it("shows an actionable state when neither enabled provider is usable", () => {
     render(<NewSessionDialog
       repositories={[]}
       repositoryRoot="/projects"
       {...routeProps}
       providers={[
-        { id: "codex", displayName: "Codex", available: true, capabilities: [], limitations: [] },
+        { id: "codex", displayName: "Codex", available: false, capabilities: [], limitations: [] },
         { id: "claude-code", displayName: "Claude Code", available: false, capabilities: [], limitations: [], unavailableReason: "node-missing" },
       ]}
       onClose={vi.fn()}
       onCreate={vi.fn()}
     />);
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "claude-code" } });
-    expect(screen.getByText("Claude Code is unavailable on this host.")).toBeInTheDocument();
-    expect(screen.getByText("Node.js 20 or newer is missing.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start Claude session" })).toBeDisabled();
+    expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+    expect(screen.getByText("No provider is available for tasks.")).toBeInTheDocument();
+    expect(screen.getByText(/Settings → Providers/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start in workspace" })).toBeDisabled();
   });
 });
 
@@ -2297,5 +2328,23 @@ describe("ProviderSettings", () => {
     />);
     expect(screen.getByRole("checkbox", { name: /Codex/ })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeEnabled();
+  });
+
+  it("keeps enabled unavailable providers visible with distinct configuration, installation, and runtime state", () => {
+    render(<ProviderSettings
+      providers={[{
+        id: "claude-code",
+        displayName: "Claude Code",
+        installed: false,
+        enabled: true,
+        available: false,
+        capabilities: [],
+        limitations: [],
+      }]}
+      onProviderEnabled={vi.fn()}
+    />);
+
+    expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeChecked();
+    expect(screen.getByText(/Enabled · Not installed · Unavailable/)).toBeInTheDocument();
   });
 });

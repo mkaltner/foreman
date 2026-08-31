@@ -337,7 +337,7 @@ internal fun restorableSessionSummary(
     sessions: List<SessionSummary>,
 ): SessionSummary? {
     val providerAvailable = providers.any {
-        it.id == target.provider && it.enabled && it.available
+        it.id == target.provider && providerUsableForTasks(it)
     }
     return sessions.firstOrNull { it.matches(target.provider, target.sessionId) }
         ?.takeIf { providerAvailable }
@@ -369,11 +369,22 @@ internal fun retainedSessionPreferenceIds(
     parseProviderSessionKey(key)?.first in nonAuthoritativeProviders
 }
 
+internal fun retainNonAuthoritativeProviderSessions(
+    previous: List<SessionSummary>,
+    incoming: List<SessionSummary>,
+    nonAuthoritativeProviders: Set<String>,
+): List<SessionSummary> {
+    val incomingKeys = incoming.mapTo(mutableSetOf()) { it.providerKey() }
+    return incoming + previous.filter { session ->
+        sessionProvider(session) in nonAuthoritativeProviders && incomingKeys.add(session.providerKey())
+    }
+}
+
 internal fun sessionProvidersWithoutAuthoritativeLists(
     providers: List<ProviderInfo>,
     failedProviders: Set<String>,
 ): Set<String> = failedProviders + providers
-    .filter { supportedProvider(it.id) && it.enabled && !it.available }
+    .filter { supportedProvider(it.id) && it.enabled && !providerUsableForTasks(it) }
     .map { it.id }
 
 internal fun shouldStopMonitoringForNotificationPermission(
@@ -1337,7 +1348,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 providerCatalogRevision += 1
                 val selected = state.value.selected?.takeIf { session ->
                     providers.any {
-                        it.id == sessionProvider(session) && it.enabled && it.available
+                        it.id == sessionProvider(session) && providerUsableForTasks(it)
                     }
                 }
                 val rememberedEnabled = providers.any {
@@ -1538,7 +1549,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         lastSearchRequestKey = requestKey
         val codexSearchAllowed = filters.provider.isBlank() || filters.provider == PROVIDER_CODEX
         val archivedSearchAllowed = filters.scope != SessionDiscoveryScope.Archived || state.value.providers.any {
-            it.id == PROVIDER_CODEX && it.enabled && it.available && "session.archived.list" in it.capabilities
+            it.id == PROVIDER_CODEX && providerUsableForTasks(it) && "session.archived.list" in it.capabilities
         }
         if (!state.value.connected || "search" !in state.value.capabilities || !codexSearchAllowed || !archivedSearchAllowed) {
             if (changed) state.update { it.copy(searchResults = emptyList(), searchLoading = false) }
@@ -1593,7 +1604,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             return
         }
         val candidates = current.providers.filter { provider ->
-            provider.enabled && provider.available &&
+            providerUsableForTasks(provider) &&
                 "session.archived.list" in provider.capabilities &&
                 (current.searchFilters.provider.isBlank() || current.searchFilters.provider == provider.id)
         }
@@ -2808,14 +2819,14 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                             .map { json.decodeFromJsonElement<ProviderInfo>(it) }
                     }.getOrElse { defaultProviders() }
                     val codexAvailable = providers.any {
-                        it.id == PROVIDER_CODEX && it.enabled && it.available
+                        it.id == PROVIDER_CODEX && providerUsableForTasks(it)
                     }
                     val codexSessions = if (codexAvailable) {
                         overviewClient.request("session.list").payload.getValue("sessions").jsonArray
                             .map { json.decodeFromJsonElement<SessionSummary>(it) }
                     } else emptyList()
                     val claudeSessions =
-                        if (providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }) {
+                        if (providers.any { it.id == PROVIDER_CLAUDE_CODE && providerUsableForTasks(it) }) {
                             runCatching {
                                 overviewClient.request(
                                     "provider.session.list",
@@ -2851,6 +2862,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         runtimeMode = codex?.get("mode")?.jsonPrimitive?.content,
                         runtimeConnected = codex?.get("connected")?.jsonPrimitive?.content == "true",
                         inputs = inputs,
+                        usableProviders = usableTaskProviders(providers).map { it.id },
                     ).copy(
                         claudeUnavailable = providers.any {
                             it.id == PROVIDER_CLAUDE_CODE && it.enabled && !it.available
@@ -2899,6 +2911,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runtimeMode = current.runtimeMode,
                 runtimeConnected = current.runtimeConnected,
                 inputs = current.inputs,
+                usableProviders = usableTaskProviders(current.providers).map { it.id },
             ).copy(
                 claudeUnavailable = current.providers.any {
                     it.id == PROVIDER_CLAUDE_CODE && it.enabled && !it.available
@@ -3184,6 +3197,30 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             .firstOrNull { it.matches(provider, id) }
         val archived = openingSummary?.archived == true ||
             state.value.searchFilters.scope == SessionDiscoveryScope.Archived
+        if (state.value.providerCatalogLoaded && !providerUsableForTasks(state.value.providers, provider)) {
+            if (openingSummary == null) {
+                showSessions()
+                state.update {
+                    it.copy(error = "${providerDisplayName(provider)} is unavailable, so this session cannot be loaded right now.")
+                }
+                return
+            }
+            restorationProvider = provider
+            restorationSessionId = id
+            preferences.setSelectedSession(provider, id)
+            state.update {
+                it.copy(
+                    screen = Screen.Detail,
+                    selected = openingSummary,
+                    loading = false,
+                    error = null,
+                    highlightedItemId = highlightedItemId,
+                    focusedApprovalId = focusedApprovalId,
+                )
+            }
+            synchronizeSessionPresence()
+            return
+        }
         restorationProvider = provider
         restorationSessionId = id
         preferences.setSelectedSession(provider, id)
@@ -3288,10 +3325,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val providers = client.request("provider.list").payload.getValue("providers").jsonArray
             .map { json.decodeFromJsonElement<ProviderInfo>(it) }
         val codexAvailable = providers.any {
-            it.id == PROVIDER_CODEX && it.enabled && it.available
+            it.id == PROVIDER_CODEX && providerUsableForTasks(it)
         }
         val claudeAvailable = providers.any {
-            it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available
+            it.id == PROVIDER_CLAUDE_CODE && providerUsableForTasks(it)
         }
         val snapshot =
             coroutineScope {
@@ -3335,7 +3372,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                         Result.success(emptyList())
                     }
                 val codexSessionsResult = codexSessionsRequest.await()
-                val sessions = codexSessionsResult.getOrDefault(emptyList()) +
+                val freshSessions = codexSessionsResult.getOrDefault(emptyList()) +
                     claudeSessionsResult.getOrDefault(emptyList())
                 val failedSessionProviders = buildSet {
                     if (codexAvailable && codexSessionsResult.isFailure) add(PROVIDER_CODEX)
@@ -3344,6 +3381,11 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 val nonAuthoritativeSessionProviders = sessionProvidersWithoutAuthoritativeLists(
                     providers,
                     failedSessionProviders,
+                )
+                val sessions = retainNonAuthoritativeProviderSessions(
+                    state.value.sessions,
+                    freshSessions,
+                    nonAuthoritativeSessionProviders,
                 )
                 val claudeModels =
                     if (claudeAvailable) {
@@ -3651,6 +3693,10 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun requestSessionAction(session: SessionSummary, action: SessionAction) {
+        if (!providerUsableForTasks(state.value.providers, sessionProvider(session))) {
+            state.update { it.copy(error = "${providerDisplayName(sessionProvider(session))} is unavailable for this action.") }
+            return
+        }
         if (!sessionActionSupported(session, state.value.capabilities, action)) {
             state.update { it.copy(error = "The connected Foreman server does not support this action.") }
             return
@@ -3695,6 +3741,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
             if (
                 current.pendingSessionAction != pending ||
                     !current.connected || pendingSession == null ||
+                    !providerUsableForTasks(current.providers, pending.provider) ||
                     !sessionActionSupported(
                         pendingSession,
                         current.capabilities,
@@ -3790,7 +3837,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         reasoningEffort: String?,
         accessLevel: String?,
     ) {
-        if (state.value.submitting) return
+        if (state.value.submitting || !providerUsableForTasks(state.value.providers, PROVIDER_CODEX)) return
         preferences.setLastProvider(PROVIDER_CODEX)
         preferences.setModelRoute(model, reasoningEffort)
         preferences.setAccessLevel(accessLevel)
@@ -3845,6 +3892,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         reasoningEffort: String?,
         permissionOrAccess: String?,
     ) {
+        if (!providerUsableForTasks(state.value.providers, provider)) return
         if (provider == PROVIDER_CODEX) {
             startSession(repositoryId, model, reasoningEffort, permissionOrAccess)
             return
@@ -3900,6 +3948,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
         val selected = current.selected ?: return
         if (selected.archived || selected.readOnly || current.submitting || (text.isBlank() && images.isEmpty())) return
         val provider = sessionProvider(selected)
+        if (!providerUsableForTasks(current.providers, provider)) return
         if (provider == PROVIDER_CLAUDE_CODE &&
             (images.isNotEmpty() || selected.status in setOf("working", "waiting"))
         ) return
@@ -4010,6 +4059,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun interrupt() {
         val selected = state.value.selected ?: return
+        if (!providerUsableForTasks(state.value.providers, sessionProvider(selected))) return
         if (selected.archived || selected.readOnly) return
         if (!providerInterruptEligible(selected)) return
         val turnId = selected.activeTurnId ?: return
@@ -4038,6 +4088,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun respondToApproval(approval: ApprovalRequest, decision: JsonObject) {
         val current = state.value
+        if (!providerUsableForTasks(current.providers, PROVIDER_CODEX)) return
         if (current.selected?.let { it.matches(PROVIDER_CODEX, approval.sessionId) && (it.archived || it.readOnly) } == true) return
         if (!current.connected || approval.id in current.submittingApprovalIds || approval.status != "pending") return
         state.update {
@@ -4118,6 +4169,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
 
     fun respondToInput(input: InputRequest, response: JsonObject) {
         val current = state.value
+        if (!providerUsableForTasks(current.providers, PROVIDER_CODEX)) return
         if (current.selected?.let { it.matches(PROVIDER_CODEX, input.sessionId) && (it.archived || it.readOnly) } == true) return
         if (!current.connected || input.id in current.submittingInputIds || input.status != "pending") return
         state.update {
@@ -4236,10 +4288,7 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 runCatching { json.decodeFromJsonElement<ProviderInfo>(it) }.getOrNull()
             } ?: return
             providerCatalogRevision += 1
-            val claudeAvailable =
-                providers.any { it.id == PROVIDER_CLAUDE_CODE && it.enabled && it.available }
             val enabledProviders = providers.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
-            val openableProviders = providers.filter { it.enabled && it.available }.mapTo(mutableSetOf()) { it.id }
             val previousProviders = state.value.providers.associateBy { it.id }
             val invalidatedProviders = providers.filter { provider ->
                 provider.enabled && (
@@ -4253,21 +4302,9 @@ internal class ForemanViewModel(application: Application) : AndroidViewModel(app
                 clearRememberedSession()
             }
             state.update { current ->
-                fun availability(session: SessionSummary): SessionSummary =
-                    if (sessionProvider(session) == PROVIDER_CLAUDE_CODE && !claudeAvailable &&
-                        session.status !in setOf("working", "waiting")
-                    ) session.copy(status = "unavailable") else session
-                val selected = current.selected?.takeIf {
-                    sessionProvider(it) in openableProviders
-                }?.let(::availability)
                 current.copy(
                     providers = providers,
                     providerCatalogLoaded = true,
-                    sessions = current.sessions.filter {
-                        sessionProvider(it) in openableProviders
-                    }.map(::availability),
-                    selected = selected,
-                    screen = if (current.selected != null && selected == null) Screen.Sessions else current.screen,
                 )
             }
             val current = state.value
@@ -5366,6 +5403,7 @@ private fun HostDashboardScreen(
     val pendingApprovals = state.approvals.filter { it.status == "pending" || it.status == "submitting" }
     val pendingInputs = state.inputs.filter { it.status == "pending" || it.status == "submitting" }
     val showProviderIdentity = shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)
+    val taskProviders = usableTaskProviders(state.providers)
     val dashboard =
         projectAndroidDashboard(
             state.sessions,
@@ -5428,7 +5466,7 @@ private fun HostDashboardScreen(
                                 OverviewMetric("Active", dashboard.active.size.toString(), Modifier.weight(1f))
                                 OverviewMetric("Waiting", dashboard.waitingCount.toString(), Modifier.weight(1f))
                             }
-                            val providerActivity = if (showProviderIdentity) state.providers.filter { it.enabled }.joinToString(" · ") { provider ->
+                            val providerActivity = if (showProviderIdentity) taskProviders.joinToString(" · ") { provider ->
                                 val label = provider.displayName.removeSuffix(" Code")
                                 "$label ${dashboard.active.count { sessionProvider(it) == provider.id }}"
                             } else ""
@@ -5483,7 +5521,7 @@ private fun HostDashboardScreen(
                                         approval != null -> "Waiting for approval"
                                         else -> dashboardSessionDetail(session)
                                     },
-                                showProviderIdentity = showProviderIdentity,
+                                showProviderIdentity = showProviderIdentity || !providerUsableForTasks(state.providers, sessionProvider(session)),
                                 onOpen = { viewModel.openSession(session.id, focusedApprovalId = requestId, provider = sessionProvider(session)) },
                             )
                         }
@@ -5497,7 +5535,7 @@ private fun HostDashboardScreen(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = liveActivityMessage(session) ?: liveActivityLabel(session),
-                                showProviderIdentity = showProviderIdentity,
+                                showProviderIdentity = showProviderIdentity || !providerUsableForTasks(state.providers, sessionProvider(session)),
                                 onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
@@ -5511,7 +5549,7 @@ private fun HostDashboardScreen(
                                 session = session,
                                 repositoryLabel = sessionRepositoryIdentity(session.repository, state.repositories, state.repositoryRoot).label,
                                 detail = session.failureSummary ?: session.activityText.ifBlank { session.activityLabel.ifBlank { "Turn finished" } },
-                                showProviderIdentity = showProviderIdentity,
+                                showProviderIdentity = showProviderIdentity || !providerUsableForTasks(state.providers, sessionProvider(session)),
                                 onOpen = { viewModel.openSession(session.id, provider = sessionProvider(session)) },
                             )
                         }
@@ -5524,8 +5562,8 @@ private fun HostDashboardScreen(
 
 @Composable
 private fun DashboardHealthCard(state: UiState) {
-    val enabledProviders = state.providers.filter { it.enabled }
-    val codexEnabled = enabledProviders.any { it.id == PROVIDER_CODEX }
+    val taskProviders = usableTaskProviders(state.providers)
+    val codexUsable = taskProviders.any { it.id == PROVIDER_CODEX }
     val runtime =
         when {
             !state.runtimeConnected -> "Runtime unavailable"
@@ -5547,13 +5585,19 @@ private fun DashboardHealthCard(state: UiState) {
                     fontWeight = FontWeight.Bold,
                 )
             }
-            if (codexEnabled) Text(runtime, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (codexUsable) Text(runtime, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state.providerCatalogLoaded && taskProviders.isEmpty()) {
+                Text(
+                    "No provider is available for tasks. Install or enable one in Settings → Providers.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Text(
                 "Foreman ${state.foremanVersion ?: "—"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            enabledProviders.forEach { provider ->
+            taskProviders.forEach { provider ->
                 val version = when (provider.id) {
                     PROVIDER_CODEX -> state.codexVersion ?: provider.version ?: provider.cliVersion
                     else -> provider.cliVersion ?: provider.version ?: provider.sdkVersion
@@ -5665,15 +5709,22 @@ private fun HostOverviewCard(
                 Text(snapshot?.connection ?: host.lastKnownStatus, color = if (live) LocalForemanColors.current.success else LocalForemanColors.current.warning, style = MaterialTheme.typography.labelMedium)
             }
             if (!live) Text("STALE · Last connected ${overviewAge(host.lastConnectedAt)} · checked ${overviewAge(snapshot?.observedAt)}", color = LocalForemanColors.current.warning, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-            Text("Foreman ${snapshot?.foremanVersion ?: "—"} · Codex ${snapshot?.codexVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
-            Text("${if (snapshot?.runtimeMode == "shared") "Shared Desktop" else if (snapshot?.runtimeMode == "fallback") "Foreman-managed runtime" else "Runtime unknown"}${if (snapshot != null && !snapshot.runtimeConnected) " · unavailable" else ""}", style = MaterialTheme.typography.bodySmall)
+            Text("Foreman ${snapshot?.foremanVersion ?: "—"}", style = MaterialTheme.typography.bodySmall)
             Text("${snapshot?.active ?: 0} active · ${snapshot?.waiting ?: 0} waiting · ${snapshot?.failed ?: 0} failed${if (!live) " (stale)" else ""}")
-            Text(
-                "Codex ${snapshot?.codexActive ?: 0} · Claude ${snapshot?.claudeActive ?: 0}" +
-                    if (snapshot?.claudeUnavailable == true) " · Claude unavailable" else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (snapshot != null && snapshot.usableProviders.size > 1) {
+                Text(
+                    snapshot.usableProviders.joinToString(" · ") { provider ->
+                        val active = when (provider) {
+                            PROVIDER_CODEX -> snapshot.codexActive
+                            PROVIDER_CLAUDE_CODE -> snapshot.claudeActive
+                            else -> 0
+                        }
+                        "${providerDisplayName(provider).removeSuffix(" Code")} $active"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text("Oldest ${overviewElapsed(snapshot?.oldestTurn?.timestamp)} · Latest activity ${overviewAge(snapshot?.latestActivity)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -5710,6 +5761,8 @@ private fun SessionsScreen(
         ?.let(state.collapsedRepositoriesByHost::get)
         .orEmpty()
     val showProviderIdentity = shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)
+    val taskProviders = usableTaskProviders(state.providers)
+    val usableProviderIds = taskProviders.mapTo(mutableSetOf()) { it.id }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5740,7 +5793,7 @@ private fun SessionsScreen(
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
-                    IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected && state.providerCatalogLoaded) {
+                    IconButton(onClick = { viewModel.setNewSession(true) }, enabled = state.connected && state.providerCatalogLoaded && taskProviders.isNotEmpty()) {
                         Icon(Icons.Default.Add, contentDescription = "New session")
                     }
                     UiSettingsMenu(state, viewModel, requestTurnMonitoring)
@@ -5836,6 +5889,18 @@ private fun SessionsScreen(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        if (state.providerCatalogLoaded && taskProviders.isEmpty()) item {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text(
+                                    "No provider is available for tasks. Install Codex or Claude Code on this host, or enable an installed provider in Settings → Providers.",
+                                    modifier = Modifier.padding(14.dp),
+                                )
+                            }
+                        }
                         if (state.searchError != null || state.archivedError != null) item { ErrorText(state.searchError ?: state.archivedError, Modifier.fillMaxWidth()) }
                         if (visible.isEmpty() && !state.searchLoading && !state.archivedLoading) item {
                             Column(
@@ -5860,6 +5925,7 @@ private fun SessionsScreen(
                                     state.capabilities,
                                     state.repositories,
                                     state.repositoryRoot,
+                                    usableProviderIds,
                                     showProviderIdentity,
                                 )
                             }
@@ -5870,7 +5936,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
+                                state.capabilities, state.repositories, state.repositoryRoot, usableProviderIds, showProviderIdentity,
                             )
                             sessionSection(
                                 "Waiting", waiting,
@@ -5878,7 +5944,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
+                                state.capabilities, state.repositories, state.repositoryRoot, usableProviderIds, showProviderIdentity,
                             )
                             sessionSection(
                                 "Active", active,
@@ -5886,7 +5952,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
+                                state.capabilities, state.repositories, state.repositoryRoot, usableProviderIds, showProviderIdentity,
                             )
                             sessionSection(
                                 "Recent", recent,
@@ -5894,7 +5960,7 @@ private fun SessionsScreen(
                                 viewModel::requestSessionAction,
                                 { provider, id -> viewModel.togglePinnedSession(id, provider) },
                                 { provider, id -> viewModel.toggleHiddenSession(id, provider) },
-                                state.capabilities, state.repositories, state.repositoryRoot, showProviderIdentity,
+                                state.capabilities, state.repositories, state.repositoryRoot, usableProviderIds, showProviderIdentity,
                             )
                         }
                     }
@@ -5943,9 +6009,7 @@ private fun AccountUsageDock(
     providers: List<ProviderInfo>,
     providerCatalogLoaded: Boolean,
 ) {
-    val visible = providers.filter { it.enabled }.mapNotNull { provider ->
-        usage.providers[provider.id]?.let { provider to it }
-    }
+    val visible = taskProviderAccountUsage(providers, usage)
     if (visible.isEmpty()) return
     val showProviderIdentity = shouldShowProviderIdentity(providers, providerCatalogLoaded)
     var open by remember { mutableStateOf(false) }
@@ -6192,6 +6256,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    usableProviderIds: Set<String>,
     showProviderIdentity: Boolean,
 ) {
     item(key = "repository:${group.repository.id}") {
@@ -6247,6 +6312,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.repositorySessionSect
             capabilities,
             repositories,
             repositoryRoot,
+            usableProviderIds,
             showProviderIdentity,
             renderContext = SessionCardRenderContext(
                 groupSessionsByRepository = true,
@@ -6266,6 +6332,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    usableProviderIds: Set<String>,
     showProviderIdentity: Boolean,
 ) {
     if (sessions.isEmpty()) return
@@ -6278,7 +6345,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionSection(
             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
     }
-    sessionCards(sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot, showProviderIdentity)
+    sessionCards(sessions, open, action, pin, hide, capabilities, repositories, repositoryRoot, usableProviderIds, showProviderIdentity)
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
@@ -6290,6 +6357,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
     capabilities: Set<String>,
     repositories: List<RepositoryInfo>,
     repositoryRoot: String,
+    usableProviderIds: Set<String>,
     showProviderIdentity: Boolean,
     renderContext: SessionCardRenderContext = SessionCardRenderContext(),
 ) {
@@ -6312,6 +6380,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionCards(
             onPin = { pin(provider, session.id) },
             onHide = { hide(provider, session.id) },
             capabilities = capabilities,
+            providerUsable = provider in usableProviderIds,
             showProviderIdentity = showProviderIdentity,
         )
     }
@@ -6329,6 +6398,7 @@ private fun SessionCard(
     onPin: () -> Unit,
     onHide: () -> Unit,
     capabilities: Set<String>,
+    providerUsable: Boolean,
     showProviderIdentity: Boolean,
 ) {
     Card(
@@ -6351,11 +6421,11 @@ private fun SessionCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (showProviderIdentity) {
+                if (showProviderIdentity || !providerUsable) {
                     ProviderBadge(sessionProvider(session))
                     Spacer(Modifier.width(6.dp))
                 }
-                StatusPill(if (session.archived) "Archived" else sessionDisplayStatus(session))
+                StatusPill(if (!providerUsable) "Provider unavailable" else if (session.archived) "Archived" else sessionDisplayStatus(session))
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onPin, modifier = Modifier.size(36.dp)) {
                     Icon(
@@ -6367,7 +6437,7 @@ private fun SessionCard(
                 IconButton(onClick = onHide, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.VisibilityOff, contentDescription = if (hidden) "Restore session" else "Hide session")
                 }
-                SessionActionsMenu(
+                if (providerUsable) SessionActionsMenu(
                     enabled = sessionCanBeManaged(session.status),
                     archiveSupported = sessionActionSupported(session, capabilities, SessionAction.Archive),
                     restoreSupported = sessionActionSupported(session, capabilities, SessionAction.Restore),
@@ -6427,7 +6497,7 @@ private fun SessionFilterDialog(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                val availableProviders = providers.filter { it.enabled && it.available }
+                val availableProviders = providers.filter(::providerUsableForTasks)
                 val archivedProviders = availableProviders.filter { "session.archived.list" in it.capabilities }
                 SessionFilterMenu(
                     label = "Sessions",
@@ -6438,15 +6508,15 @@ private fun SessionFilterDialog(
                 )
                 if (archivedProviders.isEmpty()) {
                     Text(
-                        "Archived discovery is unavailable because no enabled provider advertises support.",
+                        "Archived discovery is unavailable because no usable provider advertises support.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 SessionFilterMenu(
                     label = "Provider",
-                    selected = availableProviders.firstOrNull { it.id == filters.provider }?.displayName ?: "All enabled providers",
-                    options = listOf("" to "All enabled providers") + availableProviders.map { it.id to it.displayName },
+                    selected = availableProviders.firstOrNull { it.id == filters.provider }?.displayName ?: "All available providers",
+                    options = listOf("" to "All available providers") + availableProviders.map { it.id to it.displayName },
                     onSelect = { onChange(filters.copy(provider = it)) },
                 )
                 if (filters.scope == SessionDiscoveryScope.Archived && filters.provider.isNotBlank() && archivedProviders.none { it.id == filters.provider }) {
@@ -6564,6 +6634,7 @@ private fun SessionDetailScreen(
     val selected = state.selected
     val readOnly = selected?.archived == true || selected?.readOnly == true
     val selectedProvider = selected?.let(::sessionProvider) ?: PROVIDER_CODEX
+    val selectedProviderUsable = providerUsableForTasks(state.providers, selectedProvider)
     val selectedApprovals = state.approvals.filter {
         !readOnly && selectedProvider == PROVIDER_CODEX && it.sessionId == selected?.id
     }
@@ -6674,9 +6745,9 @@ private fun SessionDetailScreen(
                         viewModel = viewModel,
                         requestTurnMonitoring = requestTurnMonitoring,
                         session = selected,
-                        onSessionAction = { action ->
-                            selected?.let { viewModel.requestSessionAction(it, action) }
-                        },
+                        onSessionAction = if (selectedProviderUsable) {
+                            { action -> selected?.let { viewModel.requestSessionAction(it, action) } }
+                        } else null,
                     )
                 },
                 colors =
@@ -6687,7 +6758,7 @@ private fun SessionDetailScreen(
             )
         },
         bottomBar = {
-            if (selected != null && !readOnly) PromptBox(
+            if (selected != null && !readOnly && selectedProviderUsable) PromptBox(
                 text = state.activeHostId?.let {
                     composerDraft(state.composerDrafts, it, selected.id, selectedProvider)
                 }.orEmpty(),
@@ -6757,7 +6828,7 @@ private fun SessionDetailScreen(
                                 ) {
                                     Text("Archived · Read only", fontWeight = FontWeight.Bold)
                                     Text("This transcript is being viewed without resuming or changing the Codex thread.")
-                                    if (selected.capabilities.contains("session.restore")) {
+                                    if (selectedProviderUsable && selected.capabilities.contains("session.restore")) {
                                         Button(
                                             onClick = { viewModel.requestSessionAction(selected, SessionAction.Restore) },
                                             enabled = state.connected && !state.submitting,
@@ -6777,9 +6848,16 @@ private fun SessionDetailScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                 )
-                                if (shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded)) {
+                                if (shouldShowProviderIdentity(state.providers, state.providerCatalogLoaded) || !selectedProviderUsable) {
                                     ProviderBadge(selectedProvider)
                                 }
+                            }
+                            if (!selectedProviderUsable) {
+                                Text(
+                                    "${providerDisplayName(selectedProvider)} is unavailable on this host. This session remains visible, but provider-backed actions are unavailable until the provider runtime returns.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                             }
                             if (selectedProvider == PROVIDER_CLAUDE_CODE && selected.source == "external") {
                                 Text(
@@ -6811,7 +6889,7 @@ private fun SessionDetailScreen(
                                 selectedApprovals.filter { !readOnly && it.itemId == item.id }.forEach { approval ->
                                     ApprovalCard(
                                         approval = approval,
-                                        connected = state.connected,
+                                        connected = state.connected && selectedProviderUsable,
                                         submitting = approval.id in state.submittingApprovalIds,
                                         error = state.approvalErrors[approval.id],
                                         onRespond = { viewModel.respondToApproval(approval, it) },
@@ -6820,7 +6898,7 @@ private fun SessionDetailScreen(
                                 selectedInputs.filter { !readOnly && it.itemId == item.id }.forEach { input ->
                                     InputRequestCard(
                                         input = input,
-                                        connected = state.connected,
+                                        connected = state.connected && selectedProviderUsable,
                                         submitting = input.id in state.submittingInputIds,
                                         error = state.inputErrors[input.id],
                                         onRespond = { viewModel.respondToInput(input, it) },
@@ -6835,7 +6913,7 @@ private fun SessionDetailScreen(
                     ) { approval ->
                         ApprovalCard(
                             approval = approval,
-                            connected = state.connected,
+                            connected = state.connected && selectedProviderUsable,
                             submitting = approval.id in state.submittingApprovalIds,
                             error = state.approvalErrors[approval.id],
                             onRespond = { viewModel.respondToApproval(approval, it) },
@@ -6847,7 +6925,7 @@ private fun SessionDetailScreen(
                     ) { input ->
                         InputRequestCard(
                             input = input,
-                            connected = state.connected,
+                            connected = state.connected && selectedProviderUsable,
                             submitting = input.id in state.submittingInputIds,
                             error = state.inputErrors[input.id],
                             onRespond = { viewModel.respondToInput(input, it) },
@@ -7899,7 +7977,7 @@ private fun UiSettingsMenu(
                 )
                 HorizontalDivider()
                 Text(
-                    "Choose which installed CLIs Foreman uses on this host. At least one available provider must remain enabled.",
+                    "Configure supported provider CLIs on this host. At least one available provider must remain enabled.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(320.dp).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -7911,12 +7989,8 @@ private fun UiSettingsMenu(
                             Column {
                                 Text(provider.displayName)
                                 Text(
-                                    when {
-                                        !provider.enabled && provider.installed == false -> "Not installed"
-                                        !provider.enabled -> "Disabled"
-                                        provider.available -> "Available"
-                                        else -> "Unavailable"
-                                    } + if (requiredEnabled) " · at least one available provider required" else "",
+                                    providerConfigurationStatus(provider) +
+                                        if (requiredEnabled) " · at least one available provider required" else "",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -9085,12 +9159,12 @@ private fun NewSessionDialog(
     onDismiss: () -> Unit,
     onStart: (String, String, String, String?, String?, String?) -> Unit,
 ) {
-    val enabledProviders = providers.filter { it.enabled }
+    val taskProviders = usableTaskProviders(providers)
     var repositoryId by remember(repositories) { mutableStateOf(".") }
-    var providerChoice by remember(enabledProviders, initialProvider) {
+    var providerChoice by remember(taskProviders, initialProvider) {
         mutableStateOf(
-            enabledProviders.firstOrNull { it.id == initialProvider }?.id
-                ?: enabledProviders.firstOrNull()?.id ?: PROVIDER_CODEX,
+            taskProviders.firstOrNull { it.id == initialProvider }?.id
+                ?: taskProviders.firstOrNull()?.id ?: PROVIDER_CODEX,
         )
     }
     val provider = newSessionProviderSelection(providers, providerCatalogLoaded, providerChoice)
@@ -9119,42 +9193,27 @@ private fun NewSessionDialog(
     }
     var pendingHighRiskMode by remember { mutableStateOf<String?>(null) }
     val rootRepository = repositories.firstOrNull { it.id == "." }
-    val providerInfo = enabledProviders.firstOrNull { it.id == provider }
-    val providerUnavailable = providerInfo?.available != true
+    val providerInfo = taskProviders.firstOrNull { it.id == provider }
+    val providerUnavailable = providerInfo == null
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New session") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (providerCatalogLoaded && enabledProviders.size > 1) {
+                if (providerCatalogLoaded && taskProviders.size > 1) {
                     NewSessionOptionMenu(
                         "Provider",
                         providerInfo?.displayName ?: providerDisplayName(provider),
-                        enabledProviders.map { it.id to (it.displayName + if (it.available) "" else " · unavailable") },
+                        taskProviders.map { it.id to it.displayName },
                     ) { providerChoice = it }
                 }
                 if (!providerCatalogLoaded) {
                     Text("Loading enabled providers…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else if (enabledProviders.isEmpty()) {
-                    Text("No enabled provider is available. Enable one in provider settings.", color = MaterialTheme.colorScheme.error)
-                } else if (providerUnavailable) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(
-                                "${providerDisplayName(provider)} is unavailable",
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                            Text(
-                                providerUnavailableDescription(providerInfo?.unavailableReason),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                        }
-                    }
+                } else if (taskProviders.isEmpty()) {
+                    Text(
+                        "No provider is available for tasks. Install Codex or Claude Code on this host, or enable an installed provider in Settings → Providers.",
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 if (repositories.isEmpty()) {
                     Surface(shape = RoundedCornerShape(10.dp), tonalElevation = 2.dp) {
@@ -9263,7 +9322,7 @@ private fun NewSessionDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (provider == PROVIDER_CODEX && accessLevels.isNotEmpty()) {
+                if (!providerUnavailable && provider == PROVIDER_CODEX && accessLevels.isNotEmpty()) {
                     val selectedAccess = accessLevels.firstOrNull { it.id == accessLevel }
                     NewSessionOptionMenu("Access", selectedAccess?.displayName ?: "Default access", accessLevels.map { it.id to it.displayName }) { accessLevel = it }
                     if (accessLevel == "full") {
@@ -9274,13 +9333,13 @@ private fun NewSessionDialog(
                         )
                     }
                 }
-                if (provider == PROVIDER_CODEX && models.isNotEmpty()) {
+                if (!providerUnavailable && provider == PROVIDER_CODEX && models.isNotEmpty()) {
                     NewSessionOptionMenu("Model", selectedModel?.displayName ?: "Default model", models.map { it.id to it.displayName }) { selected ->
                         modelId = selected
                         effort = models.firstOrNull { it.id == selected }?.let { compatibleEffort(it, null) }
                     }
                 }
-                if (provider == PROVIDER_CODEX && !selectedModel?.reasoningEfforts.isNullOrEmpty()) {
+                if (!providerUnavailable && provider == PROVIDER_CODEX && !selectedModel?.reasoningEfforts.isNullOrEmpty()) {
                     NewSessionOptionMenu("Reasoning", effort?.replaceFirstChar { it.uppercase() } ?: "Default", selectedModel.reasoningEfforts.map { it to it.replaceFirstChar { character -> character.uppercase() } }) { effort = it }
                 }
             }

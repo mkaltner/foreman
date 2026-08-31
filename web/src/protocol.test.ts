@@ -9,8 +9,9 @@ import {
   reconcileSessionSummaries,
   reconcileSessionSettings,
   routeForSession,
+  providerUsableForTasks,
   shouldShowProviderIdentity,
-  soleEnabledProvider,
+  soleUsableTaskProvider,
   providerCatalogResponseIsCurrent,
   type AccessLevelInfo,
   type ModelInfo,
@@ -26,16 +27,21 @@ const session: SessionSummary = {
 };
 
 describe("session mapping and live events", () => {
-  it("simplifies provider UI only for one enabled provider in a loaded catalog", () => {
+  it("derives task usability from both configuration and runtime availability", () => {
     const codex = { id: "codex" as const, displayName: "Codex", enabled: true, available: true, capabilities: [], limitations: [] };
     const unavailableClaude = { id: "claude-code" as const, displayName: "Claude Code", enabled: true, available: false, capabilities: [], limitations: [] };
 
-    expect(soleEnabledProvider([codex], false)).toBeNull();
-    expect(soleEnabledProvider([], true)).toBeNull();
-    expect(soleEnabledProvider([codex], true)?.id).toBe("codex");
+    expect(providerUsableForTasks(codex)).toBe(true);
+    expect(providerUsableForTasks(unavailableClaude)).toBe(false);
+    expect(providerUsableForTasks({ ...codex, enabled: false })).toBe(false);
+    expect(soleUsableTaskProvider([codex], false)).toBeNull();
+    expect(soleUsableTaskProvider([], true)).toBeNull();
+    expect(soleUsableTaskProvider([codex], true)?.id).toBe("codex");
     expect(shouldShowProviderIdentity([codex], true)).toBe(false);
-    expect(shouldShowProviderIdentity([codex, unavailableClaude], true)).toBe(true);
-    expect(soleEnabledProvider([codex, { ...unavailableClaude, enabled: false }], true)?.id).toBe("codex");
+    expect(shouldShowProviderIdentity([codex, unavailableClaude], true)).toBe(false);
+    expect(soleUsableTaskProvider([codex, { ...unavailableClaude, available: true }], true)).toBeNull();
+    expect(shouldShowProviderIdentity([codex, { ...unavailableClaude, available: true }], true)).toBe(true);
+    expect(soleUsableTaskProvider([{ ...codex, available: false }, unavailableClaude], true)).toBeNull();
   });
 
   it("rejects stale and cross-host provider catalogs", () => {
