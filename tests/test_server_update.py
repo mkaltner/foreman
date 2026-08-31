@@ -34,6 +34,7 @@ from server_update import (  # noqa: E402
     verify_certificate_and_signature,
 )
 from foreman_updater import prepare_runtime  # noqa: E402
+from state import State  # noqa: E402
 
 
 TAG = "v1.0.3"
@@ -422,6 +423,40 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--property=RestartSec=1s", arguments)
         self.assertIn("--property=RestartPreventExitStatus=1 2 3 4", arguments)
 
+    async def test_final_safety_check_linearizes_with_new_work(self) -> None:
+        activation_lock = asyncio.Lock()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        checks = 0
+
+        async def safety():
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                entered.set()
+                await release.wait()
+            return []
+
+        manager = self.manager()
+        manager.activation_lock = activation_lock
+        manager.safety_check = safety
+        started = await manager.start("safety-linearization")
+        await entered.wait()
+        observed: list[str] = []
+
+        async def begin_work() -> None:
+            async with activation_lock:
+                operation = manager.store.read(started["id"])
+                observed.append(operation["phase"])
+
+        work = asyncio.create_task(begin_work())
+        await asyncio.sleep(0)
+        self.assertFalse(work.done())
+        release.set()
+        await manager.task
+        await work
+        self.assertEqual(observed, ["activationScheduled"])
+
 
 def make_archive_with_payload(directory: Path, payload: Path) -> bytes:
     archive = directory / "release-final.tar.gz"
@@ -525,6 +560,57 @@ class HelperTests(unittest.TestCase):
             self.assertEqual(store.read(operation_id)["resultCode"], "authorizationRevoked")
             self.assertEqual((paths["install"] / "payload").read_text(), "old")
             systemctl.assert_not_called()
+
+    def test_revocation_linearizes_after_first_activation_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, operation_id, paths = self.prepare(root)
+            state = State(root / "state")
+            state.path.write_text(
+                '{"devices":[{"id":"fmc_authorized","access":"full","digest":"unused"}]}\n',
+                encoding="utf-8",
+            )
+            store.transition(
+                operation_id, "activationScheduled",
+                authorizationPrincipal="device:fmc_authorized",
+            )
+            original_replace = os.replace
+            revocation_started = threading.Event()
+            revocation_finished = threading.Event()
+            blocked_at_rename: list[bool] = []
+            revocation: threading.Thread | None = None
+
+            def replace(source, destination):
+                nonlocal revocation
+                if Path(source) == paths["install"]:
+                    def revoke() -> None:
+                        revocation_started.set()
+                        state.revoke_device("fmc_authorized")
+                        revocation_finished.set()
+
+                    revocation = threading.Thread(target=revoke)
+                    revocation.start()
+                    self.assertTrue(revocation_started.wait(1))
+                    revocation.join(0.2)
+                    blocked_at_rename.append(revocation.is_alive())
+                return original_replace(source, destination)
+
+            with (
+                patch("server_update.os.replace", side_effect=replace),
+                patch("server_update._systemctl"),
+                patch("server_update._health", return_value=True),
+            ):
+                result = run_external_helper(
+                    operation_id=operation_id, state_directory=root / "state",
+                    install_directory=paths["install"], launcher_file=paths["launcher"],
+                    unit_file=paths["unit"], helper_file=paths["helper"], health_port=9999,
+                )
+            assert revocation is not None
+            revocation.join(1)
+            self.assertEqual(result, 0)
+            self.assertEqual(blocked_at_rename, [True])
+            self.assertTrue(revocation_finished.is_set())
+            self.assertEqual(state.list_devices(), [])
 
     def test_helper_runtime_survives_install_directory_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

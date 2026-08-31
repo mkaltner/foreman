@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import hmac
@@ -11,7 +12,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 ACTIVITY_SOURCES = {"provider", "live"}
@@ -653,6 +654,32 @@ class State:
             return [self._public_device(item) for item in devices]
 
         return self._locked(update)
+
+    @contextmanager
+    def full_access_guard(self, device_id: str) -> Iterator[bool]:
+        """Linearize a full-access decision with device revocation."""
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            os.chmod(self.lock_path, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data: dict[str, Any] = {"pairings": [], "devices": []}
+            if self.path.exists():
+                try:
+                    loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data.update(loaded)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            yield any(
+                item.get("id") == device_id
+                and (
+                    item.get("access")
+                    if item.get("access") in ("full", "read")
+                    else "full"
+                ) == "full"
+                for item in data.get("devices", [])
+                if isinstance(item, dict)
+            )
 
     def revoke_device(self, device_id: str) -> bool:
         def update(data: dict[str, Any]) -> bool:

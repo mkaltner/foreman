@@ -99,11 +99,14 @@ command, path, or prompt content.
 Safety is checked before accepting the operation and immediately before the
 external helper is scheduled. Remote initiation authorization is checked at
 that server boundary and once more by the helper, from durable paired-device
-state, immediately before the first replacement rename. A blocker at either
-safety boundary refuses or ends the operation as `blocked`; revoked
-authorization fails without activation. Foreman never interrupts work to make
-an update proceed. Runtime continuity is not claimed: all sessions must be
-inactive.
+state, immediately before the first replacement rename. The final server safety
+check and the transition to `activationScheduled` share an in-process gate with
+all operations that can start a Codex or Claude turn. Once activation is
+scheduled, those operations fail with `updateActivating`; consequently a turn
+cannot begin in the safety-check-to-helper window. A blocker at either safety
+boundary refuses or ends the operation as `blocked`; revoked authorization
+fails without activation. Foreman never interrupts work to make an update
+proceed. Runtime continuity is not claimed: all sessions must be inactive.
 
 ## Staging, activation, and restart ownership
 
@@ -123,6 +126,10 @@ operation directory. The transient unit restarts after an unexpected process
 failure, imports that retained runtime even when the installation directory is
 between atomic renames, and treats any durable in-activation phase as a request
 to roll back instead of trying to continue an ambiguous activation.
+For a remote initiator, the helper holds the same paired-device state lock used
+by revocation from its final full-access decision through the first activation
+rename. Authorization and revocation therefore have one observable ordering:
+a completed revocation always prevents an activation that has not yet begun.
 
 Activation replaces the application directory, launcher, unit, and helper at
 their existing transactional boundaries. Configuration and durable state are

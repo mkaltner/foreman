@@ -51,7 +51,13 @@ from protocol import (
     response,
 )
 from release_updates import ReleaseUpdateCache
-from server_update import ServerUpdateManager, UpdateFailure, properties, public_operation
+from server_update import (
+    ACTIVATION_PHASES,
+    ServerUpdateManager,
+    UpdateFailure,
+    properties,
+    public_operation,
+)
 from state import State
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.datastructures import Headers
@@ -317,6 +323,7 @@ class Foreman:
         self.known_pairing_count = 0
         self.stopping = False
         self.release_updates = release_updates or ReleaseUpdateCache(self.state.directory)
+        self.update_activation_lock = asyncio.Lock()
         install_directory = Path(__file__).resolve().parent
         metadata_path = install_directory / "release.properties"
         if not metadata_path.is_file():
@@ -338,6 +345,7 @@ class Foreman:
             safety_check=self.update_blockers,
             authorization_check=self.update_authorized,
             event_callback=self.broadcast_update,
+            activation_lock=self.update_activation_lock,
             health_port=self.web_port or 8766,
         )
         self.claude = (
@@ -2203,6 +2211,14 @@ class Foreman:
             if count
         ]
 
+    def require_update_not_activating(self) -> None:
+        operation = self.update_manager.status().get("operation")
+        if isinstance(operation, dict) and operation.get("phase") in ACTIVATION_PHASES:
+            raise UpdateFailure(
+                "updateActivating",
+                "Foreman is activating an update; wait for reconnection before starting new work.",
+            )
+
     async def update_authorized(self, principal: str) -> bool:
         if not principal.startswith("device:"):
             return False
@@ -2988,40 +3004,42 @@ class Foreman:
                 if message_type != "provider.session.start"
                 else None
             )
-            if message_type == "provider.session.start":
-                route = self.claude_route(payload)
-                model = route["model"]
-                permission_mode = route["permissionMode"]
-                result = await self.claude.start_session(
-                    cwd, text, model, permission_mode
-                )
-                session_id = result["sessionId"]
-                run_id = result.get("runId")
-                overlay = self.remember_claude_query_started(
-                    session_id, cwd, text, model, permission_mode, run_id
-                )
-            else:
-                assert session_id is not None
-                async with self.thread_lock(
-                    self.provider_subscription(provider, session_id)
-                ):
-                    projected = await self.read_claude_session(
-                        session_id, repository_id
-                    )
-                    self.require_configurable_projection(projected)
-                    # Reading first reconciles any adapter-discovered route into
-                    # the durable overlay before omitted values are resolved.
-                    route = self.claude_route(payload, session_id)
+            async with self.update_activation_lock:
+                self.require_update_not_activating()
+                if message_type == "provider.session.start":
+                    route = self.claude_route(payload)
                     model = route["model"]
                     permission_mode = route["permissionMode"]
-                    result = await self.claude.resume_session(
-                        session_id, cwd, text, model, permission_mode
+                    result = await self.claude.start_session(
+                        cwd, text, model, permission_mode
                     )
                     session_id = result["sessionId"]
                     run_id = result.get("runId")
                     overlay = self.remember_claude_query_started(
                         session_id, cwd, text, model, permission_mode, run_id
                     )
+                else:
+                    assert session_id is not None
+                    async with self.thread_lock(
+                        self.provider_subscription(provider, session_id)
+                    ):
+                        projected = await self.read_claude_session(
+                            session_id, repository_id
+                        )
+                        self.require_configurable_projection(projected)
+                        # Reading first reconciles any adapter-discovered route
+                        # before omitted values are resolved.
+                        route = self.claude_route(payload, session_id)
+                        model = route["model"]
+                        permission_mode = route["permissionMode"]
+                        result = await self.claude.resume_session(
+                            session_id, cwd, text, model, permission_mode
+                        )
+                        session_id = result["sessionId"]
+                        run_id = result.get("runId")
+                        overlay = self.remember_claude_query_started(
+                            session_id, cwd, text, model, permission_mode, run_id
+                        )
             client.subscriptions.add(
                 self.provider_subscription("claude-code", session_id)
             )
@@ -3368,52 +3386,54 @@ class Foreman:
             text = message_text(payload, images)
             requested_model, requested_effort = await self.route(payload)
             requested_access_level = await self.access_level(payload)
-            async with self.thread_lock(thread_id):
-                await self.require_configurable_codex_session(thread_id)
-                known = self.session_overlays.get(thread_id, {})
-                model_id = (
-                    known.get("model")
-                    if isinstance(known.get("model"), str)
-                    else requested_model
-                )
-                effort = (
-                    known.get("reasoningEffort")
-                    if isinstance(known.get("reasoningEffort"), str)
-                    else requested_effort
-                )
-                selected_access_level = (
-                    known.get("accessLevel")
-                    if isinstance(known.get("accessLevel"), str)
-                    else requested_access_level
-                )
-                result = await self.codex.prompt(
-                    thread_id,
-                    text,
-                    images,
-                    model_id,
-                    effort,
-                    selected_access_level,
-                )
-                self.session_overlays.setdefault(thread_id, {}).update(
-                    {
-                        "status": "working",
-                        "activeTurnId": result["turn"]["id"],
-                        "attention": False,
-                    }
-                )
-                if any(
-                    isinstance(value, str) and value
-                    for value in (model_id, effort, selected_access_level)
-                ):
-                    self.remember_session_settings(
-                        "codex",
+            async with self.update_activation_lock:
+                self.require_update_not_activating()
+                async with self.thread_lock(thread_id):
+                    await self.require_configurable_codex_session(thread_id)
+                    known = self.session_overlays.get(thread_id, {})
+                    model_id = (
+                        known.get("model")
+                        if isinstance(known.get("model"), str)
+                        else requested_model
+                    )
+                    effort = (
+                        known.get("reasoningEffort")
+                        if isinstance(known.get("reasoningEffort"), str)
+                        else requested_effort
+                    )
+                    selected_access_level = (
+                        known.get("accessLevel")
+                        if isinstance(known.get("accessLevel"), str)
+                        else requested_access_level
+                    )
+                    result = await self.codex.prompt(
                         thread_id,
+                        text,
+                        images,
+                        model_id,
+                        effort,
+                        selected_access_level,
+                    )
+                    self.session_overlays.setdefault(thread_id, {}).update(
                         {
-                            "model": model_id,
-                            "reasoningEffort": effort,
-                            "accessLevel": selected_access_level,
+                            "status": "working",
+                            "activeTurnId": result["turn"]["id"],
+                            "attention": False,
                         },
                     )
+                    if any(
+                        isinstance(value, str) and value
+                        for value in (model_id, effort, selected_access_level)
+                    ):
+                        self.remember_session_settings(
+                            "codex",
+                            thread_id,
+                            {
+                                "model": model_id,
+                                "reasoningEffort": effort,
+                                "accessLevel": selected_access_level,
+                            },
+                        )
             client.subscriptions.add(thread_id)
             return {"accepted": True, "turnId": result["turn"]["id"]}
         if message_type == "turn.steer":

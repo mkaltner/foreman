@@ -919,6 +919,43 @@ class SessionPresenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ClaudeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_activation_rejects_new_claude_turns(self) -> None:
+        class ActivatingUpdateManager:
+            def status(self, operation_id=None):
+                return {
+                    "operation": {
+                        "id": "fmu_1234567890abcdef",
+                        "phase": "activationScheduled",
+                    }
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FakeClaude.instances.clear()
+            app = Foreman(
+                "127.0.0.1",
+                0,
+                root,
+                State(root / "state"),
+                "fake-codex",
+                codex_factory=FakeCodex,
+                claude_factory=FakeClaude,
+            )
+            app.update_manager = ActivatingUpdateManager()  # type: ignore[assignment]
+            with self.assertRaisesRegex(RuntimeError, "wait for reconnection"):
+                await app.dispatch(
+                    Client(None, "remote", authenticated=True),
+                    {
+                        "type": "provider.session.start",
+                        "payload": {
+                            "provider": "claude-code",
+                            "repositoryId": ".",
+                            "text": "must not start",
+                        },
+                    },
+                )
+            self.assertEqual(FakeClaude.instances[-1].starts, [])
+
     async def test_codex_provider_subscription_delivers_live_conversation_events(
         self,
     ) -> None:
@@ -1807,6 +1844,29 @@ class HostOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("approval-secret", serialized)
         self.assertNotIn("input-secret", serialized)
         self.assertNotIn("do not expose", serialized)
+
+    async def test_update_activation_rejects_new_turns(self) -> None:
+        class ActivatingUpdateManager:
+            def status(self, operation_id=None):
+                return {
+                    "operation": {
+                        "id": "fmu_1234567890abcdef",
+                        "phase": "activationScheduled",
+                    }
+                }
+
+        self.app.update_manager = ActivatingUpdateManager()  # type: ignore[assignment]
+        client = Client(None, "remote", authenticated=True)
+        with self.assertRaisesRegex(RuntimeError, "wait for reconnection"):
+            await self.app.dispatch(
+                client,
+                {
+                    "version": 1,
+                    "type": "turn.prompt",
+                    "payload": {"sessionId": "thread-1", "text": "must not start"},
+                },
+            )
+        self.assertEqual(self.app.codex.prompts, [])
 
     async def test_reconnect_reconciliation_preserves_authoritative_recency(self) -> None:
         await self.app.codex_event(

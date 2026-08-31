@@ -476,6 +476,7 @@ class ServerUpdateManager:
         fetcher: Any | None = None,
         helper_runner: Callable[[str], Awaitable[int]] | None = None,
         event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        activation_lock: asyncio.Lock | None = None,
         health_port: int = 8766,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -495,6 +496,7 @@ class ServerUpdateManager:
         self.external_helper_required = helper_runner is None
         self.helper_runner = helper_runner or self._systemd_run_helper
         self.event_callback = event_callback
+        self.activation_lock = activation_lock or asyncio.Lock()
         self.health_port = health_port
         self.clock = clock
         self.task: asyncio.Task[None] | None = None
@@ -663,7 +665,12 @@ class ServerUpdateManager:
 
             # The filesystem lock is intentionally acquired only for the final
             # coordination boundary; downloads and staging never block recovery.
-            with self.store.lock():
+            final_phase = "activationScheduled"
+            final_updates: dict[str, Any] = {
+                "progress": 80,
+                "message": "The external updater is taking ownership of activation and restart.",
+            }
+            async with self.activation_lock:
                 operation = self.store.read(operation_id)
                 if operation is None or operation.get("phase") != "staging":
                     raise UpdateFailure("operationUnavailable", "The update operation changed during staging.")
@@ -679,24 +686,36 @@ class ServerUpdateManager:
                     )
                 ):
                     shutil.rmtree(operation_dir, ignore_errors=True)
-                    await self._transition(
-                        operation_id, "failed", progress=75,
-                        resultCode="authorizationRevoked",
-                        message="The initiating client's full-access authorization is no longer valid. Nothing was replaced.",
+                    final_phase = "failed"
+                    final_updates = {
+                        "progress": 75,
+                        "resultCode": "authorizationRevoked",
+                        "message": "The initiating client's full-access authorization is no longer valid. Nothing was replaced.",
+                    }
+                else:
+                    blockers = await self.safety_check()
+                    if blockers:
+                        shutil.rmtree(operation_dir, ignore_errors=True)
+                        final_phase = "blocked"
+                        final_updates = {
+                            "progress": 75,
+                            "resultCode": "activeWork",
+                            "message": "Work became active before activation. Nothing was replaced; start the update again when it finishes.",
+                        }
+                with self.store.lock():
+                    current = self.store.read(operation_id)
+                    if current is None or current.get("phase") != "staging":
+                        raise UpdateFailure(
+                            "operationUnavailable",
+                            "The update operation changed during staging.",
+                        )
+                    finalized = self.store.transition(
+                        operation_id, final_phase, **final_updates,
                     )
-                    return
-                blockers = await self.safety_check()
-                if blockers:
-                    shutil.rmtree(operation_dir, ignore_errors=True)
-                    await self._transition(
-                        operation_id, "blocked", progress=75, resultCode="activeWork",
-                        message="Work became active before activation. Nothing was replaced; start the update again when it finishes.",
-                    )
-                    return
-                scheduled = await self._transition(
-                    operation_id, "activationScheduled", progress=80,
-                    message="The external updater is taking ownership of activation and restart.",
-                )
+            await self._publish(finalized)
+            if final_phase != "activationScheduled":
+                return
+            scheduled = finalized
             result = await self.helper_runner(operation_id)
             current = self.store.read(operation_id)
             if current is not None and current.get("phase") != scheduled.get("phase"):
@@ -802,19 +821,22 @@ def _health(port: int, version: str, protocol_version: int, timeout_seconds: int
     return False
 
 
-def _helper_authorized(state_directory: Path, operation: Mapping[str, Any]) -> bool:
+@contextmanager
+def _helper_authorization_guard(
+    state_directory: Path, operation: Mapping[str, Any]
+) -> Iterator[bool]:
     principal = operation.get("authorizationPrincipal")
     if principal == "local":
-        return True
+        yield True
+        return
     if not isinstance(principal, str) or not principal.startswith("device:"):
-        return False
+        yield False
+        return
     device_id = principal.removeprefix("device:")
     from state import State
 
-    return any(
-        device.get("id") == device_id and device.get("access") == "full"
-        for device in State(state_directory).list_devices()
-    )
+    with State(state_directory).full_access_guard(device_id) as authorized:
+        yield authorized
 
 
 def _rollback_external_update(
@@ -915,13 +937,6 @@ def run_external_helper(
             operation = store.read(operation_id)
             if operation is None or operation.get("phase") != "activationScheduled":
                 return 2
-            if not _helper_authorized(state_directory, operation):
-                store.transition(
-                    operation_id, "failed", progress=100, resultCode="authorizationRevoked",
-                    message="Update authorization was revoked before activation. Nothing was replaced.",
-                )
-                shutil.rmtree(operation_dir, ignore_errors=True)
-                return 4
             store.transition(operation_id, "activating", progress=84, message="Activating the staged Foreman payload.")
             backup.mkdir(parents=True, mode=0o700)
             existence: dict[str, bool] = {}
@@ -941,9 +956,20 @@ def run_external_helper(
                 unitExisted=existence["unitExisted"],
                 helperExisted=existence["helperExisted"],
             )
-            if install_directory.exists():
-                os.replace(install_directory, backup / "install")
-            os.replace(operation_dir / "staged-install", install_directory)
+            with _helper_authorization_guard(state_directory, operation) as authorized:
+                if not authorized:
+                    store.transition(
+                        operation_id, "failed", progress=100, resultCode="authorizationRevoked",
+                        message="Update authorization was revoked before activation. Nothing was replaced.",
+                    )
+                    shutil.rmtree(operation_dir, ignore_errors=True)
+                    return 4
+                # Keep the same device-state lock through the activation
+                # directory renames, so authorization and revocation have one
+                # ordering even if the prior install is unexpectedly absent.
+                if install_directory.exists():
+                    os.replace(install_directory, backup / "install")
+                os.replace(operation_dir / "staged-install", install_directory)
             _replace_file(operation_dir / "staged-launcher", launcher_file)
             _replace_file(operation_dir / "staged-unit", unit_file)
             _replace_file(operation_dir / "staged-helper", helper_file)
