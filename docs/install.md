@@ -117,6 +117,20 @@ boot-time `foreman-update-recovery.service` oneshot, and creates:
 ~/.local/state/foreman
 ```
 
+Both units run under the systemd user manager. On a headless or SSH-managed
+host, enabling a unit does not by itself keep that user manager alive after the
+last login session ends. Enable lingering once so Foreman starts at boot and
+continues running after logout:
+
+```sh
+sudo loginctl enable-linger "$USER"
+loginctl show-user "$USER" -p Linger
+```
+
+The verification command should report `Linger=yes`. This host-level setting
+may require administrator privileges; Foreman's installer remains rootless and
+does not invoke `sudo`.
+
 Reinstalling validates a staged copy before replacing the running installation.
 An older `~/.local/share/foreman/venv` is retained through service activation
 and removed only after the system-Python service starts successfully.
