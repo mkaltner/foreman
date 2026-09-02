@@ -93,6 +93,22 @@ foreman status      # show service status and recent errors
 foreman logs        # follow the user-service journal
 ```
 
+Foreman installs as an enabled systemd user service. On a headless or
+SSH-managed host, enable lingering so the user service starts at boot and keeps
+running after the last login session ends. Enabling `foreman.service` attaches
+it to the user service manager; it does not keep that manager alive. Without
+lingering, systemd may shut down the entire user manager after the final logout,
+which cleanly stops Foreman even though its unit is enabled:
+
+```sh
+sudo loginctl enable-linger "$USER"
+loginctl show-user "$USER" -p Linger
+```
+
+The verification command should report `Linger=yes`. Enabling lingering is a
+one-time host configuration step that may require administrator privileges; the
+Foreman installer itself remains rootless and never invokes `sudo`.
+
 To check or install a signed stable server update:
 
 ```sh
